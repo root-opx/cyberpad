@@ -1,0 +1,14 @@
+<Project>
+
+  <!--
+    Microsoft.Web.WebView2 references its WPF control assembly for every net5.0+ project. CyberPad is
+    WinForms-only, so that reference only causes a WindowsBase version conflict (MSB3277). Drop it here
+    for the app and for the test project, which receives the package transitively.
+  -->
+  <Target Name="RemoveUnusedWebView2Wpf" BeforeTargets="ResolveAssemblyReferences">
+    <ItemGroup>
+      <Reference Remove="@(Reference)" Condition="'%(Filename)' == 'Microsoft.Web.WebView2.Wpf'" />
+    </ItemGroup>
+  </Target>
+
+</Project>
