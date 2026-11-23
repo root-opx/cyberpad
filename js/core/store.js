@@ -150,6 +150,29 @@
     }
   }
 
+  /** Parses one stored copy; null when it is missing or damaged. '' and 'null' count as damaged. */
+  function usableCopy(text, now) {
+    if (typeof text !== 'string') return null;
+    let raw;
+    try { raw = JSON.parse(text); } catch (err) {
+      if (err instanceof SyntaxError) return null;
+      throw err;
+    }
+    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return null;
+    const state = parseStored(text, now);
+    return state.error ? null : state;
+  }
+
+  /** Chooses the main copy, else the backup, else an empty state. */
+  function pickState(main, backup, now = Date.now()) {
+    const fromMain = usableCopy(main, now);
+    const fromBackup = fromMain ? null : usableCopy(backup, now);
+    const unreadable = (main !== null && !fromMain) || (backup !== null && !usableCopy(backup, now));
+    if (fromMain) return { state: fromMain, source: 'main', unreadable };
+    if (fromBackup) return { state: fromBackup, source: 'backup', unreadable };
+    return { state: emptyState(), source: 'none', unreadable };
+  }
+
   function serialize({ notes, settings, activeId }) {
     return JSON.stringify({
       v: SCHEMA,
@@ -276,7 +299,7 @@
 
   return {
     STORAGE_KEY, LEGACY_STORAGE_KEYS, SCHEMA, LIMITS, THEMES, VIEWS, AUTOLOCK, DEFAULT_SETTINGS, StoreError,
-    newId, validateNote, validateState, parseStored, serialize, createNote, addSnapshot,
+    newId, validateNote, validateState, parseStored, pickState, serialize, createNote, addSnapshot,
     makeBackup, parseBackup, makeEncryptedBackup, parseEncryptedBackup, mergeNotes, checkImportFile, decodeImportBytes,
   };
 });

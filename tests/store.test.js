@@ -144,3 +144,37 @@ test('vault settings are validated booleans that default to on', () => {
   assert.equal(off.lockOnHide, false);
   assert.equal(off.clearClipboard, false);
 });
+
+const VALID_COPY = () => store.serialize({ notes: [store.createNote('hello', 1000, ID)], settings: { ...store.DEFAULT_SETTINGS }, activeId: ID });
+
+test('pickState prefers a valid main copy', () => {
+  const r = store.pickState(VALID_COPY(), VALID_COPY());
+  assert.equal(r.source, 'main');
+  assert.equal(r.unreadable, false);
+  assert.equal(r.state.notes.length, 1);
+});
+
+test('pickState falls back to backup when main is damaged', () => {
+  for (const bad of ['', '   ', '{"v":1,"notes":[', '\uFEFFgarbage', 'null', '[]']) {
+    const r = store.pickState(bad, VALID_COPY());
+    assert.equal(r.source, 'backup', JSON.stringify(bad));
+    assert.equal(r.unreadable, true, JSON.stringify(bad));
+    assert.equal(r.state.notes.length, 1);
+  }
+});
+
+test('pickState uses backup without a warning when main is missing', () => {
+  const r = store.pickState(null, VALID_COPY());
+  assert.equal(r.source, 'backup');
+  assert.equal(r.unreadable, false);
+});
+
+test('pickState reports none when both are unusable', () => {
+  const bad = store.pickState('x', 'y');
+  assert.equal(bad.source, 'none');
+  assert.equal(bad.unreadable, true);
+  assert.deepEqual(bad.state.notes, []);
+  const none = store.pickState(null, null);
+  assert.equal(none.source, 'none');
+  assert.equal(none.unreadable, false);
+});

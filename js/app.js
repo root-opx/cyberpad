@@ -4,6 +4,8 @@
 
   const { calc, markdown, text: T, vault, store, secops, cvss, netcalc, dom, caret, sound, renderMarkdown } = window.NP;
   const { h } = dom;
+  const { PlatformError } = window.NP.platformFactory;
+  const platform = window.NP.platformFactory.createPlatform(window);
   const $ = (id) => document.getElementById(id);
 
   const els = {
@@ -61,6 +63,14 @@
     '#welcome',
   ].join('\n');
 
+  const MIGRATION_LINE = 'Moving from the browser version? Export a backup there (Command palette → Export backup), then import it here.';
+  const welcomeText = () => (platform.isDesktop
+    ? WELCOME
+      .replace('A notepad that lives in this browser.', 'A notepad that lives on this computer.')
+      .replace(/\n#welcome$/, `\n${MIGRATION_LINE}\n\n#welcome`)
+    : WELCOME);
+  const where = () => (platform.isDesktop ? 'on this computer' : 'in this browser');
+
   const S = {
     notes: [],
     settings: { ...store.DEFAULT_SETTINGS },
@@ -73,6 +83,11 @@
     sealTimers: new Map(),
     sealing: new Map(),
     saveTimer: 0,
+    saving: null,           // promise of the save loop while a save is in flight
+    saveDirty: false,       // a change arrived during a save: save once more afterwards
+    lastStateChars: 0,
+    legacyKey: null,
+    host: { version: null, dataDir: null },
     storageOk: true,
     timer: null,
     lastActive: Date.now(),
@@ -130,7 +145,7 @@
 
   // -------------------------------------------------------------- storage
 
-  const isQuotaError = (e) => e instanceof DOMException && (e.name === 'QuotaExceededError' || e.name === 'NS_ERROR_DOM_QUOTA_REACHED');
+  const SAVE_REASON = { timeout: 'the save timed out', host: 'the app could not write the file' };
 
   function setSaveState(state, label) {
     els.stSave.dataset.state = state;
@@ -141,38 +156,80 @@
     return S.saveTimer !== 0 || S.sealTimers.size > 0 || S.sealing.size > 0;
   }
 
+  function failSave(err) {
+    const reason = err instanceof PlatformError ? err.reason : null;
+    if (reason === 'too-large') {
+      setSaveState('error', 'Not saved');
+      toast('Your notes are over 64 MB, so they can’t be saved. Export a backup, then remove large notes.', 'error');
+    } else {
+      setSaveState('error', 'Save failed');
+      toast(`Saving failed (${SAVE_REASON[reason] || 'unexpected error'}). Export a backup from the command palette to keep your notes safe.`, 'error');
+    }
+    console.error('save failed', reason || (err && err.name));
+    return false;
+  }
+
+  const serializeState = () => store.serialize({ notes: S.notes, settings: S.settings, activeId: S.activeId });
+
+  /** One save of the current state. Never throws. */
+  async function saveOnce() {
+    let text = serializeState();
+    try {
+      try {
+        await platform.saveState(text);
+      } catch (err) {
+        if (!(err instanceof PlatformError) || err.reason !== 'quota') throw err;
+        for (const n of S.notes) n.history = n.history.slice(-3);
+        text = serializeState();
+        try {
+          await platform.saveState(text);
+        } catch (err2) {
+          if (err2 instanceof PlatformError && err2.reason === 'quota') {
+            setSaveState('error', 'Storage full');
+            toast('Storage is full. Export a backup, then delete large notes.', 'error');
+            return false;
+          }
+          throw err2;
+        }
+        toast('Storage was full, so older versions were removed to make room.', 'error');
+      }
+    } catch (err) {
+      return failSave(err);
+    }
+    S.lastStateChars = text.length;
+    if (S.legacyKey) {
+      // The data now lives under the new key, so the old copy can go.
+      platform.removeLegacy(S.legacyKey);
+      S.legacyKey = null;
+    }
+    if (!pendingWrites() && !S.saveDirty) setSaveState('saved');
+    return true;
+  }
+
+  /**
+   * Saves now. At most one save is in flight: a call during a save marks the
+   * state dirty and the running loop saves once more. The promise resolves
+   * after that last save, with whether it succeeded.
+   */
   function persistNow() {
     clearTimeout(S.saveTimer);
     S.saveTimer = 0;
-    if (!S.storageOk) { setSaveState('error', 'Not saving'); return false; }
-    const write = () => localStorage.setItem(store.STORAGE_KEY, store.serialize({ notes: S.notes, settings: S.settings, activeId: S.activeId }));
-    try {
-      write();
-    } catch (err) {
-      if (!isQuotaError(err)) {
-        setSaveState('error', 'Save failed');
-        toast('Saving failed. Export a backup from the command palette to keep your notes safe.', 'error');
-        console.error(err);
-        return false;
-      }
-      for (const n of S.notes) n.history = n.history.slice(-3);
+    if (!S.storageOk) { setSaveState('error', 'Not saving'); return Promise.resolve(false); }
+    if (S.saving) { S.saveDirty = true; return S.saving; }
+    // The first save starts synchronously, so a page-hide handler still writes in time.
+    S.saving = (async () => {
+      let ok = false;
       try {
-        write();
-        toast('Storage was full, so older versions were removed to make room.', 'error');
-      } catch (err2) {
-        if (!isQuotaError(err2)) throw err2;
-        setSaveState('error', 'Storage full');
-        toast('Storage is full. Export a backup, then delete large notes.', 'error');
-        return false;
+        do {
+          S.saveDirty = false;
+          ok = await saveOnce();
+        } while (S.saveDirty);
+      } finally {
+        S.saving = null;
       }
-    }
-    if (S.legacyKey) {
-      // The data now lives under the new key, so the old copy can go.
-      try { localStorage.removeItem(S.legacyKey); } catch (err) { console.error(err); }
-      S.legacyKey = null;
-    }
-    if (!pendingWrites()) setSaveState('saved');
-    return true;
+      return ok;
+    })();
+    return S.saving;
   }
 
   function schedulePersist() {
@@ -181,33 +238,46 @@
     S.saveTimer = setTimeout(persistNow, 400);
   }
 
-  function load() {
-    let raw = null;
+  async function load() {
+    let loaded = null;
     try {
-      raw = localStorage.getItem(store.STORAGE_KEY);
-      if (raw === null) {
-        // Notes saved under the app's previous name: adopt them, then move them to the new key.
-        for (const key of store.LEGACY_STORAGE_KEYS) {
-          const legacy = localStorage.getItem(key);
-          if (legacy !== null) { raw = legacy; S.legacyKey = key; break; }
+      loaded = await platform.loadState();
+    } catch (err) {
+      // Fail closed: saving an empty state over notes that exist but could not be read would lose them.
+      S.storageOk = false;
+      console.error('load failed', err instanceof PlatformError ? err.reason : (err && err.name));
+      setTimeout(() => toast('Your notes could not be loaded, so nothing will be saved in this session. Close CyberPad and open it again.', 'error'), 0);
+      loaded = { main: null, backup: null, legacyKey: null, storageOk: true, version: null, dataDir: null };
+    }
+    if (!loaded.storageOk) S.storageOk = false;
+    S.legacyKey = loaded.legacyKey;
+    S.host = { version: loaded.version, dataDir: loaded.dataDir };
+    const { state, source, unreadable } = store.pickState(loaded.main, loaded.backup);
+    S.lastStateChars = source === 'main' ? loaded.main.length : (source === 'backup' ? loaded.backup.length : 0);
+    if (source === 'backup') {
+      setTimeout(() => toast('Your last save could not be read, so the previous save was restored.', 'error'), 0);
+    }
+    if (unreadable && S.storageOk) {
+      // The browser keeps the raw string; the desktop host renames whichever files exist.
+      const canKeep = platform.isDesktop || typeof loaded.main === 'string';
+      let kept = false;
+      if (canKeep) {
+        try { await platform.quarantine(loaded.main); kept = true; } catch (err) {
+          console.error('quarantine failed', err instanceof PlatformError ? err.reason : (err && err.name));
         }
       }
-    } catch (err) {
-      S.storageOk = false;
-      console.error(err);
-    }
-    const state = store.parseStored(raw);
-    if (state.error) {
-      try { localStorage.setItem(`${store.STORAGE_KEY}.unreadable-${Date.now()}`, raw); } catch (err) { console.error(err); }
-      setTimeout(() => toast('Saved notes could not be read. A copy of the raw data was kept in browser storage.', 'error'), 0);
+      const place = platform.isDesktop ? 'in the data folder' : 'in browser storage';
+      setTimeout(() => toast(kept
+        ? `Saved notes could not be read. The unreadable copy was kept ${place}.`
+        : 'Saved notes could not be read, and the unreadable copy could not be kept.', 'error'), 0);
     }
     S.notes = state.notes;
     S.settings = state.settings;
     S.activeId = state.activeId;
-    const firstRun = (S.notes.length === 0 && !state.error) || !!S.legacyKey;
-    if (!S.notes.length) S.notes.push(store.createNote(WELCOME));
+    const firstRun = (S.notes.length === 0 && !unreadable) || !!S.legacyKey;
+    if (!S.notes.length) S.notes.push(store.createNote(welcomeText()));
     if (!active()) S.activeId = sortedNotes()[0].id;
-    if (!S.storageOk) setTimeout(() => toast('This browser is blocking storage, so notes will be lost when you close the tab.', 'error'), 0);
+    if (!loaded.storageOk) setTimeout(() => toast('This browser is blocking storage, so notes will be lost when you close the tab.', 'error'), 0);
     return { firstRun };
   }
 
@@ -357,7 +427,7 @@
     const note = active();
     if (!note || !note.cipher) { toast('This note is not encrypted.'); return; }
     if (isLocked(note)) { toast('Unlock the note first.'); return; }
-    const ok = await confirmDialog('Remove encryption?', 'The note will be saved as plain text in this browser from now on.', 'Remove encryption', true);
+    const ok = await confirmDialog('Remove encryption?', `The note will be saved as plain text ${where()} from now on.`, 'Remove encryption', true);
     if (!ok) return;
     // The note may have auto-locked while the dialog was open: never replace it with an empty body.
     if (isLocked(note) || !S.plain.has(note.id)) { toast('The note was locked. Unlock it and try again.', 'error'); return; }
@@ -1127,6 +1197,7 @@
       C('View', S.settings.sound ? 'Turn off typing sounds' : 'Turn on typing sounds', toggleSound),
       C('View', S.settings.boot ? 'Skip the boot screen on start' : 'Show the boot screen on start', toggleBoot),
       C('View', 'Keyboard shortcuts', showShortcuts, 'F1'),
+      C('View', 'About CyberPad', showAbout, null, platform.isDesktop),
       C('Insert', 'Insert date', () => insertText(T.ymd(new Date())), '/date', editable),
       C('Insert', 'Insert time', () => insertText(T.hm(new Date())), '/time', editable),
       C('Insert', 'Insert table', () => insertText(T.expandSlash('table', {}).text), '/table', editable),
@@ -1374,8 +1445,8 @@
     const defanged = defangBox.checked;
     const stamp = new Date().toISOString();
     if (res === 'csv') {
-      download(`iocs-${T.slugify(titleOf(note))}-${stamp.slice(0, 10)}.csv`, secops.iocsToCsv(iocs, { defanged }), 'text/csv;charset=utf-8');
-      toast('CSV downloaded. Cells that a spreadsheet could run as formulas are escaped.');
+      const saved = await exportOut('iocCsv', `iocs-${T.slugify(titleOf(note))}-${stamp.slice(0, 10)}.csv`, secops.iocsToCsv(iocs, { defanged }), 'text/csv;charset=utf-8');
+      if (saved) toast('CSV saved. Cells that a spreadsheet could run as formulas are escaped.');
     } else if (res === 'note') {
       addNote(secops.iocsToMarkdown(iocs, { defanged, source: titleOf(note), when: `${stamp.slice(0, 16).replace('T', ' ')} UTC` }));
     }
@@ -1473,7 +1544,7 @@
       body: [
         h('p', null, encrypted
           ? 'This note is encrypted, so these values are only stored as ciphertext.'
-          : 'This note is saved as plain text in browser storage. Encrypt it, or mask the values and rotate the real credentials.'),
+          : `This note is saved as plain text ${platform.isDesktop ? 'in the data folder' : 'in browser storage'}. Encrypt it, or mask the values and rotate the real credentials.`),
         list,
         h('p', null, 'Detection is pattern-based: it can miss secrets and flag harmless text. Values are masked here and never logged.'),
       ],
@@ -2016,6 +2087,17 @@
     toast('Version restored. The text it replaced is in the history too.');
   }
 
+  function showAbout() {
+    showDialog({
+      title: 'About CyberPad',
+      body: [
+        h('p', null, S.host.version ? `CyberPad ${S.host.version}` : 'CyberPad'),
+        h('p', null, `Notes are saved in ${S.host.dataDir || 'the data folder'}`),
+      ],
+      actions: [{ label: 'Close', value: null, className: 'btn-primary' }],
+    });
+  }
+
   function showShortcuts() {
     const rows = [
       ['Ctrl K', 'Command palette'], ['Ctrl K, then @', 'Jump to a heading'], ['Alt N', 'New note'], ['Alt T', 'Today’s log'],
@@ -2034,13 +2116,19 @@
 
   // -------------------------------------------------------- import/export
 
-  function download(filename, text, type) {
-    const url = URL.createObjectURL(new Blob([text], { type }));
-    const a = h('a', { href: url, download: filename, hidden: true });
-    document.body.append(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 2000);
+  /** Sends a file through the platform. Resolves to the saved name, or null when cancelled or failed (failures toast a reason, never content). */
+  async function exportOut(kind, suggestedName, text, mime) {
+    try {
+      const res = await platform.exportFile({ kind, suggestedName, text, mime });
+      return res && res.saved ? (res.name || suggestedName) : null;
+    } catch (err) {
+      const reason = err instanceof PlatformError ? err.reason : null;
+      console.error('export failed', reason || (err && err.name));
+      toast(reason === 'too-large'
+        ? 'That file is over 64 MB, so it could not be exported.'
+        : `Export failed (${SAVE_REASON[reason] || 'unexpected error'}).`, 'error');
+      return null;
+    }
   }
 
   async function exportNote() {
@@ -2051,14 +2139,15 @@
       if (!ok) return;
       if (!isEditable(note)) { toast('The note was locked. Unlock it and try again.', 'error'); return; }
     }
-    download(`${T.slugify(titleOf(note))}.md`, bodyOf(note), 'text/markdown;charset=utf-8');
-    toast('Note exported.');
+    // The file name comes from the note title, so the toast does not repeat it.
+    const saved = await exportOut('note', `${T.slugify(titleOf(note))}.md`, bodyOf(note), 'text/markdown;charset=utf-8');
+    if (saved) toast('Note saved.');
   }
 
   async function exportBackup() {
     await flushSeals();
-    download(`cyberpad-backup-${T.ymd(new Date())}.json`, store.makeBackup(S.notes), 'application/json;charset=utf-8');
-    toast(`Backup of ${plural(S.notes.length, 'note')} exported. Encrypted notes stay encrypted, the rest is plain text. Use "Export encrypted backup" to protect all of it.`);
+    const saved = await exportOut('backup', `cyberpad-backup-${T.ymd(new Date())}.json`, store.makeBackup(S.notes), 'application/json;charset=utf-8');
+    if (saved) toast(`Saved ${saved}. Backup of ${plural(S.notes.length, 'note')} exported. Encrypted notes stay encrypted, the rest is plain text. Use "Export encrypted backup" to protect all of it.`);
   }
 
   async function exportEncryptedBackup() {
@@ -2103,8 +2192,8 @@
       },
     });
     if (!file) return;
-    download(`cyberpad-backup-${T.ymd(new Date())}.encrypted.json`, file, 'application/json;charset=utf-8');
-    toast(`Encrypted backup of ${plural(S.notes.length, 'note')} exported.`);
+    const saved = await exportOut('encryptedBackup', `cyberpad-backup-${T.ymd(new Date())}.encrypted.json`, file, 'application/json;charset=utf-8');
+    if (saved) toast(`Saved ${saved}. Encrypted backup of ${plural(S.notes.length, 'note')}.`);
   }
 
   /** Asks for an encrypted backup's passphrase. Resolves to the decrypted text, or null. */
@@ -2316,9 +2405,7 @@
   function bootSequence() {
     return new Promise((resolve) => {
       if (!S.settings.boot || reducedMotion.matches) { resolve(); return; }
-      let raw = '';
-      try { raw = localStorage.getItem(store.STORAGE_KEY) || ''; } catch (err) { console.error(err); }
-      const kb = Math.max(1, Math.round((raw.length * 2) / 1024));
+      const kb = Math.max(1, Math.round((S.lastStateChars * 2) / 1024));
       const encrypted = S.notes.filter((n) => n.cipher).length;
       const tagCount = new Set(S.notes.flatMap((n) => metaOf(n).tags)).size;
       const lines = [
@@ -2384,7 +2471,7 @@
 
     if (mod && !e.altKey && k === 's') {
       e.preventDefault();
-      flushSeals().then(() => { if (persistNow()) toast('Saved.'); });
+      flushSeals().then(() => persistNow()).then((ok) => { if (ok) toast('Saved.'); });
       return;
     }
     if (mod && !e.altKey && !e.shiftKey && k === 'e') { e.preventDefault(); cycleView(); return; }
@@ -2561,14 +2648,17 @@
     document.addEventListener('keydown', onGlobalKeydown);
     document.addEventListener('pointerdown', () => { S.lastActive = Date.now(); }, { passive: true });
 
-    window.addEventListener('beforeunload', (e) => {
-      if (S.saveTimer) persistNow();
-      if (S.sealTimers.size || S.sealing.size) {
-        for (const id of [...S.sealTimers.keys()]) sealNow(id);
-        e.preventDefault();
-        e.returnValue = '';
-      }
-    });
+    // The desktop host asks for a flush before closing instead.
+    if (!platform.isDesktop) {
+      window.addEventListener('beforeunload', (e) => {
+        if (S.saveTimer) persistNow();
+        if (S.sealTimers.size || S.sealing.size) {
+          for (const id of [...S.sealTimers.keys()]) sealNow(id);
+          e.preventDefault();
+          e.returnValue = '';
+        }
+      });
+    }
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'hidden') {
         if (S.saveTimer) persistNow();
@@ -2579,9 +2669,11 @@
     document.addEventListener('copy', noteSensitiveCopy);
     document.addEventListener('cut', noteSensitiveCopy);
     window.addEventListener('focus', () => { if (clip.pending && !clip.timer) clearClipboardNow(); });
-    window.addEventListener('storage', (e) => {
-      if (e.key === store.STORAGE_KEY) toast('Your notes were changed in another tab. Reload this page before editing here, or one tab will overwrite the other.', 'error');
-    });
+    if (!platform.isDesktop) {
+      window.addEventListener('storage', (e) => {
+        if (e.key === store.STORAGE_KEY) toast('Your notes were changed in another tab. Reload this page before editing here, or one tab will overwrite the other.', 'error');
+      });
+    }
     narrow.addEventListener('change', () => setDrawer(false));
   }
 
@@ -2590,7 +2682,10 @@
   // ----------------------------------------------------------------- init
 
   async function init() {
-    const { firstRun } = load();
+    const { firstRun } = await load();
+    if (platform.isDesktop) {
+      platform.onFlushRequest(async () => { await flushSeals(); await persistNow(); });
+    }
     wireEvents();
     renderAll();
     setSaveState('saved');
