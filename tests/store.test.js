@@ -178,3 +178,10 @@ test('pickState reports none when both are unusable', () => {
   assert.equal(none.source, 'none');
   assert.equal(none.unreadable, false);
 });
+
+test('pickState keeps a valid main and flags a damaged backup', () => {
+  const r = store.pickState(VALID_COPY(), 'garbage');
+  assert.equal(r.source, 'main');
+  assert.equal(r.unreadable, true);
+  assert.equal(r.state.notes.length, 1);
+});

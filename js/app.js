@@ -257,18 +257,21 @@
     if (source === 'backup') {
       setTimeout(() => toast('Your last save could not be read, so the previous save was restored.', 'error'), 0);
     }
+    let resave = false;
     if (unreadable && S.storageOk) {
       // The browser keeps the raw string; the desktop host renames whichever files exist.
       const canKeep = platform.isDesktop || typeof loaded.main === 'string';
       let kept = false;
       if (canKeep) {
-        try { await platform.quarantine(loaded.main); kept = true; } catch (err) {
+        try { await platform.quarantine(loaded.main); kept = true; resave = platform.isDesktop && source !== 'none'; } catch (err) {
           console.error('quarantine failed', err instanceof PlatformError ? err.reason : (err && err.name));
         }
       }
       const place = platform.isDesktop ? 'in the data folder' : 'in browser storage';
       setTimeout(() => toast(kept
-        ? `Saved notes could not be read. The unreadable copy was kept ${place}.`
+        ? (source === 'main'
+          ? `The backup copy could not be read. It was kept ${place}.`
+          : `Saved notes could not be read. The unreadable copy was kept ${place}.`)
         : 'Saved notes could not be read, and the unreadable copy could not be kept.', 'error'), 0);
     }
     S.notes = state.notes;
@@ -278,7 +281,7 @@
     if (!S.notes.length) S.notes.push(store.createNote(welcomeText()));
     if (!active()) S.activeId = sortedNotes()[0].id;
     if (!loaded.storageOk) setTimeout(() => toast('This browser is blocking storage, so notes will be lost when you close the tab.', 'error'), 0);
-    return { firstRun };
+    return { firstRun, resave };
   }
 
   // ------------------------------------------------------------ encryption
@@ -2681,14 +2684,15 @@
   // ----------------------------------------------------------------- init
 
   async function init() {
-    const { firstRun } = await load();
+    const { firstRun, resave } = await load();
     if (platform.isDesktop) {
       platform.onFlushRequest(async () => { await flushSeals(); await persistNow(); });
     }
     wireEvents();
     renderAll();
     setSaveState('saved');
-    if (firstRun) persistNow();
+    // The host moved both files aside when it quarantined: write the notes we kept in memory straight back.
+    if (firstRun || resave) persistNow();
     setInterval(() => {
       els.stClock.textContent = T.hm(new Date());
       const limit = S.settings.autoLockMinutes * 60000;
