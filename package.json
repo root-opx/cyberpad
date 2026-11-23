@@ -1,0 +1,9 @@
+{
+  "name": "cyberpad",
+  "version": "1.0.0",
+  "private": true,
+  "description": "CyberPad: an offline cyberpunk retro notepad with encryption, slash commands and an inline calculator.",
+  "scripts": {
+    "test": "node --test \"tests/*.test.js\""
+  }
+}

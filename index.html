@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en" data-theme="neon">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; worker-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta name="referrer" content="no-referrer">
+  <meta name="color-scheme" content="dark">
+  <title>CyberPad</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%23140f2e'/%3E%3Cpath d='M8 4H4v8h4' stroke='%23ff3ea5' stroke-width='1.6' fill='none'/%3E%3Cpath d='M10 4h3M10 8h3M10 12h3' stroke='%233ff2e8' stroke-width='1.6'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body class="crt">
+  <div id="app" class="app">
+    <header class="titlebar">
+      <button type="button" class="icon-btn" id="btn-sidebar" aria-label="Show or hide the note list" title="Note list (Ctrl+B)" aria-controls="sidebar" aria-expanded="true">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4h12M2 8h12M2 12h12"/></svg>
+      </button>
+      <h1 class="wordmark"><span class="wordmark-text">CYBERPAD</span></h1>
+      <label class="search">
+        <span class="sr-only">Search notes</span>
+        <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5 14 14"/></svg>
+        <input id="search" type="search" placeholder="Search notes" autocomplete="off" spellcheck="false" maxlength="200">
+      </label>
+      <div class="titlebar-actions">
+        <div class="segmented" role="group" aria-label="Layout">
+          <button type="button" data-view="edit" aria-pressed="false" title="Editor only">Write</button>
+          <button type="button" data-view="split" aria-pressed="true" title="Editor and preview">Split</button>
+          <button type="button" data-view="preview" aria-pressed="false" title="Preview only">Read</button>
+        </div>
+        <label class="theme-picker" title="Screen theme">
+          <span class="sr-only">Screen theme</span>
+          <select id="theme-select">
+            <option value="neon">Neon</option>
+            <option value="amber">Amber</option>
+            <option value="terminal">Terminal green</option>
+          </select>
+        </label>
+        <button type="button" class="chip hide-narrow" id="btn-crt" aria-pressed="true" title="Scanlines and glow">CRT</button>
+        <button type="button" class="chip hide-narrow" id="btn-sound" aria-pressed="false" title="Typing sounds">Sound</button>
+        <button type="button" class="chip chip-cmd" id="btn-palette" title="Command palette">Commands <kbd>Ctrl K</kbd></button>
+      </div>
+    </header>
+
+    <aside class="sidebar" id="sidebar" aria-label="Notes">
+      <button type="button" class="btn-new" id="btn-new">
+        <span>New note</span><kbd>Alt N</kbd>
+      </button>
+      <div class="filter-row" id="filter-row" hidden>
+        <span id="filter-label"></span>
+        <button type="button" class="link-btn" id="btn-clear-filter">Clear</button>
+      </div>
+      <ul id="note-list" class="note-list"></ul>
+      <section class="tags" aria-labelledby="tags-heading">
+        <h2 id="tags-heading" class="side-heading">Tags</h2>
+        <div id="tag-list" class="tag-list"></div>
+      </section>
+    </aside>
+    <div class="scrim" id="scrim" hidden></div>
+
+    <main class="workspace" id="workspace" data-view="split">
+      <div class="findbar" id="findbar" hidden>
+        <input id="find-input" type="text" placeholder="Find" aria-label="Find" maxlength="200" spellcheck="false" autocomplete="off">
+        <input id="replace-input" type="text" placeholder="Replace with" aria-label="Replace with" maxlength="1000" spellcheck="false" autocomplete="off">
+        <button type="button" class="toggle" id="find-case" aria-pressed="false" title="Match case">Aa</button>
+        <button type="button" class="toggle" id="find-regex" aria-pressed="false" title="Regular expression">.*</button>
+        <span class="find-count" id="find-count" aria-live="polite"></span>
+        <button type="button" class="chip" id="find-prev" title="Previous match (Shift+F3)">Prev</button>
+        <button type="button" class="chip" id="find-next" title="Next match (F3)">Next</button>
+        <button type="button" class="chip" id="find-replace">Replace</button>
+        <button type="button" class="chip" id="find-replace-all">Replace all</button>
+        <button type="button" class="icon-btn" id="find-close" aria-label="Close find">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg>
+        </button>
+      </div>
+      <div class="alertbar" id="secret-alert" role="alert" hidden>
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2 1.5 13.5h13z"/><path d="M8 6.5v3.2M8 11.4v.6"/></svg>
+        <span class="alert-text" id="secret-alert-text"></span>
+        <span class="alert-actions">
+          <button type="button" class="chip" id="secret-encrypt">Encrypt note</button>
+          <button type="button" class="chip" id="secret-mask">Mask them</button>
+          <button type="button" class="chip" id="secret-review">Review</button>
+          <button type="button" class="link-btn" id="secret-ignore">Ignore</button>
+        </span>
+      </div>
+      <div class="panes">
+        <section class="pane pane-editor" aria-label="Editor">
+          <textarea id="editor" spellcheck="false" autocapitalize="off" aria-label="Note text" placeholder="Start typing. Type / for quick inserts."></textarea>
+          <div class="lockscreen" id="lockscreen" hidden>
+            <form id="unlock-form" class="lock-card" autocomplete="off">
+              <svg class="lock-icon" viewBox="0 0 32 32" aria-hidden="true"><rect x="7" y="14" width="18" height="13" rx="1"/><path d="M11 14v-4a5 5 0 0 1 10 0v4"/><path d="M16 19v3"/></svg>
+              <h2>This note is encrypted</h2>
+              <p class="muted">Enter its passphrase to read and edit it. Nothing is decrypted until you do.</p>
+              <label class="field">
+                <span>Passphrase</span>
+                <input id="unlock-pass" type="password" autocomplete="current-password" maxlength="1024" required>
+              </label>
+              <p class="form-error" id="unlock-error" role="alert"></p>
+              <button type="submit" class="btn-primary" id="unlock-btn">Unlock note</button>
+            </form>
+          </div>
+        </section>
+        <section class="pane pane-preview" aria-label="Preview">
+          <article id="preview" class="preview"></article>
+          <nav id="backlinks" class="backlinks" aria-label="Notes that link here"></nav>
+        </section>
+      </div>
+    </main>
+
+    <footer class="statusbar" id="statusbar">
+      <span class="st st-save" id="st-save"><i class="led" aria-hidden="true"></i><span id="st-save-text">Saved</span></span>
+      <span class="st" id="st-pos"></span>
+      <span class="st" id="st-words"></span>
+      <span class="st st-sel" id="st-sel"></span>
+      <span class="st st-spacer"></span>
+      <span class="st st-lock" id="st-lock" hidden></span>
+      <span class="st st-timer" id="st-timer" hidden></span>
+      <span class="st" id="st-clock"></span>
+    </footer>
+  </div>
+
+  <div id="slash" class="slash" role="listbox" aria-label="Quick inserts" hidden></div>
+
+  <dialog id="palette" class="palette" aria-label="Command palette">
+    <div class="palette-input-row">
+      <span class="prompt" aria-hidden="true">&gt;</span>
+      <input id="palette-input" type="text" placeholder="Type a command or note name. Use @ to jump to a heading." autocomplete="off" spellcheck="false" maxlength="200" role="combobox" aria-expanded="true" aria-controls="palette-list">
+    </div>
+    <ul id="palette-list" class="palette-list" role="listbox"></ul>
+  </dialog>
+
+  <dialog id="modal" class="modal" aria-labelledby="modal-title"></dialog>
+
+  <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
+
+  <div id="boot" class="boot" hidden aria-hidden="true">
+    <pre id="boot-log"></pre>
+  </div>
+
+  <div id="dropzone" class="dropzone" hidden>
+    <p>Drop a .txt, .md or backup .json file to import it</p>
+  </div>
+
+  <input type="file" id="file-input" accept=".txt,.md,.markdown,.json" hidden>
+  <input type="file" id="hash-file-input" hidden>
+
+  <script src="js/core/calc.js"></script>
+  <script src="js/core/markdown.js"></script>
+  <script src="js/core/texttools.js"></script>
+  <script src="js/core/vault.js"></script>
+  <script src="js/core/store.js"></script>
+  <script src="js/core/secops.js"></script>
+  <script src="js/core/cvss.js"></script>
+  <script src="js/core/netcalc.js"></script>
+  <script src="js/ui/dom.js"></script>
+  <script src="js/ui/render.js"></script>
+  <script src="js/ui/caret.js"></script>
+  <script src="js/ui/sound.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

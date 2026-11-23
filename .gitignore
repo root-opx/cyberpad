@@ -1,0 +1,21 @@
+# Dependencies (none today, but keep them out if added)
+node_modules/
+
+# Local Claude Code settings may hold machine-specific permissions
+.claude/settings.local.json
+
+# Exported data: backups and notes can contain sensitive content
+cyberpad-backup-*.json
+neonpad-backup-*.json
+
+# Environment and secrets
+.env
+.env.*
+
+# Logs and OS/editor junk
+*.log
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
