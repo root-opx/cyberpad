@@ -11,7 +11,7 @@ public sealed class LinkPolicyTests
     [InlineData("file:///C:/Windows/system32/calc.exe", false)]
     [InlineData("javascript:alert(1)", false)]
     [InlineData("ms-settings:privacy", false)]
-    [InlineData(@"\server\share\x", false)]
+    [InlineData(@"\\server\share\x", false)]
     [InlineData("https://exa mple.com", false)]
     [InlineData("/relative/path", false)]
     [InlineData("http://", false)]
