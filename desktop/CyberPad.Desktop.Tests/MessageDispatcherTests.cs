@@ -267,6 +267,37 @@ public class MessageDispatcherTests
     }
 
     [Fact]
+    public async Task EscapedLoneSurrogateInData_IsRejectedWithIdAndNoThrow()
+    {
+        var (d, f, log) = Make();
+        var r = Parse(await d.HandleAsync(Src, """{"type":"save","id":"a1","data":"\ud800"}"""));
+        Assert.Equal("rejected", r.GetProperty("type").GetString());
+        Assert.Equal("a1", r.GetProperty("id").GetString());
+        Assert.Null(f.Saved);
+        Assert.Equal(new[] { "save: invalid string" }, log);
+    }
+
+    [Fact]
+    public async Task EscapedLoneSurrogateInPropertyName_IsRejectedWithoutThrowing()
+    {
+        var (d, f, log) = Make();
+        // The name comparison for "type" already throws, so nothing is known about the message: null reply, content-free log.
+        Assert.Null(await d.HandleAsync(Src, """{"type":"save","id":"a1","data":"x","\ud800":1}"""));
+        Assert.Equal(0, f.Calls);
+        Assert.Equal(new[] { "?: invalid string" }, log);
+    }
+
+    [Fact]
+    public async Task UnescapedLoneSurrogateInRawText_IsRejectedWithoutThrowing()
+    {
+        var (d, f, log) = Make();
+        var json = "{\"type\":\"save\",\"id\":\"a1\",\"data\":\"" + '\ud800' + "\"}";
+        Assert.Null(await d.HandleAsync(Src, json));
+        Assert.Equal(0, f.Calls);
+        Assert.Equal(new[] { "?: invalid string" }, log);
+    }
+
+    [Fact]
     public async Task Messages_AreHandledOneAtATime()
     {
         var (d, f, _) = Make();

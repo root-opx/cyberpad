@@ -53,6 +53,22 @@ public sealed class MessageDispatcher
 
     private async Task<string?> DispatchAsync(string source, string json)
     {
+        // Hoisted so a string-decoding failure can still be logged with its type and answered with its id.
+        string? type = null;
+        string? id = null;
+        try
+        {
+            return await DispatchCoreAsync(source, json, t => type = t, i => id = i).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
+        {
+            // Lone UTF-16 surrogates pass JsonDocument.Parse but throw when a string is read (or when parsing raw text).
+            return Reject(type, id, "invalid string");
+        }
+    }
+
+    private async Task<string?> DispatchCoreAsync(string source, string json, Action<string> setType, Action<string?> setId)
+    {
         if (!AppOrigin.IsAppUri(source)) return Reject(null, null, "wrong origin");
         if (json is null || json.Length > MaxRawChars) return Reject(null, null, "message too large");
 
@@ -73,6 +89,7 @@ public sealed class MessageDispatcher
             if (!root.TryGetProperty("type", out var typeEl) || typeEl.ValueKind != JsonValueKind.String)
                 return Reject(null, null, "missing type");
             var type = typeEl.GetString()!;
+            setType(type);
             if (!Fields.TryGetValue(type, out var allowed)) return Reject(null, null, "unknown type");
 
             // The id is read first so that every later rejection of this message can echo it back.
@@ -83,6 +100,7 @@ public sealed class MessageDispatcher
                     return Reject(type, null, "missing id");
                 id = idEl.GetString();
                 if (!IsValidId(id)) return Reject(type, null, "invalid id");
+                setId(id);
             }
 
             // Exact field set: no extras, no duplicates, none missing.
