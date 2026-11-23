@@ -38,20 +38,11 @@ public sealed class MessageDispatcher
     }
 
     /// <summary>Returns the reply JSON, or null when there is nothing to send.</summary>
+    /// <remarks>
+    /// Store actions (load, save, quarantine) and "flushed" run one at a time. An export runs outside that gate:
+    /// it waits on the user's Save dialog, and autosaves must not queue behind it until they time out on the page.
+    /// </remarks>
     public async Task<string?> HandleAsync(string source, string json)
-    {
-        await _gate.WaitAsync().ConfigureAwait(false);
-        try
-        {
-            return await DispatchAsync(source, json).ConfigureAwait(false);
-        }
-        finally
-        {
-            _gate.Release();
-        }
-    }
-
-    private async Task<string?> DispatchAsync(string source, string json)
     {
         // Hoisted so a string-decoding failure can still be logged with its type and answered with its id.
         string? type = null;
@@ -118,18 +109,18 @@ public sealed class MessageDispatcher
                     return await RunFlushedAsync().ConfigureAwait(false);
 
                 case "load":
-                    return await RunAsync(type, id!, async () =>
+                    return await RunAsync(type, id!, Serialized(async () =>
                     {
                         var (main, backup) = await _actions.LoadAsync().ConfigureAwait(false);
                         return Serialize(new { type = "loaded", id, main, backup, version = _actions.Version, dataDir = _actions.DataDir });
-                    }, null).ConfigureAwait(false);
+                    }), null).ConfigureAwait(false);
 
                 case "quarantine":
-                    return await RunAsync(type, id!, async () =>
+                    return await RunAsync(type, id!, Serialized(async () =>
                     {
                         await _actions.QuarantineAsync().ConfigureAwait(false);
                         return Serialize(new { type = "quarantined", id });
-                    }, null).ConfigureAwait(false);
+                    }), null).ConfigureAwait(false);
 
                 case "save":
                 {
@@ -137,11 +128,11 @@ public sealed class MessageDispatcher
                     if (el.ValueKind != JsonValueKind.String) return Reject(type, id, "data must be a string");
                     var data = el.GetString()!;
                     if (data.Length > MaxTextChars) return Reject(type, id, "data too large");
-                    return await RunAsync(type, id!, async () =>
+                    return await RunAsync(type, id!, Serialized(async () =>
                     {
                         await _actions.SaveAsync(data).ConfigureAwait(false);
                         return Serialize(new { type = "saved", id });
-                    }, reason => Serialize(new { type = "saveFailed", id, reason })).ConfigureAwait(false);
+                    }), reason => Serialize(new { type = "saveFailed", id, reason })).ConfigureAwait(false);
                 }
 
                 case "exportFile":
@@ -174,8 +165,24 @@ public sealed class MessageDispatcher
         }
     }
 
-    private Task<string?> RunFlushedAsync()
+    /// <summary>Wraps a store action so that it runs only while holding the store gate.</summary>
+    private Func<Task<string>> Serialized(Func<Task<string>> action) => async () =>
     {
+        await _gate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            return await action().ConfigureAwait(false);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    };
+
+    /// <summary>Takes the store gate first, as before, so the window never closes while a store write is still running.</summary>
+    private async Task<string?> RunFlushedAsync()
+    {
+        await _gate.WaitAsync().ConfigureAwait(false);
         try
         {
             _actions.Flushed();
@@ -184,7 +191,11 @@ public sealed class MessageDispatcher
         {
             _log($"flushed: unexpected {ex.GetType().Name}");
         }
-        return Task.FromResult<string?>(null);
+        finally
+        {
+            _gate.Release();
+        }
+        return null;
     }
 
     /// <summary>

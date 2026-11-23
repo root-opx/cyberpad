@@ -9,6 +9,7 @@ public sealed class HostActions : IHostActions
     private readonly NoteStore _store;
     private readonly Control _ui;
     private readonly Action _onFlushed;
+    private int _exportOpen;
 
     /// <param name="ui">The window that owns the Save dialog; its thread is the UI thread.</param>
     /// <param name="onFlushed">Called (from any thread) when the page reports it has sealed and saved its notes.</param>
@@ -36,10 +37,35 @@ public sealed class HostActions : IHostActions
 
     public async Task<string?> ExportAsync(ExportKind kind, string safeName, string text)
     {
-        var path = await OnUiThreadAsync(() => AskForPath(kind, safeName)).ConfigureAwait(false);
-        if (path is null) return null;
-        await Task.Run(() => AtomicFile.Write(path, text)).ConfigureAwait(false);
-        return Path.GetFileName(path);
+        // Exports are not serialized by the dispatcher (they wait on the user); never stack a second Save dialog.
+        if (Interlocked.Exchange(ref _exportOpen, 1) == 1) throw new StoreException("Another export is already open.");
+        try
+        {
+            var path = await OnUiThreadAsync(() => AskForPath(kind, safeName)).ConfigureAwait(false);
+            if (path is null) return null;
+            // An export must never replace notes.json, its backup, or anything else the host owns.
+            if (IsInsideDataDir(path, DataDir)) throw new StoreException("Choose a folder outside the CyberPad data folder.");
+            await Task.Run(() => AtomicFile.Write(path, text)).ConfigureAwait(false);
+            return Path.GetFileName(path);
+        }
+        finally
+        {
+            Volatile.Write(ref _exportOpen, 0);
+        }
+    }
+
+    /// <summary>
+    /// True when <paramref name="path"/> is the data folder or anything below it. Full paths, compared
+    /// case-insensitively, with a trailing separator on the folder so that a sibling such as "CyberPad2" is not matched.
+    /// </summary>
+    public static bool IsInsideDataDir(string path, string dataDir)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(path);
+        ArgumentException.ThrowIfNullOrEmpty(dataDir);
+        var folder = Path.TrimEndingDirectorySeparator(Path.GetFullPath(dataDir)) + Path.DirectorySeparatorChar;
+        var full = Path.GetFullPath(path);
+        return full.StartsWith(folder, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(Path.TrimEndingDirectorySeparator(full) + Path.DirectorySeparatorChar, folder, StringComparison.OrdinalIgnoreCase);
     }
 
     public void Flushed() => _onFlushed();

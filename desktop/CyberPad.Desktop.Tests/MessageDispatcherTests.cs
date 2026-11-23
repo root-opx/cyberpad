@@ -46,12 +46,17 @@ public class MessageDispatcherTests
 
         public Task QuarantineAsync() { Calls++; QuarantineCalls++; return Task.CompletedTask; }
 
+        /// <summary>When set, ExportAsync waits on this (like a Save dialog the user has left open).</summary>
+        public TaskCompletionSource<string?>? ExportBlocker;
+        public readonly TaskCompletionSource ExportEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public Task<string?> ExportAsync(ExportKind kind, string safeName, string text)
         {
             Calls++;
             if (ExportThrows is not null) throw ExportThrows;
             Exported = (kind, safeName, text);
-            return Task.FromResult(ExportResult);
+            ExportEntered.TrySetResult();
+            return ExportBlocker?.Task ?? Task.FromResult(ExportResult);
         }
 
         public void Flushed() { Calls++; FlushedCalls++; }
@@ -307,5 +312,38 @@ public class MessageDispatcherTests
             d.HandleAsync(Src, """{"type":"save","id":"b","data":"2"}"""));
         Assert.Equal(1, f.MaxConcurrency);
         Assert.Equal(2, f.Calls);
+    }
+
+    [Fact]
+    public async Task Save_CompletesWhileAnExportDialogIsOpen()
+    {
+        var (d, f, _) = Make();
+        f.ExportBlocker = new TaskCompletionSource<string?>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var export = d.HandleAsync(Src, """{"type":"exportFile","id":"e1","kind":"note","suggestedName":"n","text":"t"}""");
+        await f.ExportEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var save = d.HandleAsync(Src, """{"type":"save","id":"s1","data":"x"}""");
+        var saved = Parse(await save.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.Equal("saved", saved.GetProperty("type").GetString());
+        Assert.Equal("s1", saved.GetProperty("id").GetString());
+        Assert.Equal("x", f.Saved);
+        Assert.False(export.IsCompleted);
+
+        f.ExportBlocker.SetResult("n.md");
+        var exported = Parse(await export.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.Equal("exported", exported.GetProperty("type").GetString());
+        Assert.Equal("e1", exported.GetProperty("id").GetString());
+    }
+
+    [Fact]
+    public async Task Export_IsStillValidatedBeforeTheActionRuns()
+    {
+        var (d, f, log) = Make();
+        f.ExportBlocker = new TaskCompletionSource<string?>();
+        var r = Parse(await d.HandleAsync(Src, """{"type":"exportFile","id":"e1","kind":"exe","suggestedName":"n","text":"t"}"""));
+        Assert.Equal("rejected", r.GetProperty("type").GetString());
+        Assert.Equal(0, f.Calls);
+        Assert.Equal(new[] { "exportFile: unknown kind" }, log);
     }
 }
