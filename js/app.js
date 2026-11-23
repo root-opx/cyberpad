@@ -1446,7 +1446,7 @@
     const stamp = new Date().toISOString();
     if (res === 'csv') {
       const saved = await exportOut('iocCsv', `iocs-${T.slugify(titleOf(note))}-${stamp.slice(0, 10)}.csv`, secops.iocsToCsv(iocs, { defanged }), 'text/csv;charset=utf-8');
-      if (saved) toast('CSV saved. Cells that a spreadsheet could run as formulas are escaped.');
+      if (saved) toast(`Saved ${saved}. Cells that a spreadsheet could run as formulas are escaped.`);
     } else if (res === 'note') {
       addNote(secops.iocsToMarkdown(iocs, { defanged, source: titleOf(note), when: `${stamp.slice(0, 16).replace('T', ' ')} UTC` }));
     }
@@ -2139,9 +2139,8 @@
       if (!ok) return;
       if (!isEditable(note)) { toast('The note was locked. Unlock it and try again.', 'error'); return; }
     }
-    // The file name comes from the note title, so the toast does not repeat it.
     const saved = await exportOut('note', `${T.slugify(titleOf(note))}.md`, bodyOf(note), 'text/markdown;charset=utf-8');
-    if (saved) toast('Note saved.');
+    if (saved) toast(`Saved ${saved}.`);
   }
 
   async function exportBackup() {
