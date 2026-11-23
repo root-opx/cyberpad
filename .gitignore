@@ -19,3 +19,8 @@ Thumbs.db
 desktop.ini
 .vscode/
 .idea/
+
+# .NET desktop host build output
+desktop/**/bin/
+desktop/**/obj/
+dist/
