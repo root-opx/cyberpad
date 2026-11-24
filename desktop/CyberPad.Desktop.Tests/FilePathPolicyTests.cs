@@ -14,7 +14,10 @@ public sealed class FilePathPolicyTests
     [InlineData(@"\\.\COM1", false, default(LinkFormat))]
     [InlineData(@"\\?\C:\x.txt", false, default(LinkFormat))]
     [InlineData(@"relative\n.txt", false, default(LinkFormat))]
-    [InlineData("C:\a\nb.txt", false, default(LinkFormat))]
+    [InlineData("C:\\a\nb.txt", false, default(LinkFormat))]
+    [InlineData(@"C:\Notes\n.md:x.txt", false, default(LinkFormat))]
+    [InlineData(@"\\server\share\n.md:x.txt", false, default(LinkFormat))]
+    [InlineData(@"\\server:1\share\n.md", false, default(LinkFormat))]
     [InlineData("", false, default(LinkFormat))]
     public void TryNormalize_AllowsOnlyRootedPathsWithKnownExtensions(string raw, bool ok, LinkFormat f)
     {

@@ -36,6 +36,7 @@ public static class FilePathPolicy
         }
 
         if (full.Length > MaxPathChars || HasDevicePrefix(full)) return false;
+        if (HasStrayColon(full)) return false;
 
         var ext = Path.GetExtension(full);
         LinkFormat parsed;
@@ -47,6 +48,13 @@ public static class FilePathPolicy
         fullPath = full;
         format = parsed;
         return true;
+    }
+
+    /// <summary>A colon is only legal in a drive root ("C:"); anywhere else it names an alternate data stream.</summary>
+    private static bool HasStrayColon(string full)
+    {
+        var start = full.Length >= 2 && full[1] == ':' && char.IsAsciiLetter(full[0]) ? 2 : 0;
+        return full.IndexOf(':', start) >= 0;
     }
 
     private static bool IsSep(char c) => c == '\\' || c == '/';

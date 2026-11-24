@@ -16,11 +16,6 @@ public sealed class NoteStore
     /// </summary>
     public const long MaxFileBytes = 3L * 64 * 1024 * 1024 + 1024 * 1024;
 
-    private const int SwapRetries = 3;
-    private const int SwapRetryDelayMs = 100;
-    private const int ErrorSharingViolation = unchecked((int)0x80070020);
-    private const int ErrorLockViolation = unchecked((int)0x80070021);
-
     private readonly long _maxFileBytes;
     private readonly Action<int> _sleep;
 
@@ -53,35 +48,14 @@ public sealed class NoteStore
             Directory.CreateDirectory(DataDir);
             AtomicFile.WriteDurably(TempPath, data);
             if (File.Exists(MainPath))
-                SwapWithRetry(() => File.Replace(TempPath, MainPath, BackupPath));
+                SharingRetry.Run(() => File.Replace(TempPath, MainPath, BackupPath), _sleep);
             else
-                SwapWithRetry(() => File.Move(TempPath, MainPath));
+                SharingRetry.Run(() => File.Move(TempPath, MainPath), _sleep);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             if (File.Exists(TempPath)) AtomicFile.DeleteQuietly(TempPath);
             throw new StoreException("The notes could not be saved to disk.", ex);
-        }
-    }
-
-    /// <summary>
-    /// Runs the final swap, retrying (at most <see cref="SwapRetries"/> times, <see cref="SwapRetryDelayMs"/> ms apart)
-    /// only while another process briefly holds a file open (sharing or lock violation, as an antivirus scanner or a
-    /// sync client does). Any other failure, or the last one, propagates unchanged.
-    /// </summary>
-    private void SwapWithRetry(Action swap)
-    {
-        for (var retry = 0; ; retry++)
-        {
-            try
-            {
-                swap();
-                return;
-            }
-            catch (IOException ex) when (retry < SwapRetries && ex.HResult is ErrorSharingViolation or ErrorLockViolation)
-            {
-                _sleep(SwapRetryDelayMs);
-            }
         }
     }
 
