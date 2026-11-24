@@ -2488,7 +2488,10 @@
   }
 
   function hasUnwrittenFiles() {
-    return platform.isDesktop && S.notes.some((n) => n.file && unwritten(n) && files.outcome.get(n.id) !== 'written');
+    // Paused writes (conflict, missing, damaged or mismatched file) and a link being moved never count as written,
+    // whatever the last write's outcome was.
+    return platform.isDesktop && S.notes.some((n) => n.file && unwritten(n)
+      && (writesPaused(n.id) || files.hold.has(n.id) || files.outcome.get(n.id) !== 'written'));
   }
 
   // ---- writing
@@ -2813,6 +2816,13 @@
     files.hold.add(note.id);
     try {
       if (relinkId) await files.queue.idle(); // the write in flight to the old file finishes first
+      // Re-check after the await: the note may have been deleted, encrypted, decrypted or unlinked meanwhile, and
+      // plain text must never go into a .cpnote (nor ciphertext into a text file).
+      const linkNow = note.file ? note.file.linkId : null;
+      if (!noteById(note.id) || !FL.formatsFor(note).includes(format) || (!copy && relinkId !== linkNow)) {
+        toast('The note changed before it could be saved, so nothing was saved. Try again.', 'error');
+        return;
+      }
       const text = FL.fileTextOf(note);
       const res = await platform.saveAsFile({ format, suggestedName: suggestedNameFor(note, format, copy), text, relinkId });
       if (!res.linked) return;
