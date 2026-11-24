@@ -242,3 +242,14 @@ test('mergeNotes strips links from incoming notes', () => {
   assert.equal(r.notes[1].file, null);
   assert.equal(r.notes[2].file, null);
 });
+
+test('validateNotes keeps a duplicate link id only on the first note', () => {
+  const ID2 = '1f8fad5b-d9cb-469f-a165-70867728950e';
+  const file = { linkId: LINK, name: 'a.md', format: 'md' };
+  const notes = store.parseStored(JSON.stringify({ v: 1, notes: [
+    { id: ID, body: 'a', created: 1, updated: 1, file },
+    { id: ID2, body: 'b', created: 1, updated: 1, file },
+  ] })).notes;
+  assert.deepEqual(notes[0].file, file);
+  assert.equal(notes[1].file, null);
+});

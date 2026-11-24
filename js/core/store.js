@@ -119,10 +119,18 @@
   function validateNotes(list, now) {
     if (!Array.isArray(list)) return [];
     const seen = new Set();
+    const links = new Set();
     const out = [];
     for (const raw of list.slice(0, LIMITS.notes)) {
       const n = validateNote(raw, now);
-      if (n && !seen.has(n.id)) { seen.add(n.id); out.push(n); }
+      if (!n || seen.has(n.id)) continue;
+      seen.add(n.id);
+      // One file, one note: only the first note holding a link id keeps it.
+      if (n.file) {
+        if (links.has(n.file.linkId)) n.file = null;
+        else links.add(n.file.linkId);
+      }
+      out.push(n);
     }
     return out;
   }
@@ -321,7 +329,7 @@
 
   return {
     STORAGE_KEY, LEGACY_STORAGE_KEYS, FILE_FORMATS, SCHEMA, LIMITS, THEMES, VIEWS, AUTOLOCK, DEFAULT_SETTINGS, StoreError,
-    newId, validateNote, validateState, parseStored, pickState, serialize, createNote, addSnapshot,
+    newId, validateEnvelope, validateNote, validateState, parseStored, pickState, serialize, createNote, addSnapshot,
     makeBackup, parseBackup, makeEncryptedBackup, parseEncryptedBackup, mergeNotes, checkImportFile, decodeImportBytes,
   };
 });
