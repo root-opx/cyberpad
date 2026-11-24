@@ -20,6 +20,8 @@
   const IDLE_RELOAD_MS = 2000;
   const EXT = Object.freeze({ txt: '.txt', md: '.md', cpnote: '.cpnote' });
   const DAMAGED = 'This .cpnote file is damaged or not a CyberPad note.';
+  const TOO_LONG = 'That file is too long for one note.';
+  const UNREADABLE = 'That file could not be opened.';
 
   class FileLinkError extends Error {}
 
@@ -49,6 +51,52 @@
     const cipher = store.validateEnvelope(raw.cipher);
     if (!cipher) throw new FileLinkError(DAMAGED);
     return cipher;
+  }
+
+  const ENVELOPE_KEYS = ['v', 'kdf', 'iter', 'salt', 'iv', 'data'];
+
+  /**
+   * True when a file's text holds exactly this note's content: the same text, or for an encrypted note a
+   * .cpnote whose envelope equals the note's (formatting of the JSON aside). Never throws on bad input.
+   */
+  function matchesFile(note, src) {
+    if (typeof src !== 'string') return false;
+    let mine;
+    try { mine = fileTextOf(note); } catch (err) {
+      if (err instanceof FileLinkError) return false;
+      throw err;
+    }
+    if (src === mine) return true;
+    if (note.cipher === null) return false;
+    let theirs;
+    try { theirs = parseCpnote(src); } catch (err) {
+      if (err instanceof FileLinkError) return false;
+      throw err;
+    }
+    const own = store.validateEnvelope(note.cipher);
+    return ENVELOPE_KEYS.every((k) => theirs[k] === own[k]);
+  }
+
+  /**
+   * Builds a new, linked note from an opened file ({linkId, name, format, text}): plain text for .txt/.md,
+   * a locked encrypted note for .cpnote. Throws FileLinkError for damaged, oversized or mismatched files.
+   */
+  function noteFromFile(opened, now = Date.now()) {
+    if (!isPlainObject(opened) || typeof opened.text !== 'string') throw new FileLinkError(UNREADABLE);
+    let note;
+    if (opened.format === 'cpnote') {
+      note = store.createNote('', now);
+      note.cipher = parseCpnote(opened.text);
+    } else if (opened.format === 'txt' || opened.format === 'md') {
+      if (opened.text.length > store.LIMITS.body) throw new FileLinkError(TOO_LONG);
+      note = store.createNote(opened.text, now);
+    } else {
+      throw new FileLinkError('That file format is not supported.');
+    }
+    note.file = { linkId: opened.linkId, name: opened.name, format: opened.format };
+    const checked = store.validateNote(note, now);
+    if (!checked || !checked.file) throw new FileLinkError(UNREADABLE);
+    return checked;
   }
 
   function formatsFor(note) {
@@ -122,5 +170,8 @@
     };
   }
 
-  return { FileLinkError, fileTextOf, parseCpnote, formatsFor, suggestedFileName, decide, createTracker, createWriteQueue };
+  return {
+    FileLinkError, fileTextOf, parseCpnote, matchesFile, noteFromFile, formatsFor, suggestedFileName, decide,
+    createTracker, createWriteQueue,
+  };
 });

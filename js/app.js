@@ -206,6 +206,7 @@
     }
     S.lastStateChars = text.length;
     S.savedSeq = seq;
+    syncLinkedFiles();
     if (S.legacyKey) {
       // The data now lives under the new key, so the old copy can go.
       platform.removeLegacy(S.legacyKey);
@@ -311,7 +312,7 @@
     if (!S.notes.length) S.notes.push(store.createNote(welcomeText()));
     if (!active()) S.activeId = sortedNotes()[0].id;
     if (!loaded.storageOk) setTimeout(() => toast('This browser is blocking storage, so notes will be lost when you close the tab.', 'error'), 0);
-    return { firstRun, resave };
+    return { firstRun, resave, source };
   }
 
   // ------------------------------------------------------------ encryption
@@ -412,6 +413,8 @@
     const fields = newPassphraseFields('enc');
     const { pass1, pass2 } = fields;
     const err = h('p', { class: 'form-error', role: 'alert' });
+    let plainFile = null; // the text file this note was linked to, unlinked before any ciphertext exists
+    let unlinkFailed = false;
 
     const ok = await showDialog({
       title: 'Encrypt this note',
@@ -433,6 +436,19 @@
         btn.textContent = 'Encrypting…';
         try {
           const keyInfo = await vault.createKey(pass1.value);
+          if (platform.isDesktop && note.file) {
+            // A .txt/.md link must be gone before the first ciphertext exists; if it can't be removed, seal nothing.
+            const link = note.file;
+            try {
+              await platform.unlinkFile(link.linkId);
+            } catch (e) {
+              console.error('unlink failed', errName(e));
+              unlinkFailed = true;
+              return null;
+            }
+            dropLink(note);
+            plainFile = link;
+          }
           const plain = note.body;
           note.cipher = await vault.seal(keyInfo, plain);
           note.body = '';
@@ -443,6 +459,7 @@
         } catch (e) {
           if (e instanceof vault.VaultError) err.textContent = e.message;
           else { console.error(e); err.textContent = 'Encryption failed in this browser. The note was not changed.'; }
+          if (plainFile) { persistNow(); renderList(); updateStatus(); } // the link is already gone: keep that on disk
           btn.disabled = false;
           btn.textContent = 'Encrypt note';
           return undefined;
@@ -452,10 +469,15 @@
         }
       },
     });
+    if (unlinkFailed) {
+      toast('The link to the file could not be removed, so the note was not encrypted. Try again, or unlink it first.', 'error');
+      return;
+    }
     if (ok) {
       persistNow();
       renderAll();
-      toast('Note encrypted. Only the encrypted copy is saved.');
+      if (plainFile) noticePlainFileLeft(note, plainFile);
+      else toast('Note encrypted. Only the encrypted copy is saved.');
     }
   }
 
@@ -473,9 +495,15 @@
     note.history = [];
     S.keys.delete(note.id);
     S.plain.delete(note.id);
+    // Drop a .cpnote link in the same step, so plain text can never be written into it.
+    const cpFile = platform.isDesktop && note.file ? note.file : null;
+    if (cpFile) dropLink(note);
     persistNow();
     renderAll();
-    toast('Encryption removed.');
+    if (!cpFile) { toast('Encryption removed.'); return; }
+    forgetHostLink(cpFile.linkId); // best effort: a failure is left for the next prune
+    toast(`Encryption removed. ${cpFile.name} keeps the last encrypted copy and is no longer linked to this note.`, 'info',
+      [{ label: 'Save as file…', fn: () => saveAsFileFor(note) }]);
   }
 
   async function onUnlockSubmit(e) {
@@ -581,7 +609,8 @@
       } else if (m.tags.length) {
         extra.push(h('span', { class: 'snippet' }, m.tags.slice(0, 3).map((t) => `#${t}`).join(' ')));
       }
-      const states = [n.pinned && 'pinned', n.cipher && (isLocked(n) ? 'encrypted, locked' : 'encrypted, unlocked')].filter(Boolean).join(', ');
+      const linked = platform.isDesktop && !!n.file;
+      const states = [n.pinned && 'pinned', n.cipher && (isLocked(n) ? 'encrypted, locked' : 'encrypted, unlocked'), linked && 'linked to a file'].filter(Boolean).join(', ');
       frag.append(h('li', null, h('button', {
         type: 'button',
         class: 'note-item',
@@ -589,7 +618,8 @@
         'aria-current': String(n.id === S.activeId),
       },
       h('span', { class: 'note-mark', 'aria-hidden': 'true' }, mark),
-      h('span', { class: 'note-title' }, m.title, states ? h('span', { class: 'sr-only' }, ` (${states})`) : null),
+      h('span', { class: 'note-title' }, linked ? h('span', { class: 'note-file', 'aria-hidden': 'true' }, '⇄') : null, m.title,
+        states ? h('span', { class: 'sr-only' }, ` (${states})`) : null),
       h('span', { class: 'note-meta' }, h('span', null, T.relativeTime(n.updated)), extra))));
     }
     els.noteList.replaceChildren(frag);
@@ -685,6 +715,7 @@
       ? (isLocked(note) ? 'Encrypted, locked' : `Encrypted, auto-locks after ${S.settings.autoLockMinutes} min idle`)
       : `${unlocked} encrypted note${unlocked === 1 ? '' : 's'} unlocked`;
     els.stClock.textContent = T.hm(new Date());
+    renderFileUi();
   }
 
   // ---------------------------------------------------------- note actions
@@ -761,7 +792,8 @@
   async function deleteNote() {
     const note = active();
     if (!note) return;
-    const ok = await confirmDialog(`Delete "${titleOf(note)}"?`, 'This cannot be undone. Export a backup first if you might need it later.', 'Delete note', true);
+    const link = platform.isDesktop && note.file ? note.file : null;
+    const ok = await confirmDialog(`Delete "${titleOf(note)}"?`, `This cannot be undone. Export a backup first if you might need it later.${link ? ' The file stays where it is.' : ''}`, 'Delete note', true);
     if (!ok) return;
     clearTimeout(S.sealTimers.get(note.id));
     S.sealTimers.delete(note.id);
@@ -769,11 +801,13 @@
     S.keys.delete(note.id);
     S.plain.delete(note.id);
     S.meta.delete(note.id);
+    if (platform.isDesktop) forgetFileState(note.id);
     if (!S.notes.length) S.notes.push(store.createNote(''));
     S.activeId = sortedNotes()[0].id;
     persistNow();
     renderAll();
     toast('Note deleted.');
+    if (link) forgetHostLink(link.linkId); // best effort: a failure is left for the next prune
   }
 
   function setTag(tag) {
@@ -932,6 +966,7 @@
       schedulePersist();
     }
     S.lastActive = Date.now();
+    if (platform.isDesktop && !files.applying) files.lastInput.set(note.id, S.lastActive);
     schedulePreview();
     scheduleStatus();
     scheduleListRefresh();
@@ -1218,6 +1253,11 @@
       C('Note', 'Show version history', showHistory, null, editable),
       C('Note', 'Go to heading', () => setTimeout(() => openPalette('@'), 0), '@', editable),
       C('Note', 'Delete note', deleteNote, null, !!note),
+      C('File', 'Save', saveCommand, 'Ctrl S', platform.isDesktop && !!note),
+      C('File', 'Save as file…', () => saveAsFileFor(active()), 'Ctrl Shift S', platform.isDesktop && !!note),
+      C('File', 'Open file…', openFileCommand, 'Ctrl O', platform.isDesktop),
+      C('File', 'Show file in folder', revealActive, null, platform.isDesktop && !!(note && note.file)),
+      C('File', 'Unlink from file', unlinkActive, null, platform.isDesktop && !!(note && note.file)),
       C('File', 'Export note as Markdown', exportNote, null, editable),
       C('File', 'Export backup of all notes', exportBackup),
       C('File', 'Export encrypted backup of all notes', exportEncryptedBackup),
@@ -2143,6 +2183,10 @@
       ['Ctrl Enter', 'Make a task, or tick it'], ['Tab / Shift Tab', 'Indent / outdent'], ['Esc, then Tab', 'Move focus out of the editor'],
       ['Paste a URL on a selection', 'Make a link'],
     ];
+    if (platform.isDesktop) {
+      rows.splice(rows.findIndex(([k]) => k === 'Ctrl S'), 1,
+        ['Ctrl S', 'Save now, and to the linked file (or choose a file)'], ['Ctrl Shift S', 'Save as file'], ['Ctrl O', 'Open file']);
+    }
     showDialog({
       title: 'Keyboard shortcuts',
       body: [h('dl', { class: 'shortcuts' }, rows.map(([k, d]) => [h('dt', null, h('kbd', null, k)), h('dd', null, d)]))],
@@ -2336,6 +2380,648 @@
     if (files.length === 1 && !files[0].name.toLowerCase().endsWith('.json')) toast(`Imported ${files[0].name}.`);
   }
 
+  // --------------------------------------------------------- linked files
+  // Desktop only. A note can be linked to a .txt/.md/.cpnote file that receives every saved change. The page
+  // knows only note.file = { linkId, name, format }; the host owns the paths. Encrypted notes go to files as
+  // their persisted ciphertext only (filelink.fileTextOf). Logs carry error types, never text or file names.
+
+  const FL = window.NP.filelink;
+  const FILE_REASON = { timeout: 'the app did not answer in time', 'too-large': 'the note is too large for a file' };
+  const FILE_LABEL = {
+    pending: 'Checking file…', unknown: 'File not checked yet', saving: 'Saving to file…', saved: 'Saved to file',
+    changed: 'File changed elsewhere', missing: 'File not found',
+  };
+  const BAR_STATES = ['changed', 'missing', 'failed'];
+  const MAX_CHECK_ROUNDS = 3;
+
+  const files = {
+    tracker: FL.createTracker(), // note id -> file text last confirmed written, read or opened
+    queue: FL.createWriteQueue(writeLinked),
+    status: new Map(),    // note id -> { state, reason, paused }; state is a FILE_LABEL key or 'failed'
+    outcome: new Map(),   // note id -> outcome of the last write: 'written' | 'conflict' | 'missing' | 'failed'
+    lastInput: new Map(), // note id -> time of the last editor input in that note
+    manual: new Map(),    // note id -> force flag of a write the user asked for (Save, Retry, Keep mine)
+    hold: new Set(),      // note ids whose link is moving to a new file (Save as): no writes meanwhile
+    ready: false,         // startup checks done: automatic writes and focus checks may run
+    started: false,       // the page is ready to open files the host has queued
+    checking: false,
+    checkAgain: false,
+    opening: false,
+    openWanted: false,    // the host asked for an openFile that has not been sent yet
+    applying: false,      // the page itself is replacing editor text, which is not typing
+  };
+  const fileUi = { status: null, name: null, state: null, bar: null, text: null, actions: null, key: null };
+
+  const errName = (err) => (err instanceof PlatformError ? err.reason : (err && err.name));
+  const noteByLink = (linkId) => S.notes.find((n) => n.file && n.file.linkId === linkId) || null;
+  const linkedTo = (id, linkId) => { const n = noteById(id); return !!(n && n.file && n.file.linkId === linkId); };
+  const fileStatusOf = (id) => files.status.get(id) || { state: 'unknown', reason: null, paused: false };
+  const msSinceInput = (id) => Date.now() - (files.lastInput.get(id) || 0);
+
+  /** A short reason fit to show: the host's own sentence, a FileLinkError message, or a generic phrase. */
+  function fileReason(err) {
+    if ((err instanceof PlatformError && err.userFacing) || err instanceof FL.FileLinkError) return err.message;
+    return FILE_REASON[err instanceof PlatformError ? err.reason : ''] || 'the app could not reach the file';
+  }
+
+  function fileTextOrNull(note) {
+    try { return FL.fileTextOf(note); } catch (err) {
+      if (err instanceof FL.FileLinkError) return null;
+      throw err;
+    }
+  }
+
+  /** Changes not yet confirmed in the file. For encrypted notes a pending or failed seal counts too. */
+  function unwritten(note) {
+    if (note.cipher && (S.sealTimers.has(note.id) || S.sealing.has(note.id) || S.sealFailed.has(note.id))) return true;
+    const text = fileTextOrNull(note);
+    return text === null || files.tracker.hasUnwritten(note.id, text);
+  }
+
+  /** Automatic writes wait for the user's choice after a conflict, a missing file or an unreadable file. */
+  function writesPaused(id) {
+    const st = fileStatusOf(id);
+    return st.state === 'changed' || st.state === 'missing' || st.paused === true;
+  }
+
+  function setFileStatus(id, state, reason = null, paused = false) {
+    files.status.set(id, { state, reason, paused });
+    if (id === S.activeId) renderFileUi();
+  }
+
+  function confirmInSync(note) {
+    const text = fileTextOrNull(note);
+    if (text !== null) files.tracker.confirm(note.id, text);
+    setFileStatus(note.id, 'saved');
+  }
+
+  function forgetFileState(id) {
+    files.tracker.forget(id);
+    files.status.delete(id);
+    files.outcome.delete(id);
+    files.manual.delete(id);
+    files.lastInput.delete(id);
+  }
+
+  /** Removes the link on the page only; callers tell the host. */
+  function dropLink(note) {
+    note.file = null;
+    forgetFileState(note.id);
+    if (note.id === S.activeId) renderFileUi();
+  }
+
+  /** Best-effort host unlink; a failure leaves an orphan link that the next startup prune removes. */
+  function forgetHostLink(linkId) {
+    platform.unlinkFile(linkId).catch((err) => console.error('unlink failed', errName(err)));
+  }
+
+  function hasUnwrittenFiles() {
+    return platform.isDesktop && S.notes.some((n) => n.file && unwritten(n) && files.outcome.get(n.id) !== 'written');
+  }
+
+  // ---- writing
+
+  function requestWrite(id, manual = false, force = false) {
+    if (manual) files.manual.set(id, force || files.manual.get(id) === true);
+    files.queue.request(id);
+  }
+
+  /** The write queue's writer: one write per note at a time. Reports its own failures (the queue ignores them). */
+  async function writeLinked(id) {
+    const manual = files.manual.has(id);
+    const force = files.manual.get(id) === true;
+    files.manual.delete(id);
+    const note = noteById(id);
+    if (!platform.isDesktop || !note || !note.file || files.hold.has(id)) return;
+    if (!manual && writesPaused(id)) return;
+    // Fail closed: never put plain text into a .cpnote, nor ciphertext into a text file.
+    if ((note.file.format === 'cpnote') !== (note.cipher !== null)) {
+      setFileStatus(id, 'failed', 'the file format does not match this note', true);
+      return;
+    }
+    let text;
+    try {
+      text = FL.fileTextOf(note);
+    } catch (err) {
+      if (!(err instanceof FL.FileLinkError)) console.error('file write failed', errName(err));
+      setFileStatus(id, 'failed', fileReason(err));
+      return;
+    }
+    if (!manual && !files.tracker.hasUnwritten(id, text)) return;
+    const { linkId } = note.file;
+    setFileStatus(id, 'saving');
+    try {
+      const outcome = await platform.writeFile(linkId, text, force);
+      if (!linkedTo(id, linkId)) return;
+      files.outcome.set(id, outcome);
+      if (outcome === 'written') {
+        files.tracker.confirm(id, text);
+        setFileStatus(id, 'saved');
+      } else {
+        setFileStatus(id, outcome === 'conflict' ? 'changed' : 'missing');
+      }
+    } catch (err) {
+      console.error('file write failed', errName(err));
+      if (!linkedTo(id, linkId)) return;
+      files.outcome.set(id, 'failed');
+      setFileStatus(id, 'failed', fileReason(err));
+    }
+  }
+
+  /** After a successful notes.json save: send every linked note whose file text is not confirmed yet. */
+  function syncLinkedFiles(always = false) {
+    if (!platform.isDesktop || (!files.ready && !always)) return;
+    for (const n of S.notes) {
+      if (!n.file || files.hold.has(n.id) || writesPaused(n.id)) continue;
+      const text = fileTextOrNull(n);
+      if (text !== null && !files.tracker.hasUnwritten(n.id, text)) continue;
+      requestWrite(n.id);
+    }
+  }
+
+  // ---- checking and reloading
+
+  /**
+   * Statuses for these links, or null when the check failed. The host refuses a whole batch if one id is
+   * unknown to it (for example a racing unlink): then each link is asked alone, and one it refuses reads as missing.
+   */
+  async function fileStatuses(ids) {
+    try {
+      return await platform.checkFiles(ids);
+    } catch (err) {
+      console.error('file check failed', errName(err));
+      if (!(err instanceof PlatformError) || err.reason !== 'host') return null;
+      if (ids.length === 1) return { [ids[0]]: 'missing' };
+    }
+    const out = {};
+    for (const id of ids) {
+      try {
+        Object.assign(out, await platform.checkFiles([id]));
+      } catch (err) {
+        if (err instanceof PlatformError && err.reason === 'host') out[id] = 'missing';
+        else console.error('file check failed', errName(err));
+      }
+    }
+    return out;
+  }
+
+  /** Puts a file's text into its note: plain text through the edit path (old text into history), .cpnote as a locked cipher. */
+  async function replaceWithFileText(note, text) {
+    if ((note.file && note.file.format === 'cpnote') !== (note.cipher !== null)) throw new FL.FileLinkError('The file format does not match this note.');
+    if (note.cipher) {
+      const cipher = FL.parseCpnote(text);
+      clearTimeout(S.sealTimers.get(note.id));
+      S.sealTimers.delete(note.id);
+      const sealing = S.sealing.get(note.id);
+      if (sealing) await sealing; // a seal finishing later must not overwrite the file's version
+      if (!noteById(note.id) || !note.cipher) throw new FL.FileLinkError('The note changed while the file was read.');
+      if (note.id === S.activeId && finishCurrentDialog) finishCurrentDialog(null); // it may show the old plaintext
+      note.cipher = cipher;
+      note.body = '';
+      note.history = [];
+      note.updated = Date.now();
+      S.keys.delete(note.id);
+      S.plain.delete(note.id);
+      S.meta.delete(note.id);
+      S.sealFailed.delete(note.id);
+      persistNow();
+      if (note.id === S.activeId) { closeSlash(); renderAll(); } else renderList();
+    } else {
+      if (text.length > store.LIMITS.body) throw new FL.FileLinkError('That file is too long for one note.');
+      replaceNoteBody(note, text);
+    }
+    confirmInSync(note);
+  }
+
+  function replaceNoteBody(note, text) {
+    const now = Date.now();
+    note.history = store.addSnapshot(note.history, note.body, now, true);
+    if (note.id === S.activeId && isEditable(note)) {
+      files.applying = true;
+      try { replaceRange(0, els.editor.value.length, text, 0); } finally { files.applying = false; }
+    }
+    note.body = text;
+    note.updated = now;
+    persistNow();
+    if (note.id === S.activeId) {
+      renderEditor();
+      renderPreview();
+      updateStatus();
+      runSecretScan();
+      if (!els.findbar.hidden) computeMatches();
+    }
+    renderList();
+    renderTags();
+  }
+
+  function damagedFile(note, err) {
+    setFileStatus(note.id, 'failed', err.message, true);
+    toast(`Not saved to file: ${err.message}`, 'error');
+  }
+
+  /** Reads the linked file into the note. `silent` (a focus check) backs off to the conflict bar if the note changed meanwhile. */
+  async function reloadFromFile(note, linkId, silent) {
+    let res;
+    try {
+      res = await platform.readFile(linkId);
+    } catch (err) {
+      console.error('file read failed', errName(err));
+      if (!silent && linkedTo(note.id, linkId)) toast(`The file could not be read: ${fileReason(err)}`, 'error');
+      return false;
+    }
+    if (!linkedTo(note.id, linkId)) return false;
+    const { name } = note.file;
+    if (res.missing) { setFileStatus(note.id, 'missing'); return false; }
+    if (FL.matchesFile(note, res.text)) { confirmInSync(note); return true; }
+    if (silent && FL.decide({ status: 'changed', hasUnwritten: unwritten(note), msSinceInput: msSinceInput(note.id) }) !== 'reload') {
+      setFileStatus(note.id, 'changed');
+      return false;
+    }
+    try {
+      await replaceWithFileText(note, res.text);
+    } catch (err) {
+      if (!(err instanceof FL.FileLinkError)) throw err;
+      damagedFile(note, err);
+      return false;
+    }
+    if (silent) toast(`Reloaded ${name} from disk.`);
+    return true;
+  }
+
+  async function actOnStatus(note, linkId, status) {
+    if (!linkedTo(note.id, linkId) || !status || status === 'unknown') return;
+    if (status === 'ok') {
+      // The file is there and unchanged: a missing or unchecked link can resume.
+      if (['missing', 'unknown', 'pending'].includes(fileStatusOf(note.id).state)) {
+        if (unwritten(note)) { setFileStatus(note.id, 'unknown'); requestWrite(note.id); } else setFileStatus(note.id, 'saved');
+      }
+      return;
+    }
+    const decision = FL.decide({ status, hasUnwritten: unwritten(note), msSinceInput: msSinceInput(note.id) });
+    if (decision === 'missing') setFileStatus(note.id, 'missing');
+    else if (decision === 'conflict') setFileStatus(note.id, 'changed');
+    else if (decision === 'reload') await reloadFromFile(note, linkId, true);
+  }
+
+  /** On window focus: check every linked file and act per decide(). One check at a time; a request meanwhile runs once more. */
+  async function checkLinkedFiles() {
+    if (!platform.isDesktop || !files.ready) return;
+    if (files.checking) { files.checkAgain = true; return; }
+    files.checking = true;
+    try {
+      for (let round = 0; round < MAX_CHECK_ROUNDS; round++) {
+        files.checkAgain = false;
+        const pairs = S.notes.filter((n) => n.file).map((n) => [n, n.file.linkId]);
+        if (!pairs.length) break;
+        const statuses = await fileStatuses(pairs.map(([, linkId]) => linkId));
+        if (statuses) for (const [n, linkId] of pairs) await actOnStatus(n, linkId, statuses[linkId]);
+        if (!files.checkAgain) break;
+      }
+    } catch (err) {
+      console.error('file check failed', errName(err));
+    } finally {
+      files.checking = false;
+    }
+  }
+
+  /** Startup: prune orphan links, then seed each linked note's state from its file, one at a time. */
+  async function startLinkedFiles(source) {
+    if (!platform.isDesktop) return;
+    const fromDisk = source === 'main' || source === 'backup';
+    const pairs = S.notes.filter((n) => n.file).map((n) => [n, n.file.linkId]);
+    try {
+      if (fromDisk && S.storageOk) {
+        try {
+          await platform.pruneLinks([...new Set(pairs.map(([, linkId]) => linkId))]);
+        } catch (err) {
+          console.error('link prune failed', errName(err));
+        }
+      }
+      if (fromDisk && pairs.length) await seedLinkedFiles(pairs);
+    } catch (err) {
+      console.error('file check failed', errName(err));
+    } finally {
+      files.ready = true;
+      syncLinkedFiles();
+    }
+  }
+
+  async function seedLinkedFiles(pairs) {
+    for (const [n] of pairs) setFileStatus(n.id, 'pending');
+    const statuses = await fileStatuses(pairs.map(([, linkId]) => linkId));
+    for (const [n, linkId] of pairs) {
+      if (!linkedTo(n.id, linkId)) continue;
+      const status = statuses ? statuses[linkId] : undefined;
+      if (status === 'missing') setFileStatus(n.id, 'missing');
+      else if (status === 'ok' || status === 'changed') await seedOne(n, linkId, status);
+      if (linkedTo(n.id, linkId) && fileStatusOf(n.id).state === 'pending') setFileStatus(n.id, 'unknown');
+    }
+  }
+
+  async function seedOne(note, linkId, status) {
+    let res;
+    try {
+      res = await platform.readFile(linkId);
+    } catch (err) {
+      console.error('file read failed', errName(err));
+      return;
+    }
+    if (!linkedTo(note.id, linkId)) return;
+    if (res.missing) setFileStatus(note.id, 'missing');
+    else if (FL.matchesFile(note, res.text)) confirmInSync(note);
+    else if (status === 'ok') { setFileStatus(note.id, 'unknown'); requestWrite(note.id); } // the note is newer, e.g. a close timed out
+    else setFileStatus(note.id, 'changed');
+  }
+
+  // ---- commands
+
+  /** Ctrl+S on the desktop: save notes.json, then write a linked note now, or choose a file for an unlinked one. */
+  function saveCommand() {
+    const note = active();
+    flushSeals().then(() => saveNow()).then((ok) => {
+      if (ok) toast('Saved.');
+      if (!note || !noteById(note.id)) return undefined;
+      if (note.file) { requestWrite(note.id, true, false); return undefined; }
+      return saveAsFileFor(note);
+    });
+  }
+
+  /** Which format to save in: the only one for encrypted notes, else a choice that defaults to Markdown. */
+  async function chooseFormat(note, title) {
+    const formats = FL.formatsFor(note);
+    if (formats.length === 1) return formats[0];
+    const res = await showDialog({
+      title,
+      body: [h('p', null, 'Both formats hold the note text exactly. Markdown (.md) tells other apps the text uses Markdown.')],
+      actions: [
+        { label: 'Cancel', value: null },
+        { label: 'Text (.txt)', value: 'txt' },
+        { label: 'Markdown (.md)', submit: true, className: 'btn-primary' },
+      ],
+    });
+    if (res === true) return 'md';
+    return res === 'txt' ? 'txt' : null;
+  }
+
+  function suggestedNameFor(note, format, copy) {
+    const current = note.file && note.file.format === format ? note.file.name : null;
+    if (!copy && current && current.length <= 120) return current;
+    return FL.suggestedFileName(copy ? `${titleOf(note)} copy` : titleOf(note), format);
+  }
+
+  function reportFileError(err, prefix) {
+    console.error('file action failed', errName(err));
+    if (err instanceof PlatformError && err.userFacing && err.linkId) {
+      const holder = noteByLink(err.linkId);
+      toast('That file is already linked to another note.', 'error', holder ? [{ label: 'Show it', fn: () => openNote(holder.id) }] : null);
+    } else {
+      toast(`${prefix}: ${fileReason(err)}`, 'error');
+    }
+  }
+
+  /**
+   * Save as file…: link the note to a file the user picks (on a linked note the link moves; the old file stays).
+   * With `copy`, the file is a one-off copy and the note keeps its current link.
+   */
+  async function saveAsFileFor(note, { copy = false } = {}) {
+    if (!platform.isDesktop || !note || !noteById(note.id) || files.hold.has(note.id)) return;
+    await flushSeals();
+    if (S.sealFailed.has(note.id)) { toast('The latest changes could not be encrypted, so they were not saved to a file. Press Ctrl+S to retry.', 'error'); return; }
+    const format = await chooseFormat(note, copy ? 'Save a copy as file' : 'Save as file');
+    if (!format || !noteById(note.id) || !FL.formatsFor(note).includes(format)) return;
+    const relinkId = !copy && note.file ? note.file.linkId : null;
+    files.hold.add(note.id);
+    try {
+      if (relinkId) await files.queue.idle(); // the write in flight to the old file finishes first
+      const text = FL.fileTextOf(note);
+      const res = await platform.saveAsFile({ format, suggestedName: suggestedNameFor(note, format, copy), text, relinkId });
+      if (!res.linked) return;
+      if (copy) {
+        forgetHostLink(res.linkId); // a copy is not linked: the note stays with its own file
+        toast(`Saved a copy as ${res.name}.`);
+        return;
+      }
+      if (!noteById(note.id) || !FL.formatsFor(note).includes(res.format)) { forgetHostLink(res.linkId); return; }
+      note.file = { linkId: res.linkId, name: res.name, format: res.format };
+      files.tracker.confirm(note.id, text);
+      files.outcome.set(note.id, 'written');
+      setFileStatus(note.id, 'saved');
+      persistNow();
+      renderList();
+      updateStatus();
+      toast(`Saved to ${res.name}. Every change now goes to this file too.`);
+    } catch (err) {
+      if (err instanceof FL.FileLinkError) toast(`Not saved to file: ${err.message}`, 'error');
+      else reportFileError(err, 'Not saved to file');
+    } finally {
+      files.hold.delete(note.id);
+      syncLinkedFiles();
+    }
+  }
+
+  /** After encrypting a note that was linked to a .txt/.md file: that file still holds plain text. */
+  async function noticePlainFileLeft(note, file) {
+    const choice = await showDialog({
+      title: 'Note encrypted',
+      body: [h('p', null, `Only the encrypted copy is saved. The note is no longer linked to ${file.name}, which still holds the last saved text as plain text. CyberPad never deletes your files, so delete it yourself if you no longer need it.`)],
+      actions: [
+        { label: 'Close', value: null },
+        { label: 'Save as encrypted file…', value: 'save', className: 'btn-primary' },
+      ],
+    });
+    if (choice === 'save') saveAsFileFor(note);
+  }
+
+  async function unlinkActive() {
+    const note = active();
+    if (!platform.isDesktop || !note || !note.file) return;
+    const { linkId, name } = note.file;
+    dropLink(note); // on the page first, so nothing more is written
+    persistNow();
+    renderList();
+    updateStatus();
+    forgetHostLink(linkId);
+    toast(`Unlinked from ${name}. The note and the file both stay.`);
+  }
+
+  async function revealActive() {
+    const note = active();
+    if (!platform.isDesktop || !note || !note.file) return;
+    try {
+      await platform.revealFile(note.file.linkId);
+    } catch (err) {
+      reportFileError(err, 'The file could not be shown');
+    }
+  }
+
+  async function useFileVersion(id, linkId) {
+    const note = noteById(id);
+    if (!linkedTo(id, linkId)) return;
+    const ok = await reloadFromFile(note, linkId, false);
+    if (!ok) return;
+    toast(note.cipher
+      ? 'The note now holds the file’s version. Unlock it with that version’s passphrase.'
+      : 'The note now holds the file’s version. The text it replaced is in the version history.');
+  }
+
+  // ---- opening
+
+  function openFileCommand() {
+    if (!platform.isDesktop || files.opening) return;
+    runOpen();
+  }
+
+  /** Host-queued opens (command line, second instance): one openFile per request, never while a CyberPad dialog is open. */
+  function drainOpens() {
+    if (!files.openWanted || !files.started || files.opening) return;
+    if (els.modal.open || els.palette.open) return; // retried when that dialog closes
+    files.openWanted = false;
+    runOpen();
+  }
+
+  async function runOpen() {
+    files.opening = true;
+    try {
+      const res = await platform.openFile();
+      if (res.opened) await adoptOpened(res);
+    } catch (err) {
+      reportFileError(err, 'Not opened');
+    } finally {
+      files.opening = false;
+      setTimeout(drainOpens, 0);
+    }
+  }
+
+  async function adoptOpened(res) {
+    if (res.alreadyLinked) {
+      const holder = noteByLink(res.linkId);
+      if (holder) { await showOpenedNote(holder, res); return; }
+    }
+    if (S.notes.length >= store.LIMITS.notes) {
+      toast(`You have reached ${store.LIMITS.notes} notes, so ${res.name} was not opened. Delete some to make room.`, 'error');
+      if (!res.alreadyLinked) forgetHostLink(res.linkId);
+      return;
+    }
+    let note;
+    try {
+      note = FL.noteFromFile(res);
+    } catch (err) {
+      if (!(err instanceof FL.FileLinkError)) throw err;
+      toast(`${res.name} was not opened: ${err.message}`, 'error');
+      if (!res.alreadyLinked) forgetHostLink(res.linkId);
+      return;
+    }
+    S.notes.push(note);
+    confirmInSync(note);
+    S.query = '';
+    els.search.value = '';
+    openNote(note.id);
+    renderTags();
+    persistNow();
+    toast(note.cipher ? `Opened ${res.name}. Unlock it with its passphrase.` : `Opened ${res.name}. Every change is saved to it too.`);
+  }
+
+  /** The opened file is already linked to a note: show that note, and bring in the file's text if it changed. */
+  async function showOpenedNote(note, res) {
+    openNote(note.id);
+    if (FL.matchesFile(note, res.text)) { confirmInSync(note); return; }
+    if (FL.decide({ status: 'changed', hasUnwritten: unwritten(note), msSinceInput: msSinceInput(note.id) }) !== 'reload') {
+      setFileStatus(note.id, 'changed');
+      return;
+    }
+    try {
+      await replaceWithFileText(note, res.text);
+      toast(`Reloaded ${res.name} from disk.`);
+    } catch (err) {
+      if (!(err instanceof FL.FileLinkError)) throw err;
+      damagedFile(note, err);
+    }
+  }
+
+  // ---- status line and file bar
+
+  function setupFileUi() {
+    if (!platform.isDesktop) return;
+    fileUi.name = h('span', { class: 'st-file-name' });
+    fileUi.state = h('span', { class: 'st-file-state' });
+    fileUi.status = h('span', { class: 'st st-file', hidden: true }, fileUi.name, fileUi.state);
+    els.stSave.after(fileUi.status);
+    fileUi.text = h('span', { class: 'alert-text' });
+    fileUi.actions = h('span', { class: 'alert-actions' });
+    fileUi.bar = h('div', { class: 'alertbar filebar', role: 'alert', hidden: true },
+      h('span', { class: 'filebar-mark', 'aria-hidden': 'true' }, '⇄'), fileUi.text, fileUi.actions);
+    els.secretAlert.after(fileUi.bar);
+  }
+
+  const fileLabel = (st) => (st.state === 'failed' ? `Not saved to file: ${st.reason || 'unexpected error'}` : FILE_LABEL[st.state] || FILE_LABEL.unknown);
+
+  function renderFileUi() {
+    if (!fileUi.status) return;
+    const note = active();
+    if (!note || !note.file) {
+      fileUi.status.hidden = true;
+      fileUi.bar.hidden = true;
+      fileUi.key = null;
+      return;
+    }
+    const st = fileStatusOf(note.id);
+    const label = fileLabel(st);
+    fileUi.status.hidden = false;
+    fileUi.status.dataset.state = st.state;
+    if (fileUi.name.textContent !== note.file.name) fileUi.name.textContent = note.file.name;
+    if (fileUi.state.textContent !== label) fileUi.state.textContent = label;
+    const key = BAR_STATES.includes(st.state) ? [note.id, note.file.linkId, note.file.name, st.state, st.reason].join('\u0000') : null;
+    if (key === fileUi.key) return;
+    fileUi.key = key;
+    if (!key) { fileUi.bar.hidden = true; fileUi.actions.replaceChildren(); return; }
+    const { id } = note;
+    const { linkId, name } = note.file;
+    const act = (text, fn) => {
+      const b = h('button', { type: 'button', class: 'chip' }, text);
+      b.addEventListener('click', () => runBarAction(fn));
+      return b;
+    };
+    const saveAs = act('Save as file…', () => saveAsFileFor(noteById(id)));
+    const retry = act('Retry', () => { if (linkedTo(id, linkId)) requestWrite(id, true, false); });
+    if (st.state === 'changed') {
+      fileUi.text.textContent = `${name} was changed outside CyberPad. Choose which version to keep.`;
+      fileUi.actions.replaceChildren(
+        act('Keep mine', () => { if (linkedTo(id, linkId)) requestWrite(id, true, true); }),
+        act("Use the file's version", () => useFileVersion(id, linkId)),
+        act('Save mine as a copy…', () => saveAsFileFor(noteById(id), { copy: true })),
+      );
+    } else if (st.state === 'missing') {
+      fileUi.text.textContent = `${name} can’t be found. It may have been moved, renamed or deleted. The note is safe in CyberPad, and nothing is written to the file until you choose.`;
+      fileUi.actions.replaceChildren(saveAs, act('Unlink', () => { if (linkedTo(id, linkId)) unlinkActive(); }), retry);
+    } else {
+      fileUi.text.textContent = `${label}${/[.!?]$/.test(label) ? '' : '.'} The note is safe in CyberPad.`;
+      fileUi.actions.replaceChildren(retry, saveAs);
+    }
+    fileUi.bar.hidden = false;
+  }
+
+  /** Runs a file bar action with its buttons disabled, so a double click can't start it twice. */
+  function runBarAction(fn) {
+    const buttons = [...fileUi.actions.querySelectorAll('button')];
+    buttons.forEach((b) => { b.disabled = true; });
+    Promise.resolve()
+      .then(fn)
+      .catch((err) => console.error('file action failed', errName(err)))
+      .finally(() => {
+        buttons.forEach((b) => { b.disabled = false; });
+        fileUi.key = null;
+        renderFileUi();
+      });
+  }
+
+  function wireFileEvents() {
+    if (!platform.isDesktop) return;
+    window.addEventListener('focus', () => { checkLinkedFiles(); });
+    // Host-queued opens wait for CyberPad's own dialogs.
+    els.modal.addEventListener('close', () => setTimeout(drainOpens, 0));
+    els.palette.addEventListener('close', () => setTimeout(drainOpens, 0));
+  }
+
   // ---------------------------------------------------------------- timer
 
   function startTimer(minutes, label) {
@@ -2371,11 +3057,23 @@
 
   // ---------------------------------------------------------------- toast
 
-  function toast(message, kind = 'info') {
+  /** `actions` is an optional list of { label, fn } shown as buttons; a click closes the toast and runs fn. */
+  function toast(message, kind = 'info', actions = null) {
     const t = h('div', { class: kind === 'error' ? 'toast error' : 'toast' }, message);
+    const buttons = Array.isArray(actions) ? actions.slice(0, 3) : [];
+    if (buttons.length) {
+      t.classList.add('has-actions');
+      const row = h('span', { class: 'toast-actions' });
+      for (const a of buttons) {
+        const b = h('button', { type: 'button', class: 'chip' }, a.label);
+        b.addEventListener('click', () => { t.remove(); a.fn(); });
+        row.append(b);
+      }
+      t.append(row);
+    }
     els.toasts.append(t);
     while (els.toasts.children.length > 4) els.toasts.firstElementChild.remove();
-    setTimeout(() => t.remove(), kind === 'error' ? 7000 : 3500);
+    setTimeout(() => t.remove(), buttons.length ? 12000 : (kind === 'error' ? 7000 : 3500));
   }
 
   function copyText(text) {
@@ -2508,9 +3206,12 @@
 
     if (mod && !e.altKey && k === 's') {
       e.preventDefault();
-      flushSeals().then(() => saveNow()).then((ok) => { if (ok) toast('Saved.'); });
+      if (!platform.isDesktop) flushSeals().then(() => saveNow()).then((ok) => { if (ok) toast('Saved.'); });
+      else if (e.shiftKey) saveAsFileFor(active());
+      else saveCommand();
       return;
     }
+    if (platform.isDesktop && mod && !e.altKey && !e.shiftKey && k === 'o') { e.preventDefault(); openFileCommand(); return; }
     if (mod && !e.altKey && !e.shiftKey && k === 'e') { e.preventDefault(); cycleView(); return; }
     if (mod && !e.altKey && !e.shiftKey && k === 'b') { e.preventDefault(); toggleSidebar(); return; }
     if (mod && !e.altKey && !e.shiftKey && k === 'f') { e.preventDefault(); openFind(); return; }
@@ -2712,6 +3413,7 @@
       });
     }
     narrow.addEventListener('change', () => setDrawer(false));
+    wireFileEvents();
   }
 
   const mod = (e) => e.ctrlKey || e.metaKey;
@@ -2719,22 +3421,27 @@
   // ----------------------------------------------------------------- init
 
   async function init() {
-    const { firstRun, resave } = await load();
+    // Registered before the first await: the host may ask as soon as the page has loaded. Opens wait for `files.started`.
+    if (platform.isDesktop) platform.onOpenRequested(() => { files.openWanted = true; drainOpens(); });
+    const { firstRun, resave, source } = await load();
     if (platform.isDesktop) {
-      // Resolves true only when every change is saved; false makes the host ask before closing.
+      // Resolves true only when every change is saved, in notes.json and in linked files; false makes the host ask before closing.
       platform.onFlushRequest(async () => {
         await flushSeals();
-        await saveNow();
-        return !hasUnsavedChanges();
+        if (await saveNow()) syncLinkedFiles(true);
+        await files.queue.idle();
+        return !hasUnsavedChanges() && !hasUnwrittenFiles();
       });
     }
     wireEvents();
+    setupFileUi();
     renderAll();
     setSaveState('saved');
     // After a quarantine attempt the notes kept in memory may exist nowhere on disk: write them straight back
     // (as a change, so closing asks if that write fails). A first run only stores the welcome note.
     if (resave) persistNow();
     else if (firstRun) saveNow();
+    startLinkedFiles(source);
     setInterval(() => {
       els.stClock.textContent = T.hm(new Date());
       const limit = S.settings.autoLockMinutes * 60000;
@@ -2746,6 +3453,8 @@
     const note = active();
     if (isEditable(note)) els.editor.focus();
     else els.unlockPass.focus();
+    files.started = true;
+    drainOpens();
   }
 
   init();

@@ -512,6 +512,15 @@ svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-width:
 .alert-text { flex: 1 1 18rem; }
 .alert-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; }
 
+/* linked file problems (desktop): changed elsewhere, missing, or not saved */
+.filebar {
+  background: color-mix(in srgb, var(--hot) 10%, var(--panel));
+  border-bottom-color: color-mix(in srgb, var(--hot) 45%, var(--line));
+}
+.filebar-mark { color: var(--hot); flex: none; }
+
+.note-file { margin-right: 0.4rem; color: var(--cool); font-size: var(--fs-xs); }
+
 /* ---------- result dialogs (IOCs, hashes, JWT, timestamps) ---------- */
 .result-list { display: grid; gap: 0.6rem; margin: 0 0 0.6rem; max-height: min(26rem, 55vh); overflow-y: auto; }
 
@@ -801,6 +810,15 @@ svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-width:
 .st-save[data-state="error"] .led { background: var(--hot); box-shadow: 0 0 6px var(--hot); }
 .st-save[data-state="error"] { color: var(--hot); }
 
+/* linked file (desktop): name and file status next to the save status */
+.st-file { display: inline-flex; align-items: center; gap: 0.4rem; min-width: 0; max-width: 40vw; }
+.st-file-name { color: var(--ink); overflow: hidden; text-overflow: ellipsis; }
+.st-file[data-state="saving"] .st-file-state,
+.st-file[data-state="pending"] .st-file-state { color: var(--warn); }
+.st-file[data-state="changed"] .st-file-state,
+.st-file[data-state="missing"] .st-file-state,
+.st-file[data-state="failed"] .st-file-state { color: var(--hot); }
+
 .st-sel { color: var(--cool); }
 .st-lock { color: var(--hot); }
 .st-timer { color: var(--warn); }
@@ -993,6 +1011,8 @@ dialog::backdrop { background: rgb(4 2 12 / 0.6); }
 }
 
 .toast.error { border-left-color: var(--hot); }
+.toast.has-actions { pointer-events: auto; display: grid; gap: 0.45rem; }
+.toast-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 0.4rem; }
 
 @keyframes toast-in { from { opacity: 0; transform: translateY(6px); } }
 

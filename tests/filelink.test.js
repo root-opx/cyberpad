@@ -140,3 +140,51 @@ test('write queue survives a rejecting writer and still runs the follow-up', asy
 test('write queue: idle resolves immediately when nothing is running', async () => {
   await F.createWriteQueue(async () => {}).idle();
 });
+
+test('matchesFile: plain notes compare text exactly', () => {
+  assert.equal(F.matchesFile(plain('a\nb'), 'a\nb'), true);
+  assert.equal(F.matchesFile(plain('a\nb'), 'a\nb\n'), false);
+  assert.equal(F.matchesFile(plain('x'), undefined), false);
+  assert.equal(F.matchesFile(plain('x'), 5), false);
+});
+
+test('matchesFile: encrypted notes compare envelopes, not JSON formatting', () => {
+  assert.equal(F.matchesFile(secret, F.fileTextOf(secret)), true);
+  const pretty = JSON.stringify({ cipher: { data: ENV.data, iv: ENV.iv, salt: ENV.salt, iter: ENV.iter, kdf: ENV.kdf, v: 1 }, v: 1, kind: 'note', app: 'cyberpad' }, null, 2);
+  assert.equal(F.matchesFile(secret, pretty), true);
+  assert.equal(F.matchesFile(secret, cp({ cipher: { ...ENV, data: 'BBBB' } })), false);
+  assert.equal(F.matchesFile(secret, '{'), false);
+  assert.equal(F.matchesFile(secret, 'SECRET'), false);
+  assert.equal(F.matchesFile({ id: 'x', body: '', cipher: {} }, '{}'), false);
+});
+
+const LINK = 'a'.repeat(32);
+
+test('noteFromFile: plain text becomes a linked plain note', () => {
+  const n = F.noteFromFile({ linkId: LINK, name: 'notes.md', format: 'md', text: 'hello' }, 1000);
+  assert.equal(n.body, 'hello');
+  assert.equal(n.cipher, null);
+  assert.deepEqual(n.history, []);
+  assert.deepEqual(n.file, { linkId: LINK, name: 'notes.md', format: 'md' });
+  assert.equal(n.created, 1000);
+});
+
+test('noteFromFile: .cpnote becomes a locked encrypted note with the envelope only', () => {
+  const n = F.noteFromFile({ linkId: LINK, name: 'secret.cpnote', format: 'cpnote', text: F.fileTextOf(secret) });
+  assert.deepEqual(n.cipher, ENV);
+  assert.equal(n.body, '');
+  assert.deepEqual(n.file, { linkId: LINK, name: 'secret.cpnote', format: 'cpnote' });
+  assert.equal(F.matchesFile(n, F.fileTextOf(secret)), true);
+});
+
+test('noteFromFile: refuses damaged, oversized and invalid files', () => {
+  const ok = { linkId: LINK, name: 'a.txt', format: 'txt', text: 'x' };
+  assert.throws(() => F.noteFromFile({ ...ok, format: 'cpnote', name: 'a.cpnote', text: '{' }), { message: DAMAGED });
+  assert.throws(() => F.noteFromFile({ ...ok, text: 'x'.repeat(1000001) }), F.FileLinkError);
+  assert.throws(() => F.noteFromFile({ ...ok, format: 'html' }), F.FileLinkError);
+  assert.throws(() => F.noteFromFile({ ...ok, linkId: 'nope' }), F.FileLinkError);
+  assert.throws(() => F.noteFromFile({ ...ok, name: 'a/b.txt' }), F.FileLinkError);
+  assert.throws(() => F.noteFromFile({ ...ok, text: 7 }), F.FileLinkError);
+  assert.throws(() => F.noteFromFile(null), F.FileLinkError);
+  assert.equal(F.noteFromFile({ ...ok, text: 'x'.repeat(1000000) }).body.length, 1000000);
+});
