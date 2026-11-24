@@ -46,6 +46,11 @@
   const IMPORT_EXTENSIONS = Object.freeze(['txt', 'md', 'markdown', 'json']);
   const RISKY_INNER_EXTENSIONS = new Set(['exe', 'dll', 'bat', 'cmd', 'com', 'ps1', 'sh', 'js', 'mjs', 'html', 'htm', 'svg', 'php', 'phtml', 'jar', 'msi', 'scr', 'vbs', 'hta']);
 
+  const FILE_FORMATS = Object.freeze(['txt', 'md', 'cpnote']);
+  const LINK_ID_RE = /^[0-9a-f]{32}$/;
+  // eslint-disable-next-line no-control-regex
+  const BAD_FILE_NAME_RE = /[\u0000-\u001f\u007f/\\]/;
+
   class StoreError extends Error {}
 
   const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -75,6 +80,19 @@
       .map((s) => ({ t: s.t, body: s.body }));
   }
 
+  /**
+   * A link to a file on disk: exactly { linkId, name, format } or null. The format must match the note's
+   * encryption state (encrypted <-> cpnote, plain <-> txt/md). Anything else is dropped, never repaired.
+   */
+  function validateFile(f, encrypted) {
+    if (!isObj(f)) return null;
+    if (typeof f.linkId !== 'string' || !LINK_ID_RE.test(f.linkId)) return null;
+    if (typeof f.name !== 'string' || f.name.length < 1 || f.name.length > 255 || BAD_FILE_NAME_RE.test(f.name)) return null;
+    if (typeof f.format !== 'string' || !FILE_FORMATS.includes(f.format)) return null;
+    if ((f.format === 'cpnote') !== encrypted) return null;
+    return { linkId: f.linkId, name: f.name, format: f.format };
+  }
+
   function validateNote(n, now = Date.now()) {
     if (!isObj(n) || !isId(n.id)) return null;
     let cipher = null;
@@ -94,6 +112,7 @@
       created,
       updated,
       history: cipher ? [] : validateHistory(n.history),
+      file: validateFile(n.file, cipher !== null),
     };
   }
 
@@ -186,12 +205,13 @@
         created: n.created,
         updated: n.updated,
         history: n.cipher ? [] : n.history,
+        file: n.file || null,
       })),
     });
   }
 
   function createNote(body = '', now = Date.now(), id = newId()) {
-    return { id, body, cipher: null, pinned: false, created: now, updated: now, history: [] };
+    return { id, body, cipher: null, pinned: false, created: now, updated: now, history: [], file: null };
   }
 
   /**
@@ -214,6 +234,7 @@
       notes: notes.map((n) => ({
         id: n.id, body: n.cipher ? '' : n.body, cipher: n.cipher, pinned: n.pinned,
         created: n.created, updated: n.updated, history: n.cipher ? [] : n.history,
+        file: null, // a link to a file on this computer never travels in a backup
       })),
     }, null, 2);
   }
@@ -228,7 +249,7 @@
     if (!isObj(raw) || !appOk || raw.v !== SCHEMA || !Array.isArray(raw.notes)) {
       throw new StoreError('not-backup');
     }
-    return validateNotes(raw.notes, now);
+    return validateNotes(raw.notes, now).map((n) => ({ ...n, file: null }));
   }
 
   const ENCRYPTED_BACKUP_KIND = 'encrypted-backup';
@@ -260,7 +281,8 @@
   function mergeNotes(existing, incoming) {
     const ids = new Set(existing.map((n) => n.id));
     const room = Math.max(0, LIMITS.notes - existing.length);
-    const added = incoming.slice(0, room).map((n) => {
+    const added = incoming.slice(0, room).map((raw) => {
+      const n = { ...raw, file: null }; // an imported note is never linked to a file
       if (!ids.has(n.id)) { ids.add(n.id); return n; }
       const copy = { ...n, id: newId() };
       ids.add(copy.id);
@@ -298,7 +320,7 @@
   }
 
   return {
-    STORAGE_KEY, LEGACY_STORAGE_KEYS, SCHEMA, LIMITS, THEMES, VIEWS, AUTOLOCK, DEFAULT_SETTINGS, StoreError,
+    STORAGE_KEY, LEGACY_STORAGE_KEYS, FILE_FORMATS, SCHEMA, LIMITS, THEMES, VIEWS, AUTOLOCK, DEFAULT_SETTINGS, StoreError,
     newId, validateNote, validateState, parseStored, pickState, serialize, createNote, addSnapshot,
     makeBackup, parseBackup, makeEncryptedBackup, parseEncryptedBackup, mergeNotes, checkImportFile, decodeImportBytes,
   };

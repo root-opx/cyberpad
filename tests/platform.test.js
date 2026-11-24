@@ -205,3 +205,153 @@ test('browser saveState maps quota errors', async () => {
   const p = createPlatform(env({ localStorage: ls }));
   await assert.rejects(p.saveState('x'), (e) => e instanceof PlatformError && e.reason === 'quota');
 });
+
+// ---- file bridge
+
+const LK = '0123456789abcdef0123456789abcdef';
+const desktop = (opts) => { const fake = fakeWebview(); return { fake, p: createPlatform(env({ chrome: fake.chrome }), opts) }; };
+
+test('saveAsFile posts saveAsFile or relinkFile and maps fileLinked/fileCancelled', async () => {
+  const { fake, p } = desktop({ timeoutMs: 20 });
+  const a = p.saveAsFile({ format: 'md', suggestedName: 'n.md', text: 'a\ud800' });
+  const m = fake.posted[0];
+  assert.deepEqual(Object.keys(m).sort(), ['format', 'id', 'suggestedName', 'text', 'type']);
+  assert.equal(m.type, 'saveAsFile');
+  assert.equal(m.text, 'a�');
+  await new Promise((r) => setTimeout(r, 50)); // no timeout: a dialog may stay open
+  fake.reply({ type: 'fileLinked', id: m.id, linkId: LK, name: 'n.md', format: 'md' });
+  assert.deepEqual(await a, { linked: true, linkId: LK, name: 'n.md', format: 'md' });
+
+  const b = p.saveAsFile({ format: 'txt', suggestedName: 'n', text: 't', relinkId: LK });
+  const r = fake.posted[1];
+  assert.equal(r.type, 'relinkFile');
+  assert.deepEqual(Object.keys(r).sort(), ['format', 'id', 'linkId', 'suggestedName', 'text', 'type']);
+  assert.equal(r.linkId, LK);
+  fake.reply({ type: 'fileCancelled', id: r.id });
+  assert.deepEqual(await b, { linked: false });
+});
+
+test('malformed host replies are rejected', async () => {
+  const { fake, p } = desktop();
+  const bad = [
+    { type: 'fileLinked', linkId: 'zz', name: 'n', format: 'md' },
+    { type: 'fileLinked', linkId: LK, name: '', format: 'md' },
+    { type: 'fileLinked', linkId: LK, name: 'n', format: 'html' },
+    { type: 'fileLinked', linkId: LK, name: 'x'.repeat(256), format: 'md' },
+    { type: 'fileLinked', linkId: LK, name: 'a/b', format: 'md' },
+    { type: 'fileWritten' },
+  ];
+  for (const reply of bad) {
+    const pr = p.saveAsFile({ format: 'md', suggestedName: 'n', text: 't' });
+    fake.reply({ ...reply, id: lastId(fake) });
+    await assert.rejects(pr, (e) => e instanceof PlatformError && e.message === 'unexpected reply');
+  }
+  const o = p.openFile();
+  fake.reply({ type: 'fileOpened', id: lastId(fake), linkId: LK, name: 'n', format: 'md', text: 5, alreadyLinked: false });
+  await assert.rejects(o, /unexpected reply/);
+  const o2 = p.openFile();
+  fake.reply({ type: 'fileOpened', id: lastId(fake), linkId: LK, name: 'n', format: 'md', text: 't', alreadyLinked: 'no' });
+  await assert.rejects(o2, /unexpected reply/);
+  const o3 = p.openFile();
+  assert.deepEqual(Object.keys(fake.posted.at(-1)).sort(), ['id', 'type']);
+  fake.reply({ type: 'fileOpened', id: lastId(fake), linkId: LK, name: 'n', format: 'cpnote', text: 't', alreadyLinked: true });
+  assert.deepEqual(await o3, { opened: true, linkId: LK, name: 'n', format: 'cpnote', text: 't', alreadyLinked: true });
+  const o4 = p.openFile();
+  fake.reply({ type: 'fileCancelled', id: lastId(fake) });
+  assert.deepEqual(await o4, { opened: false });
+});
+
+test('writeFile maps written/conflict/missing and fileFailed', async () => {
+  const { fake, p } = desktop();
+  for (const [type, want] of [['fileWritten', 'written'], ['fileConflict', 'conflict'], ['fileMissing', 'missing']]) {
+    const pr = p.writeFile(LK, 'x', false);
+    const m = fake.posted.at(-1);
+    assert.deepEqual(Object.keys(m).sort(), ['force', 'id', 'linkId', 'text', 'type']);
+    assert.equal(m.force, false);
+    fake.reply({ type, id: m.id });
+    assert.equal(await pr, want);
+  }
+  const f = p.writeFile(LK, 'x', true);
+  assert.equal(fake.posted.at(-1).force, true);
+  fake.reply({ type: 'fileFailed', id: lastId(fake), reason: "Couldn't write the file.", linkId: LK });
+  await assert.rejects(f, (e) => e.userFacing === true && e.message === "Couldn't write the file." && e.linkId === LK);
+  const g = p.writeFile(LK, 'x', false);
+  fake.reply({ type: 'fileFailed', id: lastId(fake), reason: 'r', linkId: 'nope' });
+  await assert.rejects(g, (e) => e.linkId === undefined && e.userFacing === true);
+  const h = p.writeFile(LK, 'x', false);
+  fake.reply({ type: 'fileFailed', id: lastId(fake), reason: 'x'.repeat(301) });
+  await assert.rejects(h, (e) => e.userFacing === false);
+  const r = p.writeFile(LK, 'x', false);
+  fake.reply({ type: 'rejected', id: lastId(fake), reason: 'unknown link' });
+  await assert.rejects(r, (e) => e.userFacing === false && e.message === 'unknown link');
+});
+
+test('writeFile uses a 60 s timeout, other calls the default, dialogs none', () => {
+  const timers = [];
+  const fake = fakeWebview();
+  const p = createPlatform({ crypto, clearTimeout, chrome: fake.chrome, setTimeout: (fn, ms) => { timers.push(ms); return 1; } }, { timeoutMs: 1234 });
+  p.writeFile(LK, 'x', false);
+  p.readFile(LK);
+  p.saveAsFile({ format: 'md', suggestedName: 'n', text: 't' });
+  p.openFile();
+  assert.deepEqual(timers, [60000, 1234]);
+});
+
+test('readFile, checkFiles, unlinkFile, revealFile, pruneLinks', async () => {
+  const { fake, p } = desktop();
+  const r = p.readFile(LK);
+  assert.deepEqual(Object.keys(fake.posted.at(-1)).sort(), ['id', 'linkId', 'type']);
+  fake.reply({ type: 'fileRead', id: lastId(fake), text: 'hi' });
+  assert.deepEqual(await r, { missing: false, text: 'hi' });
+  const r2 = p.readFile(LK);
+  fake.reply({ type: 'fileMissing', id: lastId(fake) });
+  assert.deepEqual(await r2, { missing: true });
+  const r3 = p.readFile(LK);
+  fake.reply({ type: 'fileRead', id: lastId(fake), text: 7 });
+  await assert.rejects(r3, /unexpected reply/);
+
+  const c = p.checkFiles([LK]);
+  assert.deepEqual(fake.posted.at(-1).linkIds, [LK]);
+  const other = 'ffffffffffffffffffffffffffffffff';
+  fake.reply({ type: 'fileStatus', id: lastId(fake), statuses: { [LK]: 'changed', [other]: 'bogus', nothex: 'ok' } });
+  assert.deepEqual(await c, { [LK]: 'changed' });
+  const c2 = p.checkFiles([LK]);
+  fake.reply({ type: 'fileStatus', id: lastId(fake), statuses: [] });
+  await assert.rejects(c2, /unexpected reply/);
+  await assert.rejects(p.checkFiles(['bad']), PlatformError);
+  await assert.rejects(p.checkFiles([LK, LK]), PlatformError);
+  await assert.rejects(p.checkFiles(Array.from({ length: 2001 }, (_, i) => i.toString(16).padStart(32, '0'))), PlatformError);
+
+  for (const [fn, ok, call] of [['unlinkFile', 'fileUnlinked', () => p.unlinkFile(LK)], ['revealFile', 'fileRevealed', () => p.revealFile(LK)], ['pruneLinks', 'linksPruned', () => p.pruneLinks([LK])]]) {
+    const pr = call();
+    assert.equal(fake.posted.at(-1).type, fn);
+    fake.reply({ type: ok, id: lastId(fake) });
+    assert.equal(await pr, undefined);
+  }
+  await assert.rejects(p.unlinkFile('nope'), PlatformError);
+});
+
+test('onOpenRequested fires on openRequested without an id; a later handler replaces the earlier', () => {
+  const { fake, p } = desktop();
+  let a = 0; let b = 0;
+  p.onOpenRequested(() => { a += 1; });
+  fake.reply({ type: 'openRequested' });
+  p.onOpenRequested(() => { b += 1; });
+  fake.reply({ type: 'openRequested' });
+  assert.deepEqual([a, b], [1, 1]);
+  p.onOpenRequested(() => { throw new Error('boom'); });
+  const orig = console.error; console.error = () => {};
+  try { fake.reply({ type: 'openRequested' }); } finally { console.error = orig; }
+  createPlatform(env({ localStorage: fakeStorage() })).onOpenRequested(() => {});
+});
+
+test('file methods reject in the browser', async () => {
+  const p = createPlatform(env({ localStorage: fakeStorage() }));
+  const calls = [
+    () => p.saveAsFile({ format: 'md', suggestedName: 'n', text: 't' }), () => p.openFile(), () => p.writeFile(LK, 't', false),
+    () => p.readFile(LK), () => p.checkFiles([LK]), () => p.unlinkFile(LK), () => p.revealFile(LK), () => p.pruneLinks([LK]),
+  ];
+  for (const c of calls) {
+    await assert.rejects(c(), (e) => e instanceof PlatformError && e.reason === 'host' && e.message === 'Files are only available in the desktop app.');
+  }
+});

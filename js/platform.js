@@ -14,6 +14,20 @@
   const MAX_DESKTOP_CHARS = 64 * 1024 * 1024;
   const DEFAULT_TIMEOUT_MS = 15000;
   const MAX_HOST_REASON_CHARS = 300;
+  const WRITE_TIMEOUT_MS = 60000;
+  const MAX_FILE_TEXT_CHARS = 4 * 1024 * 1024;
+  const MAX_SUGGESTED_NAME_CHARS = 120;
+  const MAX_LINK_IDS = 2000;
+  const FILE_FORMATS = ['txt', 'md', 'cpnote'];
+  const FILE_STATUSES = ['ok', 'changed', 'missing', 'unknown'];
+  const LINK_ID_RE = /^[0-9a-f]{32}$/;
+  // eslint-disable-next-line no-control-regex
+  const BAD_FILE_NAME_RE = /[\u0000-\u001f\u007f/\\]/;
+  const NO_FILES = 'Files are only available in the desktop app.';
+
+  const isLinkId = (v) => typeof v === 'string' && LINK_ID_RE.test(v);
+  const isFileName = (v) => typeof v === 'string' && v.length >= 1 && v.length <= 255 && !BAD_FILE_NAME_RE.test(v);
+  const isFormat = (v) => typeof v === 'string' && FILE_FORMATS.includes(v);
 
   /**
    * `reason` is a short code ('host', 'timeout', 'quota', 'too-large'). `userFacing` is true only when
@@ -42,6 +56,7 @@
 
     const pending = new Map(); // id -> { resolve, reject, timer, accept }
     let flushHandler = null;
+    let openHandler = null;
 
     function newId() {
       const bytes = env.crypto.getRandomValues(new Uint8Array(8));
@@ -79,6 +94,12 @@
       const m = ev && ev.data;
       if (!m || typeof m !== 'object' || typeof m.type !== 'string') return;
       if (m.type === 'flush') { runFlush(); return; }
+      if (m.type === 'openRequested') { // host-initiated, carries no id
+        if (openHandler) {
+          try { openHandler(); } catch (err) { console.error('open handler failed', err && err.name); }
+        }
+        return;
+      }
       if (typeof m.id !== 'string') return;
       const p = settle(m.id);
       if (!p) return; // unknown or already settled
@@ -86,6 +107,11 @@
         // The host's failure text is a short user-facing reason by contract; anything else is not shown.
         const shown = typeof m.reason === 'string' && m.reason.length > 0 && m.reason.length <= MAX_HOST_REASON_CHARS;
         p.reject(shown ? new PlatformError('host', m.reason, true) : new PlatformError('host', m.type));
+      } else if (m.type === 'fileFailed') {
+        const shown = typeof m.reason === 'string' && m.reason.length > 0 && m.reason.length <= MAX_HOST_REASON_CHARS;
+        const err = shown ? new PlatformError('host', m.reason, true) : new PlatformError('host', m.type);
+        if (isLinkId(m.linkId)) err.linkId = m.linkId;
+        p.reject(err);
       } else if (m.type === 'rejected') {
         // A rejection reason is diagnostic (for example "unexpected field"), never shown to the user.
         p.reject(new PlatformError('host', typeof m.reason === 'string' ? m.reason.slice(0, MAX_HOST_REASON_CHARS) : 'rejected'));
@@ -97,14 +123,14 @@
     if (isDesktop && typeof webview.addEventListener === 'function') webview.addEventListener('message', onMessage);
 
     /** Post a message with a fresh id; `accept(reply, resolve, reject)` handles the matching reply. */
-    function request(type, fields, accept, { timeout = true } = {}) {
+    function request(type, fields, accept, { timeout = true, timeoutMs: ms } = {}) {
       return new Promise((resolve, reject) => {
         const id = newId();
         const entry = { resolve, reject, accept, timer: null };
         if (timeout) {
           entry.timer = env.setTimeout(() => {
             if (pending.get(id) === entry) { pending.delete(id); reject(new PlatformError('timeout')); }
-          }, timeoutMs);
+          }, Number.isFinite(ms) && ms > 0 ? ms : timeoutMs);
         }
         pending.set(id, entry);
         try {
@@ -211,11 +237,124 @@
       return { saved: true, name: suggestedName };
     }
 
+    // --------------------------------------------------------------- files
+
+    const noFiles = () => new PlatformError('host', NO_FILES, true);
+    const unexpected = () => new PlatformError('host', 'unexpected reply');
+    const invalid = (what) => new PlatformError('host', 'invalid ' + what);
+    const fileText = (text) => {
+      if (typeof text !== 'string') throw invalid('text');
+      if (text.length > MAX_FILE_TEXT_CHARS) throw new PlatformError('too-large');
+      return wellFormed(text);
+    };
+    const linkIdOf = (id) => { if (!isLinkId(id)) throw invalid('link'); return id; };
+    const linkIdsOf = (ids) => {
+      if (!Array.isArray(ids) || ids.length > MAX_LINK_IDS) throw invalid('links');
+      const seen = new Set();
+      for (const id of ids) {
+        if (!isLinkId(id) || seen.has(id)) throw invalid('links');
+        seen.add(id);
+      }
+      return ids.slice();
+    };
+
+    /** A reply that names a link: every field is validated before it reaches the caller. */
+    const linkOf = (m) => (isLinkId(m.linkId) && isFileName(m.name) && isFormat(m.format)
+      ? { linkId: m.linkId, name: m.name, format: m.format } : null);
+
+    async function saveAsFile({ format, suggestedName, text, relinkId } = {}) {
+      if (!isDesktop) throw noFiles();
+      if (!isFormat(format)) throw invalid('format');
+      if (typeof suggestedName !== 'string' || suggestedName.length > MAX_SUGGESTED_NAME_CHARS) throw invalid('name');
+      const body = fileText(text);
+      const relink = relinkId !== undefined && relinkId !== null;
+      const fields = relink
+        ? { linkId: linkIdOf(relinkId), format, suggestedName: wellFormed(suggestedName), text: body }
+        : { format, suggestedName: wellFormed(suggestedName), text: body };
+      // No timeout: the host waits for the user in a dialog.
+      return request(relink ? 'relinkFile' : 'saveAsFile', fields, (m, resolve, reject) => {
+        if (m.type === 'fileLinked') {
+          const link = linkOf(m);
+          if (link) resolve({ linked: true, ...link }); else reject(unexpected());
+        } else if (m.type === 'fileCancelled') resolve({ linked: false });
+        else reject(unexpected());
+      }, { timeout: false });
+    }
+
+    async function openFile() {
+      if (!isDesktop) throw noFiles();
+      return request('openFile', {}, (m, resolve, reject) => {
+        if (m.type === 'fileOpened') {
+          const link = linkOf(m);
+          if (link && typeof m.text === 'string' && typeof m.alreadyLinked === 'boolean') {
+            resolve({ opened: true, ...link, text: m.text, alreadyLinked: m.alreadyLinked });
+          } else reject(unexpected());
+        } else if (m.type === 'fileCancelled') resolve({ opened: false });
+        else reject(unexpected());
+      }, { timeout: false });
+    }
+
+    async function writeFile(linkId, text, force) {
+      if (!isDesktop) throw noFiles();
+      const fields = { linkId: linkIdOf(linkId), text: fileText(text), force: force === true };
+      return request('writeFile', fields, (m, resolve, reject) => {
+        if (m.type === 'fileWritten') resolve('written');
+        else if (m.type === 'fileConflict') resolve('conflict');
+        else if (m.type === 'fileMissing') resolve('missing');
+        else reject(unexpected());
+      }, { timeoutMs: WRITE_TIMEOUT_MS });
+    }
+
+    async function readFile(linkId) {
+      if (!isDesktop) throw noFiles();
+      return request('readFile', { linkId: linkIdOf(linkId) }, (m, resolve, reject) => {
+        if (m.type === 'fileMissing') resolve({ missing: true });
+        else if (m.type === 'fileRead' && typeof m.text === 'string') resolve({ missing: false, text: m.text });
+        else reject(unexpected());
+      });
+    }
+
+    async function checkFiles(linkIds) {
+      if (!isDesktop) throw noFiles();
+      const ids = linkIdsOf(linkIds);
+      if (ids.length === 0) return {};
+      return request('checkFiles', { linkIds: ids }, (m, resolve, reject) => {
+        const s = m.type === 'fileStatus' ? m.statuses : null;
+        if (s === null || typeof s !== 'object' || Array.isArray(s)) { reject(unexpected()); return; }
+        const out = {};
+        for (const key of Object.keys(s)) {
+          if (isLinkId(key) && typeof s[key] === 'string' && FILE_STATUSES.includes(s[key])) out[key] = s[key];
+        }
+        resolve(out);
+      });
+    }
+
+    async function unlinkFile(linkId) {
+      if (!isDesktop) throw noFiles();
+      return request('unlinkFile', { linkId: linkIdOf(linkId) }, expect('fileUnlinked'));
+    }
+
+    async function revealFile(linkId) {
+      if (!isDesktop) throw noFiles();
+      return request('revealFile', { linkId: linkIdOf(linkId) }, expect('fileRevealed'));
+    }
+
+    async function pruneLinks(linkIds) {
+      if (!isDesktop) throw noFiles();
+      return request('pruneLinks', { linkIds: linkIdsOf(linkIds) }, expect('linksPruned'));
+    }
+
+    function onOpenRequested(fn) {
+      openHandler = typeof fn === 'function' ? fn : null;
+    }
+
     function onFlushRequest(fn) {
       flushHandler = typeof fn === 'function' ? fn : null;
     }
 
-    return { isDesktop, maxStateChars, loadState, saveState, removeLegacy, quarantine, exportFile, onFlushRequest };
+    return { isDesktop, maxStateChars, loadState, saveState, removeLegacy, quarantine, exportFile, onFlushRequest,
+      saveAsFile, openFile, writeFile, readFile, checkFiles, unlinkFile, revealFile, pruneLinks, onOpenRequested,
+    };
   }
 
   return { createPlatform, PlatformError };

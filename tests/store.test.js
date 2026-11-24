@@ -35,7 +35,7 @@ test('invalid notes are dropped, not repaired into something unsafe', () => {
   };
   const { notes } = store.validateState(raw, 7);
   assert.equal(notes.length, 1);
-  assert.deepEqual(notes[0], { id: ID, body: 'ok', cipher: null, pinned: false, created: 7, updated: 7, history: [{ t: 5, body: 'old' }] });
+  assert.deepEqual(notes[0], { id: ID, body: 'ok', cipher: null, pinned: false, created: 7, updated: 7, history: [{ t: 5, body: 'old' }], file: null });
 });
 
 test('encrypted notes never keep plaintext body or history', () => {
@@ -184,4 +184,61 @@ test('pickState keeps a valid main and flags a damaged backup', () => {
   assert.equal(r.source, 'main');
   assert.equal(r.unreadable, true);
   assert.equal(r.state.notes.length, 1);
+});
+
+// ---- file links
+
+const LINK = '0123456789abcdef0123456789abcdef';
+const withFile = (file, extra = {}) => ({ id: ID, body: 'x', created: 1, updated: 1, file, ...extra });
+
+test('validateNote keeps a valid file link and rebuilds it field by field', () => {
+  const n = store.validateNote(withFile({ linkId: LINK, name: 'a.md', format: 'md', path: 'C:\\x' }));
+  assert.deepEqual(n.file, { linkId: LINK, name: 'a.md', format: 'md' });
+  assert.deepEqual(store.FILE_FORMATS, ['txt', 'md', 'cpnote']);
+  assert.equal(store.createNote('a').file, null);
+  assert.equal(store.validateNote({ id: ID, body: '' }).file, null);
+  const round = store.parseStored(store.serialize({ notes: [n], settings: { ...store.DEFAULT_SETTINGS }, activeId: ID }));
+  assert.deepEqual(round.notes[0].file, { linkId: LINK, name: 'a.md', format: 'md' });
+});
+
+test("validateNote drops a link whose format doesn't match encryption", () => {
+  assert.equal(store.validateNote(withFile({ linkId: LINK, name: 'a.cpnote', format: 'cpnote' })).file, null);
+  assert.equal(store.validateNote(withFile({ linkId: LINK, name: 'a.md', format: 'md' }, { body: '', cipher: ENV })).file, null);
+  assert.equal(store.validateNote(withFile({ linkId: LINK, name: 'a.txt', format: 'txt' }, { body: '', cipher: ENV })).file, null);
+  assert.deepEqual(store.validateNote(withFile({ linkId: LINK, name: 'a.cpnote', format: 'cpnote' }, { body: '', cipher: ENV })).file,
+    { linkId: LINK, name: 'a.cpnote', format: 'cpnote' });
+});
+
+test('validateNote drops malformed links', () => {
+  const bad = [
+    { linkId: 'ABC', name: 'a.md', format: 'md' },
+    { linkId: LINK.toUpperCase(), name: 'a.md', format: 'md' },
+    { linkId: LINK, name: 'a/b', format: 'md' },
+    { linkId: LINK, name: 'a\\b', format: 'md' },
+    { linkId: LINK, name: '', format: 'md' },
+    { linkId: LINK, name: 'x'.repeat(256), format: 'md' },
+    { linkId: LINK, name: 'a\nb', format: 'md' },
+    { linkId: LINK, name: 'a\u007fb', format: 'md' },
+    { linkId: LINK, name: 5, format: 'md' },
+    { linkId: LINK, name: 'a.md', format: 'html' },
+    'string', [], 7, true,
+  ];
+  for (const f of bad) assert.equal(store.validateNote(withFile(f)).file, null, JSON.stringify(f));
+  assert.equal(store.validateNote(withFile({ linkId: LINK, name: 'x'.repeat(255), format: 'txt' })).file.name.length, 255);
+});
+
+test('backups never carry file links', () => {
+  const linked = store.validateNote(withFile({ linkId: LINK, name: 'a.md', format: 'md' }));
+  const out = JSON.parse(store.makeBackup([linked]));
+  assert.equal(out.notes[0].file, null);
+  const crafted = JSON.stringify({ app: 'cyberpad', v: 1, notes: [withFile({ linkId: LINK, name: 'a.md', format: 'md' })] });
+  assert.equal(store.parseBackup(crafted)[0].file, null);
+});
+
+test('mergeNotes strips links from incoming notes', () => {
+  const linked = store.validateNote(withFile({ linkId: LINK, name: 'a.md', format: 'md' }));
+  const r = store.mergeNotes([linked], [{ ...linked }, { ...linked, id: '1f8fad5b-d9cb-469f-a165-70867728950e' }]);
+  assert.equal(r.notes[0].file.linkId, LINK);
+  assert.equal(r.notes[1].file, null);
+  assert.equal(r.notes[2].file, null);
 });
