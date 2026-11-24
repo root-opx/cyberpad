@@ -377,6 +377,26 @@ internal sealed class MainForm : Form
         }
     }
 
+    /// <summary>Any thread: a path was queued by a later launch. Brings the window forward and re-checks the queue.</summary>
+    internal void NotifyPathQueued()
+    {
+        try
+        {
+            if (IsHandleCreated && !IsDisposed)
+            {
+                BeginInvoke(new Action(() =>
+                {
+                    BringToUser();
+                    PostOpenRequestedIfDue();
+                }));
+            }
+        }
+        catch (InvalidOperationException ex)
+        {
+            _log($"open request: window gone {ex.GetType().Name}");
+        }
+    }
+
     private void OnFileActivityChanged() => RequestOpenCheck();
 
     private void OnOpenCompleted()

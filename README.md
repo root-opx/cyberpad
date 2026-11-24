@@ -112,6 +112,20 @@ The same notepad in its own window and process. If the page inside it crashes, t
 - Links in the preview open in your default browser only when you click them, and only `http`, `https`, and `mailto` links.
 - If the app cannot read its notes file at startup, it restores the previous save, keeps the unreadable file in the data folder, and tells you. If only the backup copy is damaged, it keeps the unreadable files aside and immediately writes your notes back as `notes.json`. If it cannot load your notes at all, saving is turned off for that session, so nothing gets overwritten.
 
+**Your own files**
+
+A note can be linked to a `.txt`, `.md` or `.cpnote` file you choose. The note stays in CyberPad too; the file is a second copy that CyberPad keeps in step.
+
+- **Save as file** (Ctrl+Shift+S, or the palette) asks where to put a new file and links the note to it. Plain notes default to `.md`; new files are UTF-8 without BOM, with LF line endings.
+- **Save** (Ctrl+S) writes the note to its linked file now. Linked notes are also written as you type.
+- **Open file** (Ctrl+O) opens a file as a note, linked to it. Opening a file that is already linked jumps to its note.
+- **Open with:** right-click a `.txt`, `.md` or `.cpnote` file in Explorer, choose **Open with**, then **CyberPad**. To make it the default, choose **Open with**, **Choose another app**, pick `CyberPad.exe` and tick **Always**. CyberPad makes no registry changes of its own. You can also run `CyberPad.exe "C:\path\file.md"`. If CyberPad is already running, the file opens in that window; if it cannot be reached within 3 seconds you get "CyberPad is already running but not responding." Any other file type is refused with "CyberPad can only open .txt, .md and .cpnote files."
+- **Formats:** CyberPad reads UTF-8 (with or without BOM) and UTF-16 with a BOM, keeps a file's CRLF line endings when you save it, and refuses anything else, or text containing a NUL, with "This file isn't UTF-8 or UTF-16 text." Files up to 4 MB are accepted.
+- **Encrypted notes** save as `.cpnote`: a small JSON file holding the same encrypted envelope the note already uses, so it stays ciphertext on disk. Encrypting a note that is linked to a `.txt` or `.md` file removes that link (the plain file is left alone, and you are told). A `.cpnote` file opens as an encrypted note and asks for its passphrase.
+- **Changed elsewhere:** CyberPad checks linked files when the window regains focus. If you have no unsaved changes and have not typed in the note for two seconds, the new version loads quietly; otherwise a bar offers **Keep mine** or **Use the file's version**.
+- **Missing file:** the note shows "File not found" and keeps its text. You can Save as to a new file or unlink it. CyberPad never deletes your files and never recreates one on its own.
+- A file can be linked to one note only ("That file is already linked to another note."). Duplicating a note drops the link, and backups never include it.
+
 **Moving notes from the browser version**
 
 The desktop app cannot read a browser's storage. In the browser version, export a backup (Command palette → **Export backup of all notes**, or **Export encrypted backup**), then import that file here. A new install's welcome note says the same.
@@ -126,6 +140,8 @@ They live in `%LOCALAPPDATA%\CyberPad` (paste it into Explorer's address bar). T
 | `notes.json.bak` | the previous good save |
 | `notes.json.tmp` | a save in progress; it exists only for a moment, or after a save was cut off |
 | `notes.unreadable-<time>.json`, `notes.unreadable-<time>.bak.json` | files the app could not read, kept instead of deleted |
+| `links.json` | which note is linked to which file on disk (the page only ever sees file names) |
+| `links.unreadable-<time>.json` | a links file the app could not read, kept instead of deleted |
 | `window.json` | window size and position |
 | `cyberpad.log`, `cyberpad.log.1` | diagnostics log: UTC time, message type, rejection reason or error type name, never note content. When it reaches 256 KB it becomes `cyberpad.log.1` (replacing the older one) and a new log starts, so the two stay around half a megabyte. |
 | `WebView2\` | the web engine's own profile |
@@ -160,7 +176,8 @@ They live in `%LOCALAPPDATA%\CyberPad` (paste it into Explorer's address bar). T
 
 ### Desktop app
 
-- **Narrow host bridge.** The page can send only six message types: load, save, quarantine, export, flushed, and flushFailed. Each is checked for the exact origin (`https://cyberpad.example/`), a known `type`, exact field types, no extra fields, and size limits (64 MB of text, 120-character file names). Anything else is rejected and written to `cyberpad.log` by type and reason only; note content is never logged. There is no message to read or write an arbitrary path or run a command. Export file names are reduced to a safe name with a forced extension, and the user picks the real path in the Save dialog.
+- **Narrow host bridge.** The page can send only a fixed list of message types: load, save, quarantine, export, flushed, flushFailed and the linked-file messages (save as, relink, open, write, read, check, unlink, reveal, prune). Each is checked for the exact origin (`https://cyberpad.example/`), a known `type`, exact field types, no extra fields, and size limits (64 Mi characters of note text, 4 Mi for a linked file, 120-character file names, link IDs of exactly 32 hex characters). Anything else is rejected and written to `cyberpad.log` by type and reason only; note content is never logged. There is no message to read or write an arbitrary path or run a command. Export file names are reduced to a safe name with a forced extension, and the user picks the real path in the Save dialog.
+- **Linked files.** The page only ever sees link IDs and file names; the host holds every path and accepts only `.txt`, `.md` and `.cpnote` (also from the command line and the pipe). Writes go through a hidden temporary file in the target folder and a swap, and a file that changed since CyberPad last read it is not overwritten unless you choose to. "Open with" hands paths to a running window over a named pipe that only your own Windows account can open. It carries one path of at most 32,767 characters, which is checked again before use, and at most 20 pending opens are kept. At startup CyberPad switches its working directory to its own folder, so nothing is ever resolved against the folder of a file you opened.
 - **Locked-down web view.** The app loads only from its own virtual host `cyberpad.example` (a reserved name that never resolves), keeping the strict CSP. Navigation anywhere else is cancelled, new windows are cancelled, and downloads are cancelled. Every permission request (camera, microphone, location, clipboard read, and so on) is denied. Dev tools and browser shortcut keys are off in release builds, password and form autofill are off, and SmartScreen reputation checks are off for the local page.
 - **External links.** A clicked link opens in the default browser only if it is a well-formed `http`, `https`, or `mailto` URL. `file:`, `javascript:`, `ms-settings:`, UNC paths, and every other scheme are ignored.
 - **Crash-safe storage.** Saves are atomic with a kept backup, and unreadable files are renamed, never deleted. The app and its host make no network requests and send no telemetry. The WebView2 runtime is Microsoft's own component and follows Microsoft's and Windows' settings for diagnostic data, which CyberPad does not control. The only runtime NuGet dependency is `Microsoft.Web.WebView2`; `Microsoft.NET.ILLink.Tasks` is a build-time package, and the published exe bundles the .NET runtime. Every build audits the NuGet packages in the lock files for known vulnerabilities, and fails if the audit finds any or cannot complete.
@@ -190,6 +207,20 @@ Manual checks for the desktop app:
 - Minimize with an unlocked encrypted note: it is locked when you restore the window.
 - Click an NVD link in the preview: it opens in the default browser.
 - Start `CyberPad.exe` a second time: the first window comes to the front.
+- Linked files (use a scratch folder):
+  - Save a note as `.md`, edit it, and see the file change on disk.
+  - Edit the file in Notepad, then switch back to CyberPad: you get a quiet reload, or the conflict bar if you had typed.
+  - Delete the file: the note shows "File not found".
+  - Open a CRLF file and a UTF-16 file, save without edits, and confirm the bytes are identical (`Get-FileHash` before and after).
+  - Edit a file that has mixed line endings elsewhere: **Use the file's version** ends on the conflict bar (expected; **Keep mine** resolves it).
+  - "Open with" while CyberPad is running: the file opens in the running window, which comes forward. Try an `.exe` and a second argument too: both are refused.
+  - Encrypt a linked `.txt` note: the link is removed and the notice appears. If unlinking fails, the encrypt dialog closes without encrypting.
+  - Make a linked file read-only, change the note and close the window: the close prompt appears. Do the same with a file in conflict.
+  - Switch to another app and back, and close a native dialog: both trigger the file check (WebView2 focus).
+  - Save as / Open dialogs: filters, `.md` as the default extension and the starting folder.
+  - Ctrl+O, Ctrl+S and Ctrl+Shift+S work from the editor.
+  - **Show file in folder** opens Explorer with the file selected.
+  - The file status and the conflict bar fit in every theme and at narrow widths, and the toast buttons can be reached with the keyboard.
 
 ```
 index.html          app shell and CSP

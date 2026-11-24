@@ -122,11 +122,27 @@ The host project copies `index.html`, `css/`, and `js/` into a `wwwroot` folder 
 
 | type | From page | Host does | Reply |
 | --- | --- | --- | --- |
-| `load` | `{}` | read `notes.json` and `.bak` | `{type:"loaded", id, main: string\|null, backup: string\|null}` |
-| `save` | `{id, data: string}`, `data` ≤ 64 MB | atomic save | `{type:"saved", id}` or `{type:"saveFailed", id, reason}` |
-| `quarantine` | `{}` | rename unreadable files with a timestamp | `{type:"quarantined", id}` |
-| `exportFile` | `{id, kind: "note"\|"backup"\|"encryptedBackup"\|"iocCsv"\|"iocMd", suggestedName: string ≤ 120 chars, text: string ≤ 64 MB}` | show the Save dialog with a filter chosen by `kind` (`.md`, `.json`, `.csv`), write atomically to the chosen path | `{type:"exported", id, name}` or `{type:"exportCancelled", id}` |
-| `flushed` | `{}` | finish closing | none |
+| `load` | `{id}` | read `notes.json` and `.bak` | `{type:"loaded", id, main: string\|null, backup: string\|null, version: string, dataDir: string}` |
+| `save` | `{id, data: string}`, `data` ≤ 64 Mi chars | atomic save | `{type:"saved", id}` or `{type:"saveFailed", id, reason}` |
+| `quarantine` | `{id}` | rename unreadable files with a timestamp | `{type:"quarantined", id}` |
+| `exportFile` | `{id, kind: "note"\|"backup"\|"encryptedBackup"\|"iocCsv"\|"iocMd", suggestedName: string ≤ 120 chars, text: string ≤ 64 Mi chars}` | show the Save dialog with a filter chosen by `kind` (`.md`, `.json`, `.csv`), write atomically to the chosen path | `{type:"exported", id, name}`, `{type:"exportCancelled", id}` or `{type:"exportFailed", id, reason}` |
+| `flushed` | `{type}` | finish closing | none |
+| `flushFailed` | `{type}` | the last save failed: ask the user whether to close anyway | none |
+| `saveAsFile` | `{id, format: "txt"\|"md"\|"cpnote", suggestedName ≤ 120 chars, text ≤ 4 Mi chars}` | Save dialog, write the file, create a link | `{type:"fileLinked", id, linkId, name, format}` or `{type:"fileCancelled", id}` |
+| `relinkFile` | as `saveAsFile` plus `linkId` | same, moving an existing link to the new file | `fileLinked` or `fileCancelled` |
+| `openFile` | `{id}` | Open dialog (or the next queued command-line path), read the file, create or reuse a link | `{type:"fileOpened", id, linkId, name, format, text, alreadyLinked}` or `fileCancelled` |
+| `writeFile` | `{id, linkId, text ≤ 4 Mi chars, force: boolean}` | atomic write to the linked file; without `force` it refuses if the file changed since last confirmed | `fileWritten`, `fileConflict` or `fileMissing` (each `{type, id}`) |
+| `readFile` | `{id, linkId}` | read the linked file | `{type:"fileRead", id, text}` or `fileMissing` |
+| `checkFiles` | `{id, linkIds: string[] ≤ 2000}` | compare size, time and hash of each linked file (2 s limit per file) | `{type:"fileStatus", id, statuses: {<linkId>: "ok"\|"changed"\|"missing"\|"unknown"}}` |
+| `unlinkFile` | `{id, linkId}` | drop the link (never touches the file) | `{type:"fileUnlinked", id}` |
+| `revealFile` | `{id, linkId}` | open Explorer with the file selected | `{type:"fileRevealed", id}` |
+| `pruneLinks` | `{id, linkIds: string[] ≤ 2000}` | drop every link not in the list | `{type:"linksPruned", id}` |
+
+`linkId` is exactly 32 lowercase hex characters, made by the host. The page never sends or receives a path, only link IDs and file names. Any file message can fail with `{type:"fileFailed", id, reason, linkId?}` (`linkId` only when the file is already linked to another note), and a `linkId` the host does not know is answered with `rejected`. A message the dispatcher refuses is answered with `{type:"rejected", id, reason}` when it carries a valid `id`.
+
+Host to page without a request: `{type:"openRequested"}`. It asks the page to call `openFile` for the next queued path (from the command line or "Open with"). It is posted only when a path is queued, the page is ready and no dialog is open, with at most one outstanding.
+
+- **Origin rule (`AppOrigin.IsAppUri`):** the sender of every message, every navigation and the page-ready check accept only an absolute `https` URI whose host is `cyberpad.example` (case-insensitive), with the default port, no user-info, no whitespace or control characters and at most 8192 characters. Any path is accepted.
 
 - **Strict validation:**
   - Unknown types, wrong field types, oversize strings, and extra fields are rejected. The host logs only the type and the reason, never the content.

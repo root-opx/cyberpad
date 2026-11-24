@@ -17,9 +17,35 @@ internal static class Program
     private static readonly FileLog s_log = new(LogPath());
 
     [STAThread]
-    private static int Main()
+    private static int Main(string[] args)
     {
+        // "Open with" can start us with the opened file's folder as the working directory. Nothing here should
+        // resolve a relative name against it, so move to the install folder first.
+        try
+        {
+            Directory.SetCurrentDirectory(AppContext.BaseDirectory);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            Log($"startup: cwd {ex.GetType().Name}");
+        }
+
         ApplicationConfiguration.Initialize();
+
+        // Exactly one argument is a path to open; anything else that is present is invalid. An invalid request
+        // is reported once, then CyberPad carries on as if it had been started without it.
+        string? requestedPath = null;
+        if (args.Length > 0)
+        {
+            if (args.Length == 1 && FilePathPolicy.TryNormalize(args[0], out var normalized, out _))
+            {
+                requestedPath = normalized;
+            }
+            else
+            {
+                MessageBox.Show(FilePathPolicy.UnsupportedMessage, Title, MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+        }
 
         var sid = WindowsIdentity.GetCurrent().User?.Value;
         if (sid is null)
@@ -32,6 +58,14 @@ internal static class Program
         using var instance = SingleInstance.TryAcquire(sid);
         if (instance is null)
         {
+            if (requestedPath is not null)
+            {
+                if (!FileHandoff.TrySend(sid, requestedPath, TimeSpan.FromSeconds(3)))
+                {
+                    ShowError("CyberPad is already running but not responding.");
+                    return 1;
+                }
+            }
             SingleInstance.SignalExisting(sid);
             return 0;
         }
@@ -70,10 +104,37 @@ internal static class Program
 
         // Created here so a command-line path can be queued before the window exists.
         var openRequests = new OpenRequestQueue();
+        if (requestedPath is not null && !openRequests.TryEnqueue(requestedPath)) Log("startup: open queue full");
 
         var version = typeof(Program).Assembly.GetName().Version?.ToString(3) ?? "0.0.0";
-        Application.Run(new MainForm(dataDir, wwwroot, version, instance, Log, links, openRequests));
+        using var form = new MainForm(dataDir, wwwroot, version, instance, Log, links, openRequests);
+
+        // Paths from later "Open with" launches arrive on a pipe thread: queue, then let the window pick them up.
+        using var handoff = StartHandoffServer(sid, openRequests, form);
+        Application.Run(form);
         return 0;
+    }
+
+    private static FileHandoffServer? StartHandoffServer(string sid, OpenRequestQueue queue, MainForm form)
+    {
+        try
+        {
+            return new FileHandoffServer(sid, path =>
+            {
+                if (!queue.TryEnqueue(path))
+                {
+                    Log("handoff: open queue full, path dropped");
+                    return;
+                }
+                form.NotifyPathQueued();
+            }, Log);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            // CyberPad still works; only "Open with" while it is running is unavailable.
+            Log($"startup: handoff server {ex.GetType().Name}");
+            return null;
+        }
     }
 
     private static bool IsWebViewRuntimeInstalled()
