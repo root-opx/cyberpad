@@ -106,7 +106,7 @@ The same notepad in its own window and process. If the page inside it crashes, t
 - Only one copy runs at a time. Starting it again brings the open window forward, so two copies never write the same file.
 - Notes are saved to disk as you type. Each save writes a temporary file and swaps it in, keeping the previous save as a backup, so a crash at any moment loses at most the last fraction of a second of typing and never corrupts your notes.
 - If the web engine's page process dies, the window reloads from the last save. If that happens three times within a minute, it shows a message instead of looping. A page that is only busy (not responding for a while) is left alone, so work you have not saved yet is not thrown away.
-- Closing the window waits up to 5 seconds for the last save (including any pending encryption), then exits. If that last save fails (for example, the disk is full or the folder is not writable), the app asks whether to close anyway and lose the latest changes; choose **No** to stay open and export a backup.
+- Closing the window waits up to 5 seconds for the last save (including any pending encryption), then exits. If that last save fails (for example, the disk is full or the folder is not writable), the app asks "CyberPad could not save your latest changes (to its notes or to a linked file). Close anyway?"; choose **No** to stay open and export a backup. If a linked file is still being written after 5 seconds (for example, on a slow network share), it asks "CyberPad is still saving to a linked file. Close anyway?" instead of closing.
 - Minimizing locks encrypted notes, as the lock-when-hidden setting does in a browser.
 - Exports and backups open the Windows Save dialog. They cannot be saved into the CyberPad data folder. Imports use the Open dialog or drag and drop, as before.
 - Links in the preview open in your default browser only when you click them, and only `http`, `https`, and `mailto` links.
@@ -120,10 +120,10 @@ A note can be linked to a `.txt`, `.md` or `.cpnote` file you choose. The note s
 - **Save** (Ctrl+S) writes the note to its linked file now. Linked notes are also written as you type.
 - **Open file** (Ctrl+O) opens a file as a note, linked to it. Opening a file that is already linked jumps to its note.
 - **Open with:** right-click a `.txt`, `.md` or `.cpnote` file in Explorer, choose **Open with**, then **CyberPad**. To make it the default, choose **Open with**, **Choose another app**, pick `CyberPad.exe` and tick **Always**. CyberPad makes no registry changes of its own. You can also run `CyberPad.exe "C:\path\file.md"`. A relative path is resolved against the folder you ran it from. If CyberPad is already running, the file opens in that window; if it cannot be reached within 3 seconds you get "CyberPad is already running but not responding." Any other file type is refused with "CyberPad can only open .txt, .md and .cpnote files."
-- **Formats:** CyberPad reads UTF-8 (with or without BOM) and UTF-16 with a BOM, keeps a file's CRLF line endings when you save it, and refuses anything else, or text containing a NUL, with "This file isn't UTF-8 or UTF-16 text." Files up to 4 MB are accepted.
+- **Formats:** CyberPad reads UTF-8 (with or without BOM) and UTF-16 with a BOM, keeps a file's CRLF line endings when you save it, and refuses anything else, or text containing a NUL, with "This file isn't UTF-8 or UTF-16 text." Files can be up to 4 MB on disk and, for `.txt` and `.md`, at most 1,000,000 characters of text.
 - **Encrypted notes** save as `.cpnote`: a small JSON file holding the same encrypted envelope the note already uses, so it stays ciphertext on disk. Encrypting a note that is linked to a `.txt` or `.md` file removes that link (the plain file is left alone, and you are told). A `.cpnote` file opens as an encrypted note and asks for its passphrase.
 - **Changed elsewhere:** CyberPad checks linked files when the window regains focus. If you have no unsaved changes and have not typed in the note for two seconds, the new version loads quietly; otherwise a bar offers **Keep mine** or **Use the file's version**.
-- **Missing file:** the note shows "File not found" and keeps its text. You can Save as to a new file or unlink it. CyberPad never deletes your files and never recreates one on its own.
+- **Missing file:** the note shows "File not found" and keeps its text. You can Save as to a new file or unlink it. CyberPad never deletes your files and never recreates one on its own. If the file comes back unchanged, saving to it resumes on its own.
 - A file can be linked to one note only ("That file is already linked to another note."). Duplicating a note drops the link, and backups never include it.
 
 **Moving notes from the browser version**
@@ -212,10 +212,11 @@ Manual checks for the desktop app:
   - Edit the file in Notepad, then switch back to CyberPad: you get a quiet reload, or the conflict bar if you had typed.
   - Delete the file: the note shows "File not found".
   - Open a CRLF file and a UTF-16 file, save without edits, and confirm the bytes are identical (`Get-FileHash` before and after).
-  - Edit a file that has mixed line endings elsewhere: **Use the file's version** ends on the conflict bar (expected; **Keep mine** resolves it).
+  - Edit a file that has mixed line endings elsewhere: **Use the file's version** loads it and the bar goes away; the file is not rewritten until you edit the note.
   - "Open with" while CyberPad is running: the file opens in the running window, which comes forward. Try an `.exe` and a second argument too: both are refused.
   - Encrypt a linked `.txt` note: the link is removed and the notice appears. If unlinking fails, the encrypt dialog closes without encrypting.
   - Make a linked file read-only, change the note and close the window: the close prompt appears. Do the same with a file in conflict.
+  - Link a note to a file on a slow or unreachable network share (or pause the share), type, and close the window within a second: after 5 seconds "CyberPad is still saving to a linked file. Close anyway?" appears. **No** keeps the window open (closing again asks the page again); **Yes** closes.
   - Switch to another app and back, and close a native dialog: both trigger the file check (WebView2 focus).
   - Save as / Open dialogs: filters, `.md` as the default extension and the starting folder.
   - Ctrl+O, Ctrl+S and Ctrl+Shift+S work from the editor.
