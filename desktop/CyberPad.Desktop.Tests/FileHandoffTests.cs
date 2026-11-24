@@ -81,9 +81,11 @@ public sealed class FileHandoffTests
     {
         var id = NewId();
         var got = new List<string>();
-        using var server = new FileHandoffServer(id, p => { lock (got) got.Add(p); });
+        var logs = new List<string>();
+        using var server = new FileHandoffServer(id, p => { lock (got) got.Add(p); }, l => { lock (logs) logs.Add(l); });
 
-        foreach (var bytes in new[] { new byte[] { 0xFF, 0xFE, 0xFD }, "C:\n\a\0.txt"u8.ToArray() })
+        // The NUL path is otherwise valid, so only the NUL check can reject it.
+        foreach (var bytes in new[] { new byte[] { 0xFF, 0xFE, 0xFD }, "C:\\n\\a\0.txt"u8.ToArray() })
         {
             using var raw = new NamedPipeClientStream(".", FileHandoff.PipeName(id), PipeDirection.Out);
             raw.Connect(3000);
@@ -93,6 +95,11 @@ public sealed class FileHandoffTests
         Assert.True(FileHandoff.TrySend(id, @"C:\n\good.txt", TimeSpan.FromSeconds(3)));
         Assert.True(WaitFor(() => { lock (got) return got.Count >= 1; }));
         lock (got) Assert.Equal(new[] { @"C:\n\good.txt" }, got);
+        lock (logs)
+        {
+            Assert.Contains("handoff: rejected (not UTF-8)", logs);
+            Assert.Contains("handoff: rejected (NUL)", logs);
+        }
     }
 
     [Fact]

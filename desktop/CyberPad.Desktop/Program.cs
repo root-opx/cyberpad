@@ -21,6 +21,7 @@ internal static class Program
     {
         // "Open with" can start us with the opened file's folder as the working directory. Nothing here should
         // resolve a relative name against it, so move to the install folder first.
+        var startDirectory = Directory.GetCurrentDirectory();
         try
         {
             Directory.SetCurrentDirectory(AppContext.BaseDirectory);
@@ -37,7 +38,7 @@ internal static class Program
         string? requestedPath = null;
         if (args.Length > 0)
         {
-            if (args.Length == 1 && FilePathPolicy.TryNormalize(args[0], out var normalized, out _))
+            if (args.Length == 1 && CommandLinePath.TryResolve(args[0], startDirectory, out var normalized, out _))
             {
                 requestedPath = normalized;
             }
