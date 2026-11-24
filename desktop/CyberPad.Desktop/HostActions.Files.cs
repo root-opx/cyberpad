@@ -219,9 +219,7 @@ public sealed partial class HostActions
         return Task.Run(() =>
         {
             if (!File.Exists(record.Path)) throw new StoreException(NotFoundMessage);
-            var info = new ProcessStartInfo("explorer.exe") { UseShellExecute = false };
-            info.ArgumentList.Add("/select,");
-            info.ArgumentList.Add(record.Path);
+            var info = RevealStartInfo(record.Path);
             try
             {
                 using var process = Process.Start(info);
@@ -231,6 +229,19 @@ public sealed partial class HostActions
                 throw new StoreException("The folder could not be opened.", ex);
             }
         });
+    }
+
+    /// <summary>
+    /// Explorer is started by its full path in the Windows folder: with UseShellExecute=false a bare name would be
+    /// searched for in the app folder and the current directory first, so a planted explorer.exe could run.
+    /// </summary>
+    internal static ProcessStartInfo RevealStartInfo(string fullPath)
+    {
+        var explorer = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "explorer.exe");
+        var info = new ProcessStartInfo(explorer) { UseShellExecute = false };
+        info.ArgumentList.Add("/select,");
+        info.ArgumentList.Add(fullPath);
+        return info;
     }
 
     public Task PruneLinksAsync(IReadOnlyList<string> keep)

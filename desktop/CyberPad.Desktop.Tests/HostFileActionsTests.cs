@@ -295,4 +295,14 @@ public sealed class HostFileActionsTests : IDisposable
         await Assert.ThrowsAsync<UnknownLinkException>(() => _host.UnlinkFileAsync(id));
         await Assert.ThrowsAsync<UnknownLinkException>(() => _host.RevealFileAsync(id));
     }
+
+    [Fact]
+    public void RevealStartInfo_UsesExplorerFromTheWindowsFolder_AndArgumentList()
+    {
+        var info = HostActions.RevealStartInfo(@"C:\docs b.txt");
+        Assert.True(Path.IsPathFullyQualified(info.FileName));
+        Assert.Equal(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "explorer.exe"), info.FileName);
+        Assert.False(info.UseShellExecute);
+        Assert.Equal(new[] { "/select,", @"C:\docs b.txt" }, info.ArgumentList.ToArray());
+    }
 }
