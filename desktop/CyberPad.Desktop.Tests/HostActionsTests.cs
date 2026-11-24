@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using CyberPad.Desktop.Bridge;
+using CyberPad.Desktop.Files;
 using CyberPad.Desktop.Storage;
 
 namespace CyberPad.Desktop.Tests;
@@ -7,6 +8,7 @@ namespace CyberPad.Desktop.Tests;
 public sealed class HostActionsTests
 {
     private const string DataDir = @"C:\Users\u\AppData\Local\CyberPad";
+    private static readonly string Unused = Path.Combine(Path.GetTempPath(), "cyberpad-unused");
 
     [Theory]
     [InlineData(@"C:\Users\u\AppData\Local\CyberPad\notes.json")]
@@ -117,7 +119,7 @@ public sealed class HostActionsTests
     public async Task ExportAsync_FailsCleanlyWithoutAWindowHandle_AndCanBeRetried()
     {
         using var control = new Control(); // never shown: no handle, so BeginInvoke has nowhere to post
-        var host = new HostActions(new NoteStore(Path.Combine(Path.GetTempPath(), "cyberpad-unused")), "1.0.0", control, () => { }, () => { });
+        var host = new HostActions(new NoteStore(Unused), new LinkStore(Unused), new LinkedFiles(), new OpenRequestQueue(), "1.0.0", control, () => { }, () => { });
 
         for (var attempt = 0; attempt < 2; attempt++)
         {
@@ -131,7 +133,7 @@ public sealed class HostActionsTests
     public void CancelPendingDialog_WithNothingPending_DoesNothing()
     {
         using var control = new Control();
-        var host = new HostActions(new NoteStore(Path.Combine(Path.GetTempPath(), "cyberpad-unused")), "1.0.0", control, () => { }, () => { });
+        var host = new HostActions(new NoteStore(Unused), new LinkStore(Unused), new LinkedFiles(), new OpenRequestQueue(), "1.0.0", control, () => { }, () => { });
         host.CancelPendingDialog();
     }
 
@@ -140,7 +142,7 @@ public sealed class HostActionsTests
     {
         using var control = new Control();
         int flushed = 0, failed = 0;
-        var host = new HostActions(new NoteStore(Path.Combine(Path.GetTempPath(), "cyberpad-unused")), "1.0.0", control,
+        var host = new HostActions(new NoteStore(Unused), new LinkStore(Unused), new LinkedFiles(), new OpenRequestQueue(), "1.0.0", control,
             () => flushed++, () => failed++);
         host.FlushFailed();
         Assert.Equal((0, 1), (flushed, failed));

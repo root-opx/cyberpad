@@ -1,5 +1,7 @@
 using System.Security.Principal;
 using CyberPad.Desktop.Diagnostics;
+using CyberPad.Desktop.Files;
+using CyberPad.Desktop.Storage;
 using Microsoft.Web.WebView2.Core;
 
 namespace CyberPad.Desktop;
@@ -54,8 +56,23 @@ internal static class Program
             return 1;
         }
 
+        var links = new LinkStore(dataDir);
+        try
+        {
+            links.Load();
+        }
+        catch (StoreException ex)
+        {
+            Log($"startup: links {ex.GetType().Name}");
+            ShowError("CyberPad could not read its list of linked files. Check that the CyberPad data folder is accessible and start CyberPad again.");
+            return 1;
+        }
+
+        // Created here so a command-line path can be queued before the window exists.
+        var openRequests = new OpenRequestQueue();
+
         var version = typeof(Program).Assembly.GetName().Version?.ToString(3) ?? "0.0.0";
-        Application.Run(new MainForm(dataDir, wwwroot, version, instance, Log));
+        Application.Run(new MainForm(dataDir, wwwroot, version, instance, Log, links, openRequests));
         return 0;
     }
 

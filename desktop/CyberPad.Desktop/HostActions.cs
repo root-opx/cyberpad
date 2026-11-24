@@ -6,28 +6,51 @@ using CyberPad.Desktop.Storage;
 namespace CyberPad.Desktop;
 
 /// <summary>The real host behind the page bridge: disk I/O on worker threads, dialogs on the UI thread.</summary>
-public sealed class HostActions : IHostActions
+public sealed partial class HostActions : IHostActions
 {
     private readonly NoteStore _store;
+    private readonly LinkStore _links;
+    private readonly LinkedFiles _files;
+    private readonly OpenRequestQueue _openQueue;
+    private readonly Action<string> _log;
     private readonly Control _ui;
     private readonly Action _onFlushed;
     private readonly Action _onFlushFailed;
-    private int _exportOpen;
+    private int _dialogOpen;
     private TaskCompletionSource<string?>? _pendingDialog;
 
     internal const string WindowClosedMessage = "The window closed before the export could finish.";
+    internal const string DataFolderMessage = "Choose a folder outside the CyberPad data folder.";
+
+    /// <summary>True while a Save or Open dialog (export or file) is posted or showing.</summary>
+    public bool IsDialogOpen => Volatile.Read(ref _dialogOpen) == 1;
+
+    /// <summary>Raised from any thread after a dialog closed (the window may then post queued open requests).</summary>
+    public event Action? DialogClosed;
+
+    /// <summary>Raised from any thread after every <see cref="OpenFileAsync"/> finished, however it ended.</summary>
+    public event Action? OpenCompleted;
 
     /// <param name="ui">The window that owns the Save dialog; its thread is the UI thread.</param>
     /// <param name="onFlushed">Called (from any thread) when the page reports it has sealed and saved its notes.</param>
     /// <param name="onFlushFailed">Called (from any thread) when the page reports its latest changes could not be saved.</param>
-    public HostActions(NoteStore store, string version, Control ui, Action onFlushed, Action onFlushFailed)
+    /// <param name="log">Content-free diagnostics only (type names and reasons, never paths or text).</param>
+    public HostActions(NoteStore store, LinkStore links, LinkedFiles files, OpenRequestQueue openQueue, string version,
+        Control ui, Action onFlushed, Action onFlushFailed, Action<string>? log = null)
     {
         ArgumentNullException.ThrowIfNull(store);
+        ArgumentNullException.ThrowIfNull(links);
+        ArgumentNullException.ThrowIfNull(files);
+        ArgumentNullException.ThrowIfNull(openQueue);
         ArgumentException.ThrowIfNullOrWhiteSpace(version);
         ArgumentNullException.ThrowIfNull(ui);
         ArgumentNullException.ThrowIfNull(onFlushed);
         ArgumentNullException.ThrowIfNull(onFlushFailed);
         _store = store;
+        _links = links;
+        _files = files;
+        _openQueue = openQueue;
+        _log = log ?? (_ => { });
         Version = version;
         _ui = ui;
         _onFlushed = onFlushed;
@@ -46,30 +69,51 @@ public sealed class HostActions : IHostActions
 
     public async Task<string?> ExportAsync(ExportKind kind, string safeName, string text)
     {
-        // Exports are not serialized by the dispatcher (they wait on the user); never stack a second Save dialog.
-        if (Interlocked.Exchange(ref _exportOpen, 1) == 1) throw new StoreException("Another export is already open.");
+        // Exports are not serialized by the dispatcher (they wait on the user); never stack a second dialog.
+        var path = await RunDialogAsync(() => AskForPath(kind, safeName), "Another export is already open.").ConfigureAwait(false);
+        if (path is null) return null;
+        // An export must never replace notes.json, its backup, or anything else the host owns.
+        if (IsInsideDataDir(path, DataDir)) throw new StoreException(DataFolderMessage);
+        await Task.Run(() => AtomicFile.Write(path, text)).ConfigureAwait(false);
+        return Path.GetFileName(path);
+    }
+
+    /// <summary>
+    /// Runs a modal dialog on the UI thread, one at a time (exports and file dialogs share the slot).
+    /// <see cref="CancelPendingDialog"/> fails it if the window closes first.
+    /// </summary>
+    private async Task<string?> RunDialogAsync(Func<string?> dialog, string busyMessage)
+    {
+        if (Interlocked.Exchange(ref _dialogOpen, 1) == 1) throw new StoreException(busyMessage);
         try
         {
-            var dialog = new TaskCompletionSource<string?>(TaskCreationOptions.RunContinuationsAsynchronously);
-            Volatile.Write(ref _pendingDialog, dialog);
-            string? path;
+            var tcs = new TaskCompletionSource<string?>(TaskCreationOptions.RunContinuationsAsynchronously);
+            Volatile.Write(ref _pendingDialog, tcs);
             try
             {
-                path = await PostToUiAsync(_ui, () => AskForPath(kind, safeName), dialog).ConfigureAwait(false);
+                return await PostToUiAsync(_ui, dialog, tcs).ConfigureAwait(false);
             }
             finally
             {
-                Interlocked.CompareExchange(ref _pendingDialog, null, dialog);
+                Interlocked.CompareExchange(ref _pendingDialog, null, tcs);
             }
-            if (path is null) return null;
-            // An export must never replace notes.json, its backup, or anything else the host owns.
-            if (IsInsideDataDir(path, DataDir)) throw new StoreException("Choose a folder outside the CyberPad data folder.");
-            await Task.Run(() => AtomicFile.Write(path, text)).ConfigureAwait(false);
-            return Path.GetFileName(path);
         }
         finally
         {
-            Volatile.Write(ref _exportOpen, 0);
+            Volatile.Write(ref _dialogOpen, 0);
+            RaiseSafely(DialogClosed);
+        }
+    }
+
+    private void RaiseSafely(Action? handler)
+    {
+        try
+        {
+            handler?.Invoke();
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or ObjectDisposedException)
+        {
+            _log($"host: notify failed {ex.GetType().Name}");
         }
     }
 
@@ -86,23 +130,6 @@ public sealed class HostActions : IHostActions
         return full.StartsWith(folder, StringComparison.OrdinalIgnoreCase)
             || string.Equals(Path.TrimEndingDirectorySeparator(full) + Path.DirectorySeparatorChar, folder, StringComparison.OrdinalIgnoreCase);
     }
-
-    // Temporary stubs: Task 4 implements the linked-file actions. These must not ship.
-    public Task<FileLinkResult?> SaveAsFileAsync(LinkFormat format, string safeName, string text, string? relinkId) => throw new NotImplementedException();
-
-    public Task<FileOpenResult?> OpenFileAsync() => throw new NotImplementedException();
-
-    public Task<WriteOutcome> WriteFileAsync(string linkId, string text, bool force) => throw new NotImplementedException();
-
-    public Task<string?> ReadFileAsync(string linkId) => throw new NotImplementedException();
-
-    public Task<IReadOnlyDictionary<string, FileStatus>> CheckFilesAsync(IReadOnlyList<string> linkIds) => throw new NotImplementedException();
-
-    public Task UnlinkFileAsync(string linkId) => throw new NotImplementedException();
-
-    public Task RevealFileAsync(string linkId) => throw new NotImplementedException();
-
-    public Task PruneLinksAsync(IReadOnlyList<string> keep) => throw new NotImplementedException();
 
     public void Flushed() => _onFlushed();
 

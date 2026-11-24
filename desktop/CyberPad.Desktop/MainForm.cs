@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using CyberPad.Desktop.Bridge;
+using CyberPad.Desktop.Files;
 using CyberPad.Desktop.Storage;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
@@ -19,6 +20,7 @@ internal sealed class MainForm : Form
     private static readonly Color PageBackground = Color.FromArgb(0x14, 0x0f, 0x2e);
     private static readonly string[] AllowedMenuItems = { "cut", "copy", "paste", "pasteAndMatchStyle", "selectAll", "undo", "redo" };
 
+    private const string OpenRequestedMessage = "{\"type\":\"openRequested\"}";
     private const string FlushMessage = "{\"type\":\"flush\"}";
     private const int FlushTimeoutMs = 5000;
     private const int MaxCrashesPerWindow = 3;
@@ -30,26 +32,33 @@ internal sealed class MainForm : Form
     private readonly Action<string> _log;
     private readonly SingleInstance _instance;
     private readonly HostActions _hostActions;
+    private readonly OpenRequestQueue _openRequests;
     private readonly MessageDispatcher _dispatcher;
     private readonly System.Windows.Forms.Timer _closeTimer = new() { Interval = FlushTimeoutMs };
     private readonly Queue<long> _recentCrashes = new();
 
     private WebView2? _webView;
     private bool _pageReady;
+    private bool _openRequestPosted; // the page has been asked and has not yet answered with openFile
     private ulong _appNavigationId;
     private bool _recoveryStopped;
     private bool _closeRequested;
     private bool _closeConfirmed;
     private FormWindowState _lastShownState = FormWindowState.Normal;
 
-    public MainForm(string dataDir, string wwwroot, string version, SingleInstance instance, Action<string> log)
+    public MainForm(string dataDir, string wwwroot, string version, SingleInstance instance, Action<string> log,
+        LinkStore links, OpenRequestQueue openRequests)
     {
         _dataDir = dataDir;
         _wwwroot = wwwroot;
         _placementPath = Path.Combine(dataDir, "window.json");
         _log = log;
         _instance = instance;
-        _hostActions = new HostActions(new NoteStore(dataDir), version, this, ConfirmClose, FlushFailed);
+        _openRequests = openRequests;
+        _hostActions = new HostActions(new NoteStore(dataDir), links, new LinkedFiles(), openRequests, version, this,
+            ConfirmClose, FlushFailed, log);
+        _hostActions.DialogClosed += OnFileActivityChanged;
+        _hostActions.OpenCompleted += OnOpenCompleted;
         _dispatcher = new MessageDispatcher(_hostActions, log);
 
         Text = "CyberPad";
@@ -67,6 +76,8 @@ internal sealed class MainForm : Form
         if (disposing)
         {
             _instance.ActivationRequested -= OnActivationRequested;
+            _hostActions.DialogClosed -= OnFileActivityChanged;
+            _hostActions.OpenCompleted -= OnOpenCompleted;
             _closeTimer.Dispose();
         }
         base.Dispose(disposing);
@@ -238,6 +249,7 @@ internal sealed class MainForm : Form
             // The page is being (re)loaded; it is ready again when this navigation completes.
             _appNavigationId = e.NavigationId;
             _pageReady = false;
+            _openRequestPosted = false;
             return;
         }
         e.Cancel = true;
@@ -258,6 +270,7 @@ internal sealed class MainForm : Form
         if (e.NavigationId != _appNavigationId) return;
         _pageReady = e.IsSuccess && sender is CoreWebView2 core && IsCurrent(core) && AppOrigin.IsAppUri(core.Source);
         if (!e.IsSuccess) _log($"navigation: failed {e.WebErrorStatus}");
+        else RequestOpenCheck(); // paths queued before the page was ready
     }
 
     private void OnNewWindowRequested(object? sender, CoreWebView2NewWindowRequestedEventArgs e)
@@ -335,6 +348,53 @@ internal sealed class MainForm : Form
         {
             _log($"post: failed {ex.GetType().Name}");
             return false;
+        }
+    }
+
+    // ---------------------------------------------------------------- queued open requests
+
+    /// <summary>
+    /// Asks the page to call openFile when paths are queued, the page is ready and no dialog is open. At most one
+    /// request is outstanding: another would make the page's openFile fall through to the Open dialog.
+    /// </summary>
+    private void PostOpenRequestedIfDue()
+    {
+        if (IsDisposed || _closeRequested || _openRequestPosted) return;
+        if (_openRequests.Count == 0 || _hostActions.IsDialogOpen) return;
+        if (TryPostToPage(OpenRequestedMessage)) _openRequestPosted = true;
+    }
+
+    /// <summary>Any thread: re-evaluates <see cref="PostOpenRequestedIfDue"/> on the UI thread. Task 8 calls it after enqueuing a path.</summary>
+    internal void RequestOpenCheck()
+    {
+        try
+        {
+            if (IsHandleCreated && !IsDisposed) BeginInvoke(new Action(PostOpenRequestedIfDue));
+        }
+        catch (InvalidOperationException ex)
+        {
+            _log($"open request: window gone {ex.GetType().Name}");
+        }
+    }
+
+    private void OnFileActivityChanged() => RequestOpenCheck();
+
+    private void OnOpenCompleted()
+    {
+        try
+        {
+            if (IsHandleCreated && !IsDisposed)
+            {
+                BeginInvoke(new Action(() =>
+                {
+                    _openRequestPosted = false;
+                    PostOpenRequestedIfDue();
+                }));
+            }
+        }
+        catch (InvalidOperationException ex)
+        {
+            _log($"open request: window gone {ex.GetType().Name}");
         }
     }
 
