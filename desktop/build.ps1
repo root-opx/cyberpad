@@ -41,6 +41,20 @@ try {
     if ($null -eq $audit -or $null -eq $audit.projects) {
         throw 'Vulnerability audit output has no projects section.'
     }
+    # An audit that could not reach the feed (or otherwise reported problems) must not pass.
+    $problemList = New-Object System.Collections.Generic.List[string]
+    $allProblems = @($audit.problems)
+    foreach ($p in @($audit.projects)) { $allProblems += @($p.problems) }
+    foreach ($pr in $allProblems) {
+        if ($null -eq $pr) { continue }
+        $level = ([string]$pr.level).ToLowerInvariant()
+        if ($level -eq 'error' -or $level -eq 'warning') {
+            $problemList.Add("$($pr.level) $($pr.code) $($pr.text)".Trim())
+        }
+    }
+    if ($problemList.Count -gt 0) {
+        throw ("Vulnerability audit reported problems:`n" + ($problemList -join "`n"))
+    }
     $vulnerable = New-Object System.Collections.Generic.List[string]
     foreach ($p in @($audit.projects)) {
         foreach ($f in @($p.frameworks)) {

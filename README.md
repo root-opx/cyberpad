@@ -1,6 +1,6 @@
 # CyberPad
 
-An offline, cyberpunk-retro notepad that runs in your browser, or as a Windows desktop app. No account, no network, no dependencies.
+An offline, cyberpunk-retro notepad that runs in your browser, or as a Windows desktop app. No account, no network use of its own, no dependencies.
 
 ## Run it
 
@@ -138,7 +138,7 @@ They live in `%LOCALAPPDATA%\CyberPad` (paste it into Explorer's address bar). T
 - When you open the app from `file://`, Chromium shares one storage area between all local HTML files. Serving it from `localhost`, as shown above, gives it a storage area of its own.
 - Clearing site data deletes your notes, so export a backup now and then.
 
-**Desktop app.** Notes are in `%LOCALAPPDATA%\CyberPad\notes.json` (details under [Desktop app](#desktop-app)). Nothing leaves your PC there either.
+**Desktop app.** Notes are in `%LOCALAPPDATA%\CyberPad\notes.json` (details under [Desktop app](#desktop-app)). The app itself never sends them anywhere.
 
 ## Security notes
 
@@ -161,7 +161,7 @@ They live in `%LOCALAPPDATA%\CyberPad` (paste it into Explorer's address bar). T
 - **Narrow host bridge.** The page can send only five message types: load, save, quarantine, export, and flushed. Each is checked for the exact origin (`https://cyberpad.example/`), a known `type`, exact field types, no extra fields, and size limits (64 MB of text, 120-character file names). Anything else is rejected and logged by type and reason only; note content is never logged. There is no message to read or write an arbitrary path or run a command. Export file names are reduced to a safe name with a forced extension, and the user picks the real path in the Save dialog.
 - **Locked-down web view.** The app loads only from its own virtual host `cyberpad.example` (a reserved name that never resolves), keeping the strict CSP. Navigation anywhere else is cancelled, new windows are cancelled, and downloads are cancelled. Every permission request (camera, microphone, location, clipboard read, and so on) is denied. Dev tools and browser shortcut keys are off in release builds, and password and form autofill are off.
 - **External links.** A clicked link opens in the default browser only if it is a well-formed `http`, `https`, or `mailto` URL. `file:`, `javascript:`, `ms-settings:`, UNC paths, and every other scheme are ignored.
-- **Crash-safe storage.** Saves are atomic with a kept backup, and unreadable files are renamed, never deleted. No network access and no telemetry. The app's only dependency is Microsoft's `Microsoft.Web.WebView2` package, pinned by lock file and audited for known vulnerabilities on every build.
+- **Crash-safe storage.** Saves are atomic with a kept backup, and unreadable files are renamed, never deleted. The app and its host make no network requests and send no telemetry. The WebView2 runtime is Microsoft's own component and follows Microsoft's and Windows' settings for diagnostic data and reputation checks, which CyberPad does not control. The only runtime NuGet dependency is `Microsoft.Web.WebView2`; `Microsoft.NET.ILLink.Tasks` is a build-time package, and the published exe bundles the .NET runtime. Every build audits the NuGet packages in the lock files for known vulnerabilities, and fails if the audit finds any or cannot complete.
 - **Not covered:** the exe is unsigned, and the notes file is not encrypted as a whole (see above).
 
 ## Development
