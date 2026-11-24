@@ -211,6 +211,22 @@ public sealed class LinkedFilesTests : IDisposable
     }
 
     [Fact]
+    public void Write_SwapFailsAfterTempWritten_ThrowsAndCleansUpTemp()
+    {
+        var path = P("n.md");
+        var rec = _files.WriteNew(path, LinkFormat.Md, "a");
+        // Held exclusively: the metadata check still passes, the temp is written, then File.Replace hits a
+        // sharing violation and gives up after its retries.
+        using (new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            Assert.Throws<StoreException>(() => _files.Write(rec, "b", false, out _));
+        }
+        Assert.Empty(Directory.GetFiles(_root, ".*.cyberpad-tmp-*"));
+        Assert.Single(Directory.GetFiles(_root));
+        Assert.Equal("a", File.ReadAllText(path));
+    }
+
+    [Fact]
     public void Write_ReadOnlyFile_ThrowsStoreException()
     {
         var path = P("n.md");

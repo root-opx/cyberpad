@@ -98,20 +98,27 @@ public sealed class LinkedFiles
 
         var bytes = EncodeFor(r, text);
 
-        FileStatus status;
-        try
-        {
-            status = Inspect(r, out _);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            throw new StoreException(ReadFailedMessage, ex);
-        }
+        if (!File.Exists(r.Path)) return WriteOutcome.Missing;
 
-        if (status == FileStatus.Missing) return WriteOutcome.Missing;
-        if (status == FileStatus.Changed && !force) return WriteOutcome.Conflict;
-
-        WriteBytes(r.Path, bytes, replaceExisting: true);
+        // The temp file is fully written and flushed first; the check runs only then, right before the swap,
+        // so a save by another program can only slip in during that one metadata check.
+        var outcome = WriteOutcome.Written;
+        var swapped = WriteBytes(r.Path, bytes, replaceExisting: true, gate: () =>
+        {
+            FileStatus status;
+            try
+            {
+                status = Inspect(r, out _);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                throw new StoreException(ReadFailedMessage, ex);
+            }
+            if (status == FileStatus.Missing) outcome = WriteOutcome.Missing;
+            else if (status == FileStatus.Changed && !force) outcome = WriteOutcome.Conflict;
+            return outcome == WriteOutcome.Written;
+        });
+        if (!swapped) return outcome;
         updated = r with { Size = bytes.Length, MtimeUtc = File.GetLastWriteTimeUtc(r.Path), Sha256 = Hash(bytes) };
         return WriteOutcome.Written;
     }
@@ -215,10 +222,10 @@ public sealed class LinkedFiles
     }
 
     /// <summary>
-    /// Writes a hidden temp sibling, flushes it to disk, then swaps it in (retrying only on sharing or lock
+    /// Writes a hidden temp sibling, flushes it to disk, runs the optional gate (false means do not swap), then swaps it in (retrying only on sharing or lock
     /// violations). The temp file is removed on any failure.
     /// </summary>
-    private static void WriteBytes(string path, byte[] bytes, bool replaceExisting)
+    private static bool WriteBytes(string path, byte[] bytes, bool replaceExisting, Func<bool>? gate = null)
     {
         var dir = Path.GetDirectoryName(path) ?? throw new StoreException(WriteFailedMessage);
         var tmp = Path.Combine(dir, "." + Path.GetFileName(path) + ".cyberpad-tmp-"
@@ -237,6 +244,8 @@ public sealed class LinkedFiles
             }
             File.SetAttributes(tmp, FileAttributes.Hidden);
 
+            if (gate is not null && !gate()) return false;
+
             if (replaceExisting)
                 SharingRetry.Run(() => File.Replace(tmp, path, null));
             else
@@ -246,6 +255,7 @@ public sealed class LinkedFiles
                 File.SetAttributes(path, FileAttributes.Normal); // the temp name was hidden, the file is not
             }
             swapped = true;
+            return true;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
