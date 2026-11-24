@@ -10,9 +10,13 @@ public static class FileNameSanitizer
 
     private static readonly HashSet<string> Reserved = BuildReserved();
 
-    public static string Sanitize(string? suggested, ExportKind kind)
+    public static string Sanitize(string? suggested, ExportKind kind) => Sanitize(suggested, ExportKinds.Extension(kind));
+
+    /// <summary>Same rules for an arbitrary extension (with its leading dot), for example ".md".</summary>
+    public static string Sanitize(string? suggested, string extension)
     {
-        var ext = ExportKinds.Extension(kind);
+        ArgumentException.ThrowIfNullOrEmpty(extension);
+        var ext = extension;
         var invalid = Path.GetInvalidFileNameChars();
 
         // 1 + 2: replace invalid characters with '-', collapse runs of '-'.

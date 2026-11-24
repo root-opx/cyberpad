@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using CyberPad.Desktop.Bridge;
+using CyberPad.Desktop.Files;
 using CyberPad.Desktop.Storage;
 
 namespace CyberPad.Desktop;
@@ -85,6 +86,23 @@ public sealed class HostActions : IHostActions
         return full.StartsWith(folder, StringComparison.OrdinalIgnoreCase)
             || string.Equals(Path.TrimEndingDirectorySeparator(full) + Path.DirectorySeparatorChar, folder, StringComparison.OrdinalIgnoreCase);
     }
+
+    // Temporary stubs: Task 4 implements the linked-file actions. These must not ship.
+    public Task<FileLinkResult?> SaveAsFileAsync(LinkFormat format, string safeName, string text, string? relinkId) => throw new NotImplementedException();
+
+    public Task<FileOpenResult?> OpenFileAsync() => throw new NotImplementedException();
+
+    public Task<WriteOutcome> WriteFileAsync(string linkId, string text, bool force) => throw new NotImplementedException();
+
+    public Task<string?> ReadFileAsync(string linkId) => throw new NotImplementedException();
+
+    public Task<IReadOnlyDictionary<string, FileStatus>> CheckFilesAsync(IReadOnlyList<string> linkIds) => throw new NotImplementedException();
+
+    public Task UnlinkFileAsync(string linkId) => throw new NotImplementedException();
+
+    public Task RevealFileAsync(string linkId) => throw new NotImplementedException();
+
+    public Task PruneLinksAsync(IReadOnlyList<string> keep) => throw new NotImplementedException();
 
     public void Flushed() => _onFlushed();
 

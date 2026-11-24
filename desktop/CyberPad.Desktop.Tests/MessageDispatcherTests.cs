@@ -8,62 +8,6 @@ public class MessageDispatcherTests
 {
     private const string Src = "https://cyberpad.example/";
 
-    private sealed class FakeHostActions : IHostActions
-    {
-        public string Version => "1.0.0";
-        public string DataDir => @"C:\data";
-        public (string?, string?) LoadResult = ("m", "b");
-        public string? Saved;
-        public Exception? SaveThrows;
-        public Exception? LoadThrows;
-        public (ExportKind Kind, string Name, string Text)? Exported;
-        public string? ExportResult = "x.csv";
-        public Exception? ExportThrows;
-        public int FlushedCalls, FlushFailedCalls, QuarantineCalls, Calls, DelayMs;
-        private int _running, _max;
-        public int MaxConcurrency => _max;
-
-        public Task<(string? Main, string? Backup)> LoadAsync()
-        {
-            Calls++;
-            if (LoadThrows is not null) throw LoadThrows;
-            return Task.FromResult(LoadResult);
-        }
-
-        public async Task SaveAsync(string data)
-        {
-            Calls++;
-            var now = Interlocked.Increment(ref _running);
-            lock (this) _max = Math.Max(_max, now);
-            try
-            {
-                if (DelayMs > 0) await Task.Delay(DelayMs);
-                if (SaveThrows is not null) throw SaveThrows;
-                Saved = data;
-            }
-            finally { Interlocked.Decrement(ref _running); }
-        }
-
-        public Task QuarantineAsync() { Calls++; QuarantineCalls++; return Task.CompletedTask; }
-
-        /// <summary>When set, ExportAsync waits on this (like a Save dialog the user has left open).</summary>
-        public TaskCompletionSource<string?>? ExportBlocker;
-        public readonly TaskCompletionSource ExportEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
-
-        public Task<string?> ExportAsync(ExportKind kind, string safeName, string text)
-        {
-            Calls++;
-            if (ExportThrows is not null) throw ExportThrows;
-            Exported = (kind, safeName, text);
-            ExportEntered.TrySetResult();
-            return ExportBlocker?.Task ?? Task.FromResult(ExportResult);
-        }
-
-        public void Flushed() { Calls++; FlushedCalls++; }
-
-        public void FlushFailed() { Calls++; FlushFailedCalls++; }
-    }
-
     private static (MessageDispatcher d, FakeHostActions f, List<string> log) Make()
     {
         var f = new FakeHostActions();

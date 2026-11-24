@@ -1,4 +1,5 @@
 using System.Text.Json;
+using CyberPad.Desktop.Files;
 using CyberPad.Desktop.Storage;
 
 namespace CyberPad.Desktop.Bridge;
@@ -12,6 +13,11 @@ public sealed class MessageDispatcher
     public const int MaxTextChars = 64 * 1024 * 1024;
     public const int MaxNameChars = 120;
 
+    /// <summary>Text carried by the linked-file messages (the file cap on disk is 4 MB).</summary>
+    public const int MaxFileTextChars = 4 * 1024 * 1024;
+
+    public const int MaxLinkIds = 2000;
+
     // JSON escaping can make the raw message several times longer than the data it carries.
     private const long MaxRawChars = 6L * MaxTextChars + 65536;
 
@@ -24,6 +30,15 @@ public sealed class MessageDispatcher
         ["save"] = new[] { "type", "id", "data" },
         ["quarantine"] = new[] { "type", "id" },
         ["exportFile"] = new[] { "type", "id", "kind", "suggestedName", "text" },
+        ["saveAsFile"] = new[] { "type", "id", "format", "suggestedName", "text" },
+        ["relinkFile"] = new[] { "type", "id", "linkId", "format", "suggestedName", "text" },
+        ["openFile"] = new[] { "type", "id" },
+        ["writeFile"] = new[] { "type", "id", "linkId", "text", "force" },
+        ["readFile"] = new[] { "type", "id", "linkId" },
+        ["checkFiles"] = new[] { "type", "id", "linkIds" },
+        ["unlinkFile"] = new[] { "type", "id", "linkId" },
+        ["revealFile"] = new[] { "type", "id", "linkId" },
+        ["pruneLinks"] = new[] { "type", "id", "linkIds" },
         ["flushed"] = new[] { "type" },
         ["flushFailed"] = new[] { "type" },
     };
@@ -31,6 +46,11 @@ public sealed class MessageDispatcher
     private readonly IHostActions _actions;
     private readonly Action<string> _log;
     private readonly SemaphoreSlim _gate = new(1, 1);
+
+    // Linked-file I/O may hit a slow network drive, so it has its own gate and never delays notes.json saves.
+    private readonly SemaphoreSlim _fileGate = new(1, 1);
+
+    private const string GenericFileFailure = "The file operation failed.";
 
     public MessageDispatcher(IHostActions actions, Action<string> log)
     {
@@ -41,7 +61,8 @@ public sealed class MessageDispatcher
     /// <summary>Returns the reply JSON, or null when there is nothing to send.</summary>
     /// <remarks>
     /// Store actions (load, save, quarantine), "flushed" and "flushFailed" run one at a time. An export runs outside that gate:
-    /// it waits on the user's Save dialog, and autosaves must not queue behind it until they time out on the page.
+    /// it waits on the user's Save dialog, and autosaves must not queue behind it until they time out on the page. The same
+    /// holds for saveAsFile, relinkFile and openFile. The other file messages run one at a time on a separate file gate.
     /// </remarks>
     public async Task<string?> HandleAsync(string source, string json)
     {
@@ -163,6 +184,126 @@ public sealed class MessageDispatcher
                     }, reason => Serialize(new { type = "exportFailed", id, reason })).ConfigureAwait(false);
                 }
 
+                case "saveAsFile":
+                case "relinkFile":
+                {
+                    string? relinkId = null;
+                    if (type == "relinkFile")
+                    {
+                        if (!TryReadLinkId(root.GetProperty("linkId"), out relinkId)) return Reject(type, id, "invalid linkId");
+                    }
+                    var formatEl = root.GetProperty("format");
+                    var nameEl = root.GetProperty("suggestedName");
+                    var textEl = root.GetProperty("text");
+                    if (formatEl.ValueKind != JsonValueKind.String
+                        || nameEl.ValueKind != JsonValueKind.String
+                        || textEl.ValueKind != JsonValueKind.String)
+                        return Reject(type, id, "fields must be strings");
+                    if (!LinkFormats.TryParse(formatEl.GetString(), out var format)) return Reject(type, id, "unknown format");
+                    var suggested = nameEl.GetString()!;
+                    if (suggested.Length > MaxNameChars) return Reject(type, id, "name too long");
+                    var text = textEl.GetString()!;
+                    if (text.Length > MaxFileTextChars) return Reject(type, id, "text too large");
+                    var safeName = FileNameSanitizer.Sanitize(suggested, LinkFormats.Extension(format));
+                    return await RunFileAsync(type, id!, false, async () =>
+                    {
+                        var r = await _actions.SaveAsFileAsync(format, safeName, text, relinkId).ConfigureAwait(false);
+                        return r is null
+                            ? Serialize(new { type = "fileCancelled", id })
+                            : Serialize(new { type = "fileLinked", id, linkId = r.LinkId, name = r.Name, format = LinkFormats.Wire(format) });
+                    }).ConfigureAwait(false);
+                }
+
+                case "openFile":
+                    return await RunFileAsync(type, id!, false, async () =>
+                    {
+                        var r = await _actions.OpenFileAsync().ConfigureAwait(false);
+                        return r is null
+                            ? Serialize(new { type = "fileCancelled", id })
+                            : Serialize(new
+                            {
+                                type = "fileOpened", id, linkId = r.LinkId, name = r.Name,
+                                format = LinkFormats.Wire(r.Format), text = r.Text, alreadyLinked = r.AlreadyLinked,
+                            });
+                    }).ConfigureAwait(false);
+
+                case "writeFile":
+                {
+                    if (!TryReadLinkId(root.GetProperty("linkId"), out var linkId)) return Reject(type, id, "invalid linkId");
+                    var textEl = root.GetProperty("text");
+                    var forceEl = root.GetProperty("force");
+                    if (textEl.ValueKind != JsonValueKind.String) return Reject(type, id, "text must be a string");
+                    if (forceEl.ValueKind is not (JsonValueKind.True or JsonValueKind.False)) return Reject(type, id, "force must be a boolean");
+                    var text = textEl.GetString()!;
+                    if (text.Length > MaxFileTextChars) return Reject(type, id, "text too large");
+                    var force = forceEl.GetBoolean();
+                    return await RunFileAsync(type, id!, true, async () =>
+                    {
+                        var outcome = await _actions.WriteFileAsync(linkId!, text, force).ConfigureAwait(false);
+                        return outcome switch
+                        {
+                            WriteOutcome.Written => Serialize(new { type = "fileWritten", id }),
+                            WriteOutcome.Conflict => Serialize(new { type = "fileConflict", id }),
+                            WriteOutcome.Missing => Serialize(new { type = "fileMissing", id }),
+                            _ => throw new InvalidOperationException("unknown write outcome"),
+                        };
+                    }).ConfigureAwait(false);
+                }
+
+                case "readFile":
+                {
+                    if (!TryReadLinkId(root.GetProperty("linkId"), out var linkId)) return Reject(type, id, "invalid linkId");
+                    return await RunFileAsync(type, id!, true, async () =>
+                    {
+                        var text = await _actions.ReadFileAsync(linkId!).ConfigureAwait(false);
+                        return text is null
+                            ? Serialize(new { type = "fileMissing", id })
+                            : Serialize(new { type = "fileRead", id, text });
+                    }).ConfigureAwait(false);
+                }
+
+                case "checkFiles":
+                {
+                    if (!TryReadLinkIds(root.GetProperty("linkIds"), out var linkIds)) return Reject(type, id, "invalid linkIds");
+                    return await RunFileAsync(type, id!, true, async () =>
+                    {
+                        var result = await _actions.CheckFilesAsync(linkIds).ConfigureAwait(false);
+                        var statuses = new Dictionary<string, string>(StringComparer.Ordinal);
+                        foreach (var (key, status) in result) statuses[key] = StatusWire(status);
+                        return Serialize(new { type = "fileStatus", id, statuses });
+                    }).ConfigureAwait(false);
+                }
+
+                case "unlinkFile":
+                {
+                    if (!TryReadLinkId(root.GetProperty("linkId"), out var linkId)) return Reject(type, id, "invalid linkId");
+                    return await RunFileAsync(type, id!, true, async () =>
+                    {
+                        await _actions.UnlinkFileAsync(linkId!).ConfigureAwait(false);
+                        return Serialize(new { type = "fileUnlinked", id });
+                    }).ConfigureAwait(false);
+                }
+
+                case "revealFile":
+                {
+                    if (!TryReadLinkId(root.GetProperty("linkId"), out var linkId)) return Reject(type, id, "invalid linkId");
+                    return await RunFileAsync(type, id!, true, async () =>
+                    {
+                        await _actions.RevealFileAsync(linkId!).ConfigureAwait(false);
+                        return Serialize(new { type = "fileRevealed", id });
+                    }).ConfigureAwait(false);
+                }
+
+                case "pruneLinks":
+                {
+                    if (!TryReadLinkIds(root.GetProperty("linkIds"), out var keep)) return Reject(type, id, "invalid linkIds");
+                    return await RunFileAsync(type, id!, true, async () =>
+                    {
+                        await _actions.PruneLinksAsync(keep).ConfigureAwait(false);
+                        return Serialize(new { type = "linksPruned", id });
+                    }).ConfigureAwait(false);
+                }
+
                 default:
                     return Reject(type, id, "unknown type");
             }
@@ -227,6 +368,92 @@ public sealed class MessageDispatcher
             const string generic = "Unexpected error.";
             return failure is not null ? failure(generic) : RejectedReply(id, generic);
         }
+    }
+
+    /// <summary>
+    /// Runs a linked-file action, optionally while holding the file gate. Failures never reach the page unfiltered: a
+    /// StoreException carries a safe reason, an unknown link is a rejection, and any other exception is logged by type
+    /// name only and answered with a generic reason (its message may contain a path).
+    /// </summary>
+    private async Task<string?> RunFileAsync(string type, string id, bool gated, Func<Task<string>> action)
+    {
+        var held = false;
+        try
+        {
+            if (gated)
+            {
+                await _fileGate.WaitAsync().ConfigureAwait(false);
+                held = true;
+            }
+            return await action().ConfigureAwait(false);
+        }
+        catch (UnknownLinkException)
+        {
+            return Reject(type, id, "unknown link");
+        }
+        catch (FileAlreadyLinkedException ex)
+        {
+            _log($"{type}: already linked");
+            return Serialize(new { type = "fileFailed", id, reason = ex.Message, linkId = ex.LinkId });
+        }
+        catch (StoreException ex)
+        {
+            _log($"{type}: store failure");
+            return Serialize(new { type = "fileFailed", id, reason = ex.Message });
+        }
+        catch (Exception ex)
+        {
+            _log($"{type}: unexpected {ex.GetType().Name}");
+            return Serialize(new { type = "fileFailed", id, reason = GenericFileFailure });
+        }
+        finally
+        {
+            if (held) _fileGate.Release();
+        }
+    }
+
+    private static string StatusWire(FileStatus status) => status switch
+    {
+        FileStatus.Ok => "ok",
+        FileStatus.Changed => "changed",
+        FileStatus.Missing => "missing",
+        _ => "unknown",
+    };
+
+    /// <summary>A link id is a string of exactly 32 lowercase hex characters.</summary>
+    private static bool TryReadLinkId(JsonElement el, out string? linkId)
+    {
+        linkId = null;
+        if (el.ValueKind != JsonValueKind.String) return false;
+        var v = el.GetString();
+        if (!IsValidLinkId(v)) return false;
+        linkId = v;
+        return true;
+    }
+
+    private static bool IsValidLinkId(string? v)
+    {
+        if (v is null || v.Length != 32) return false;
+        foreach (var c in v)
+        {
+            if (!(c is >= '0' and <= '9' || c is >= 'a' and <= 'f')) return false;
+        }
+        return true;
+    }
+
+    /// <summary>An array of at most <see cref="MaxLinkIds"/> unique valid link ids; may be empty.</summary>
+    private static bool TryReadLinkIds(JsonElement el, out List<string> ids)
+    {
+        ids = new List<string>();
+        if (el.ValueKind != JsonValueKind.Array) return false;
+        if (el.GetArrayLength() > MaxLinkIds) return false;
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var item in el.EnumerateArray())
+        {
+            if (!TryReadLinkId(item, out var v) || !seen.Add(v!)) return false;
+            ids.Add(v!);
+        }
+        return true;
     }
 
     private string? Reject(string? type, string? id, string reason)
