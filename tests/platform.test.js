@@ -104,18 +104,87 @@ test('exportFile resolves saved:false on exportCancelled and never times out', a
   fake.reply({ type: 'exportCancelled', id: lastId(fake) });
   assert.deepEqual(await promise, { saved: false, name: null });
   const failed = p.exportFile({ kind: 'note', suggestedName: 'n.md', text: 't', mime: 'text/markdown' });
-  fake.reply({ type: 'exportFailed', id: lastId(fake), reason: 'nope' });
-  await assert.rejects(failed, (e) => e.reason === 'host');
+  fake.reply({ type: 'exportFailed', id: lastId(fake), reason: 'Choose a folder outside the CyberPad data folder.' });
+  await assert.rejects(failed, (e) => e instanceof PlatformError && e.reason === 'host'
+    && e.message === 'Choose a folder outside the CyberPad data folder.' && e.userFacing === true);
 });
 
-test('flush handler that throws still posts flushed', async (t) => {
+test('host failure reasons are user-facing only for saveFailed and exportFailed', async () => {
+  const fake = fakeWebview();
+  const p = createPlatform(env({ chrome: fake.chrome }));
+  const bad = p.saveState('{}');
+  fake.reply({ type: 'saveFailed', id: lastId(fake), reason: 'The notes could not be saved to disk.' });
+  await assert.rejects(bad, (e) => e.reason === 'host' && e.message === 'The notes could not be saved to disk.' && e.userFacing === true);
+  const rej = p.saveState('{}');
+  fake.reply({ type: 'rejected', id: lastId(fake), reason: 'unexpected field' });
+  await assert.rejects(rej, (e) => e.reason === 'host' && e.userFacing === false);
+  const noReason = p.saveState('{}');
+  fake.reply({ type: 'saveFailed', id: lastId(fake) });
+  await assert.rejects(noReason, (e) => e.reason === 'host' && e.userFacing === false);
+  const tooLong = p.saveState('{}');
+  fake.reply({ type: 'saveFailed', id: lastId(fake), reason: 'x'.repeat(301) });
+  await assert.rejects(tooLong, (e) => e.reason === 'host' && e.userFacing === false && e.message.length < 301);
+});
+
+test('flush handler that throws posts flushFailed', async (t) => {
   t.mock.method(console, 'error', () => {});
   const fake = fakeWebview();
   const p = createPlatform(env({ chrome: fake.chrome }));
   p.onFlushRequest(async () => { throw new Error('x'); });
   fake.reply({ type: 'flush' });
   await tick(); await tick();
-  assert.ok(fake.posted.some((m) => m.type === 'flushed'));
+  assert.deepEqual(fake.posted, [{ type: 'flushFailed' }]);
+});
+
+test('flush handler resolving true posts flushed, exactly once per request', async () => {
+  const fake = fakeWebview();
+  const p = createPlatform(env({ chrome: fake.chrome }));
+  p.onFlushRequest(async () => true);
+  fake.reply({ type: 'flush' });
+  await tick(); await tick();
+  assert.deepEqual(fake.posted, [{ type: 'flushed' }]);
+  fake.reply({ type: 'flush' });
+  await tick(); await tick();
+  assert.deepEqual(fake.posted, [{ type: 'flushed' }, { type: 'flushed' }]);
+});
+
+test('flush handler resolving false (or anything but true) posts flushFailed', async () => {
+  const fake = fakeWebview();
+  const p = createPlatform(env({ chrome: fake.chrome }));
+  p.onFlushRequest(async () => false);
+  fake.reply({ type: 'flush' });
+  await tick(); await tick();
+  p.onFlushRequest(async () => undefined);
+  fake.reply({ type: 'flush' });
+  await tick(); await tick();
+  assert.deepEqual(fake.posted, [{ type: 'flushFailed' }, { type: 'flushFailed' }]);
+});
+
+test('flush with no handler registered yet posts flushed', async () => {
+  const fake = fakeWebview();
+  createPlatform(env({ chrome: fake.chrome }));
+  fake.reply({ type: 'flush' });
+  await tick(); await tick();
+  assert.deepEqual(fake.posted, [{ type: 'flushed' }]);
+});
+
+test('a flush reply whose post throws never becomes an unhandled rejection', async (t) => {
+  const errors = t.mock.method(console, 'error', () => {});
+  const unhandled = [];
+  const onUnhandled = (e) => unhandled.push(e);
+  process.on('unhandledRejection', onUnhandled);
+  try {
+    let listener = null;
+    const chrome = { webview: { postMessage: () => { throw new Error('gone'); }, addEventListener: (type, fn) => { listener = fn; } } };
+    const p = createPlatform(env({ chrome }));
+    p.onFlushRequest(async () => true);
+    listener({ data: { type: 'flush' } });
+    await tick(); await tick(); await tick();
+    assert.equal(unhandled.length, 0);
+    assert.ok(errors.mock.calls.length >= 1);
+  } finally {
+    process.off('unhandledRejection', onUnhandled);
+  }
 });
 
 test('browser loadState adopts legacy key and reports storage failures', async (t) => {

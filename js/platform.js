@@ -13,12 +13,18 @@
 
   const MAX_DESKTOP_CHARS = 64 * 1024 * 1024;
   const DEFAULT_TIMEOUT_MS = 15000;
+  const MAX_HOST_REASON_CHARS = 300;
 
+  /**
+   * `reason` is a short code ('host', 'timeout', 'quota', 'too-large'). `userFacing` is true only when
+   * `message` is the host's own short, safe failure text (saveFailed / exportFailed), fit to show as is.
+   */
   class PlatformError extends Error {
-    constructor(reason, message) {
+    constructor(reason, message, userFacing = false) {
       super(message || reason);
       this.name = 'PlatformError';
       this.reason = reason;
+      this.userFacing = userFacing === true;
     }
   }
 
@@ -50,13 +56,22 @@
       return p;
     }
 
+    /**
+     * Answers every flush request exactly once: "flushed" only when the handler confirms that everything is
+     * saved (or no handler is registered yet, so there is nothing to save), "flushFailed" otherwise.
+     */
     async function runFlush() {
+      let ok = false;
       try {
-        if (flushHandler) await flushHandler();
+        ok = flushHandler ? (await flushHandler()) === true : true;
       } catch (err) {
         console.error('flush handler failed', err && err.name);
-      } finally {
-        webview.postMessage({ type: 'flushed' });
+        ok = false;
+      }
+      try {
+        webview.postMessage({ type: ok ? 'flushed' : 'flushFailed' });
+      } catch (err) {
+        console.error('flush reply failed', err && err.name);
       }
     }
 
@@ -67,9 +82,16 @@
       if (typeof m.id !== 'string') return;
       const p = settle(m.id);
       if (!p) return; // unknown or already settled
-      const reason = typeof m.reason === 'string' ? m.reason : 'host';
-      if (m.type === 'rejected' || m.type === 'saveFailed' || m.type === 'exportFailed') p.reject(new PlatformError('host', reason));
-      else p.accept(m, p.resolve, p.reject);
+      if (m.type === 'saveFailed' || m.type === 'exportFailed') {
+        // The host's failure text is a short user-facing reason by contract; anything else is not shown.
+        const shown = typeof m.reason === 'string' && m.reason.length > 0 && m.reason.length <= MAX_HOST_REASON_CHARS;
+        p.reject(shown ? new PlatformError('host', m.reason, true) : new PlatformError('host', m.type));
+      } else if (m.type === 'rejected') {
+        // A rejection reason is diagnostic (for example "unexpected field"), never shown to the user.
+        p.reject(new PlatformError('host', typeof m.reason === 'string' ? m.reason.slice(0, MAX_HOST_REASON_CHARS) : 'rejected'));
+      } else {
+        p.accept(m, p.resolve, p.reject);
+      }
     }
 
     if (isDesktop && typeof webview.addEventListener === 'function') webview.addEventListener('message', onMessage);

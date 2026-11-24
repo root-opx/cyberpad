@@ -63,7 +63,7 @@
     '#welcome',
   ].join('\n');
 
-  const MIGRATION_LINE = 'Moving from the browser version? Export a backup there (Command palette → Export backup), then import it here.';
+  const MIGRATION_LINE = 'Moving from the browser version? Export a backup there (Command palette → Export backup of all notes), then import it here.';
   const welcomeText = () => (platform.isDesktop
     ? WELCOME
       .replace('A notepad that lives in this browser.', 'A notepad that lives on this computer.')
@@ -85,6 +85,9 @@
     saveTimer: 0,
     saving: null,           // promise of the save loop while a save is in flight
     saveDirty: false,       // a change arrived during a save: save once more afterwards
+    changeSeq: 0,           // bumped on every change that needs saving
+    savedSeq: 0,            // changeSeq covered by the last successful save
+    sealFailed: new Set(),  // note ids whose latest edits could not be encrypted, so they are not in any save
     lastStateChars: 0,
     legacyKey: null,
     host: { version: null, dataDir: null },
@@ -161,6 +164,10 @@
     if (reason === 'too-large') {
       setSaveState('error', 'Not saved');
       toast('Your notes are over 64 MB, so they can’t be saved. Export a backup, then remove large notes.', 'error');
+    } else if (err instanceof PlatformError && err.userFacing) {
+      // The host's reason is a short, safe sentence (never note content), shown as text.
+      setSaveState('error', 'Save failed');
+      toast(`Not saved: ${err.message} Export a backup from the command palette to keep your notes safe.`, 'error');
     } else {
       setSaveState('error', 'Save failed');
       toast(`Saving failed (${SAVE_REASON[reason] || 'unexpected error'}). Export a backup from the command palette to keep your notes safe.`, 'error');
@@ -173,6 +180,7 @@
 
   /** One save of the current state. Never throws. */
   async function saveOnce() {
+    const seq = S.changeSeq;
     let text = serializeState();
     try {
       try {
@@ -197,6 +205,7 @@
       return failSave(err);
     }
     S.lastStateChars = text.length;
+    S.savedSeq = seq;
     if (S.legacyKey) {
       // The data now lives under the new key, so the old copy can go.
       platform.removeLegacy(S.legacyKey);
@@ -206,12 +215,28 @@
     return true;
   }
 
-  /**
-   * Saves now. At most one save is in flight: a call during a save marks the
-   * state dirty and the running loop saves once more. The promise resolves
-   * after that last save, with whether it succeeded.
-   */
+  /** Records a change that needs saving; it stays unsaved until a save that started after it succeeds. */
+  function markChanged() {
+    S.changeSeq += 1;
+  }
+
+  /** True while a change has not reached a successful save, or is still waiting to be encrypted or saved. */
+  function hasUnsavedChanges() {
+    return S.changeSeq !== S.savedSeq || pendingWrites() || [...S.sealFailed].some((id) => noteById(id));
+  }
+
+  /** The state changed: save it now. */
   function persistNow() {
+    markChanged();
+    return saveNow();
+  }
+
+  /**
+   * Saves now without recording a change. At most one save is in flight: a
+   * call during a save marks the state dirty and the running loop saves once
+   * more. The promise resolves after that last save, with whether it succeeded.
+   */
+  function saveNow() {
     clearTimeout(S.saveTimer);
     S.saveTimer = 0;
     if (!S.storageOk) { setSaveState('error', 'Not saving'); return Promise.resolve(false); }
@@ -233,9 +258,10 @@
   }
 
   function schedulePersist() {
+    markChanged();
     setSaveState('writing');
     clearTimeout(S.saveTimer);
-    S.saveTimer = setTimeout(persistNow, 400);
+    S.saveTimer = setTimeout(saveNow, 400);
   }
 
   async function load() {
@@ -263,10 +289,14 @@
       const canKeep = platform.isDesktop || typeof loaded.main === 'string';
       let kept = false;
       if (canKeep) {
-        try { await platform.quarantine(loaded.main); kept = true; resave = platform.isDesktop && source !== 'none'; } catch (err) {
+        try { await platform.quarantine(loaded.main); kept = true; } catch (err) {
           console.error('quarantine failed', err instanceof PlatformError ? err.reason : (err && err.name));
         }
+        // The notes in memory are valid whether or not the files were set aside: write them back as notes.json.
+        resave = platform.isDesktop && source !== 'none';
       }
+      // The unreadable legacy copy could not be kept, so it is the only raw copy: the first save must not remove it.
+      if (!kept) S.legacyKey = null;
       const place = platform.isDesktop ? 'in the data folder' : 'in browser storage';
       setTimeout(() => toast(kept
         ? (source === 'main'
@@ -287,6 +317,7 @@
   // ------------------------------------------------------------ encryption
 
   function queueSeal(note) {
+    markChanged();
     clearTimeout(S.sealTimers.get(note.id));
     S.sealTimers.set(note.id, setTimeout(() => sealNow(note.id), 500));
     setSaveState('writing', 'Encrypting…');
@@ -302,8 +333,10 @@
       const text = S.plain.get(id);
       if (!note || !keyInfo || text == null) return;
       note.cipher = await vault.seal(keyInfo, text);
+      S.sealFailed.delete(id);
       persistNow();
     }).catch((err) => {
+      S.sealFailed.add(id);
       setSaveState('error', 'Encrypt failed');
       toast('The latest changes could not be encrypted, so they were not saved. Press Ctrl+S to retry.', 'error');
       console.error(err);
@@ -2127,9 +2160,11 @@
     } catch (err) {
       const reason = err instanceof PlatformError ? err.reason : null;
       console.error('export failed', reason || (err && err.name));
-      toast(reason === 'too-large'
-        ? 'That file is over 64 MB, so it could not be exported.'
-        : `Export failed (${SAVE_REASON[reason] || 'unexpected error'}).`, 'error');
+      let message = `Export failed (${SAVE_REASON[reason] || 'unexpected error'}).`;
+      if (reason === 'too-large') message = 'That file is over 64 MB, so it could not be exported.';
+      // The host's reason is a short, safe sentence (never note content), shown as text.
+      else if (err instanceof PlatformError && err.userFacing) message = `Not saved: ${err.message}`;
+      toast(message, 'error');
       return null;
     }
   }
@@ -2473,7 +2508,7 @@
 
     if (mod && !e.altKey && k === 's') {
       e.preventDefault();
-      flushSeals().then(() => persistNow()).then((ok) => { if (ok) toast('Saved.'); });
+      flushSeals().then(() => saveNow()).then((ok) => { if (ok) toast('Saved.'); });
       return;
     }
     if (mod && !e.altKey && !e.shiftKey && k === 'e') { e.preventDefault(); cycleView(); return; }
@@ -2653,7 +2688,7 @@
     // The desktop host asks for a flush before closing instead.
     if (!platform.isDesktop) {
       window.addEventListener('beforeunload', (e) => {
-        if (S.saveTimer) persistNow();
+        if (S.saveTimer) saveNow();
         if (S.sealTimers.size || S.sealing.size) {
           for (const id of [...S.sealTimers.keys()]) sealNow(id);
           e.preventDefault();
@@ -2663,7 +2698,7 @@
     }
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'hidden') {
-        if (S.saveTimer) persistNow();
+        if (S.saveTimer) saveNow();
         for (const id of [...S.sealTimers.keys()]) sealNow(id);
         if (S.settings.lockOnHide && S.keys.size) lockAll('Encrypted notes were locked because the tab was hidden.');
       }
@@ -2686,13 +2721,20 @@
   async function init() {
     const { firstRun, resave } = await load();
     if (platform.isDesktop) {
-      platform.onFlushRequest(async () => { await flushSeals(); await persistNow(); });
+      // Resolves true only when every change is saved; false makes the host ask before closing.
+      platform.onFlushRequest(async () => {
+        await flushSeals();
+        await saveNow();
+        return !hasUnsavedChanges();
+      });
     }
     wireEvents();
     renderAll();
     setSaveState('saved');
-    // The host moved both files aside when it quarantined: write the notes we kept in memory straight back.
-    if (firstRun || resave) persistNow();
+    // After a quarantine attempt the notes kept in memory may exist nowhere on disk: write them straight back
+    // (as a change, so closing asks if that write fails). A first run only stores the welcome note.
+    if (resave) persistNow();
+    else if (firstRun) saveNow();
     setInterval(() => {
       els.stClock.textContent = T.hm(new Date());
       const limit = S.settings.autoLockMinutes * 60000;
