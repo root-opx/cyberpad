@@ -19,6 +19,16 @@ function Assert-ExitCode([string]$step) {
     }
 }
 
+# Read before anything is built, so a bad version fails fast instead of after the publish.
+[xml]$xml = Get-Content -LiteralPath $csproj -Raw
+$version = $null
+foreach ($group in @($xml.Project.PropertyGroup)) {
+    if ($group.Version) { $version = [string]$group.Version; break }
+}
+if ($version -notmatch '^\d+\.\d+\.\d+$') {
+    throw 'Could not read a valid <Version> from the .csproj.'
+}
+
 Push-Location $root
 try {
     Write-Host '== 1/5 npm test'
@@ -75,29 +85,41 @@ try {
     if (Test-Path -LiteralPath $publishDir) {
         Remove-Item -LiteralPath $publishDir -Recurse -Force
     }
+    # No .pdb (its embedded path names the build machine's user folder) and no package XML docs in the release.
     & dotnet publish $project -c Release -r win-x64 --self-contained true `
-        -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o $publishDir
+        -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true `
+        -p:DebugType=none -p:GenerateDocumentationFile=false -p:PublishReferencesDocumentationFiles=false `
+        -o $publishDir
     Assert-ExitCode 'dotnet publish'
 
     Write-Host '== 5/5 zip'
-    [xml]$xml = Get-Content -LiteralPath $csproj -Raw
-    $version = $null
-    foreach ($group in @($xml.Project.PropertyGroup)) {
-        if ($group.Version) { $version = [string]$group.Version; break }
+    foreach ($required in @('CyberPad.exe', 'wwwroot\index.html')) {
+        if (-not (Test-Path -LiteralPath (Join-Path $publishDir $required) -PathType Leaf)) {
+            throw "Publish output is missing $required."
+        }
     }
-    if ($version -notmatch '^\d+\.\d+\.\d+$') {
-        throw 'Could not read a valid <Version> from the .csproj.'
+    $leftovers = @(Get-ChildItem -LiteralPath $publishDir -Recurse -File | Where-Object { $_.Extension -eq '.pdb' -or $_.Extension -eq '.xml' })
+    if ($leftovers.Count -gt 0) {
+        throw ("Publish output contains debug or documentation files:`n" + (($leftovers | ForEach-Object { $_.Name }) -join "`n"))
     }
     $zip = Join-Path $dist "CyberPad-win-x64-$version.zip"
-    # Antivirus or the indexer can briefly lock freshly published files, so retry a few times.
+    # ZipFile reads each file with FileShare.Read, so an indexer or antivirus scanner that has a file open for
+    # reading does not block it (Compress-Archive in PowerShell 5.1 opens files exclusively and fails then).
+    # A writer can still hold a file briefly, so retry a few times.
+    # Zip entry names must use '/' (Windows PowerShell's .NET Framework writes '\' unless told otherwise).
+    [AppContext]::SetSwitch('Switch.System.IO.Compression.ZipFile.UseBackslash', $false)
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
     $zipped = $false
     for ($attempt = 1; $attempt -le 5 -and -not $zipped; $attempt++) {
+        if (Test-Path -LiteralPath $zip) {
+            Remove-Item -LiteralPath $zip -Force
+        }
         try {
-            Compress-Archive -Path (Join-Path $publishDir '*') -DestinationPath $zip -Force
+            [System.IO.Compression.ZipFile]::CreateFromDirectory($publishDir, $zip, [System.IO.Compression.CompressionLevel]::Optimal, $false)
             $zipped = $true
         } catch {
             if ($attempt -eq 5) { throw }
-            Write-Host "Zip attempt $attempt failed, retrying: $($_.Exception.Message)"
+            Write-Host "Zip attempt $attempt failed, retrying: $($_.Exception.InnerException.Message)"
             Start-Sleep -Seconds 3
         }
     }

@@ -95,26 +95,26 @@ Then open http://localhost:8787.
 
 ## Desktop app
 
-The same notepad in its own window and process, so a browser crash can never take it down. It is a .NET 8 + WebView2 host around the unchanged web app, for 64-bit Windows.
+The same notepad in its own window and process. If the page inside it crashes, the window stays open and your saved notes are not lost. It is a .NET 8 + WebView2 host around the unchanged web app, for 64-bit Windows.
 
 **Get it**
-- Download `CyberPad-win-x64-<version>.zip`, or build it yourself (see Development). Unzip it anywhere and run `CyberPad.exe`. Nothing is installed.
+- Build `CyberPad-win-x64-<version>.zip` with `desktop/build.ps1` (see Development); there is no hosted download yet. Unzip it anywhere and run `CyberPad.exe`. Nothing is installed.
 - The build is not code-signed, so Windows SmartScreen warns on first run. Click **More info**, then **Run anyway**.
 - It needs the Microsoft Edge WebView2 Runtime, which is preinstalled on Windows 11. If it is missing, the app shows a message with Microsoft's download page; it never downloads anything itself.
 
 **How it behaves**
 - Only one copy runs at a time. Starting it again brings the open window forward, so two copies never write the same file.
 - Notes are saved to disk as you type. Each save writes a temporary file and swaps it in, keeping the previous save as a backup, so a crash at any moment loses at most the last fraction of a second of typing and never corrupts your notes.
-- If the web engine's page process dies, the window reloads from the last save. If that happens three times within a minute, it shows a message instead of looping.
-- Closing the window waits up to 5 seconds for the last save (including any pending encryption), then exits.
+- If the web engine's page process dies, the window reloads from the last save. If that happens three times within a minute, it shows a message instead of looping. A page that is only busy (not responding for a while) is left alone, so work you have not saved yet is not thrown away.
+- Closing the window waits up to 5 seconds for the last save (including any pending encryption), then exits. If that last save fails (for example, the disk is full or the folder is not writable), the app asks whether to close anyway and lose the latest changes; choose **No** to stay open and export a backup.
 - Minimizing locks encrypted notes, as the lock-when-hidden setting does in a browser.
 - Exports and backups open the Windows Save dialog. They cannot be saved into the CyberPad data folder. Imports use the Open dialog or drag and drop, as before.
 - Links in the preview open in your default browser only when you click them, and only `http`, `https`, and `mailto` links.
-- If the app cannot read its notes file at startup, it restores the previous save, keeps the unreadable file in the data folder, and tells you. If it cannot load your notes at all, saving is turned off for that session, so nothing gets overwritten.
+- If the app cannot read its notes file at startup, it restores the previous save, keeps the unreadable file in the data folder, and tells you. If only the backup copy is damaged, it keeps the unreadable files aside and immediately writes your notes back as `notes.json`. If it cannot load your notes at all, saving is turned off for that session, so nothing gets overwritten.
 
 **Moving notes from the browser version**
 
-The desktop app cannot read a browser's storage. In the browser version, export a backup (plain, or **Export encrypted backup**), then import that file here. A new install's welcome note says the same.
+The desktop app cannot read a browser's storage. In the browser version, export a backup (Command palette → **Export backup of all notes**, or **Export encrypted backup**), then import that file here. A new install's welcome note says the same.
 
 **Your notes**
 
@@ -124,8 +124,10 @@ They live in `%LOCALAPPDATA%\CyberPad` (paste it into Explorer's address bar). T
 | --- | --- |
 | `notes.json` | all your notes |
 | `notes.json.bak` | the previous good save |
+| `notes.json.tmp` | a save in progress; it exists only for a moment, or after a save was cut off |
 | `notes.unreadable-<time>.json`, `notes.unreadable-<time>.bak.json` | files the app could not read, kept instead of deleted |
 | `window.json` | window size and position |
+| `cyberpad.log`, `cyberpad.log.1` | diagnostics log: UTC time, message type, rejection reason or error type name, never note content. When it reaches 256 KB it becomes `cyberpad.log.1` (replacing the older one) and a new log starts, so the two stay around half a megabyte. |
 | `WebView2\` | the web engine's own profile |
 
 **Unencrypted notes are plain text in `notes.json`.** Anyone who can read your Windows profile or the disk can read them. Encrypt anything sensitive, and consider BitLocker for the disk. Encrypted notes are stored as ciphertext only.
@@ -158,11 +160,11 @@ They live in `%LOCALAPPDATA%\CyberPad` (paste it into Explorer's address bar). T
 
 ### Desktop app
 
-- **Narrow host bridge.** The page can send only five message types: load, save, quarantine, export, and flushed. Each is checked for the exact origin (`https://cyberpad.example/`), a known `type`, exact field types, no extra fields, and size limits (64 MB of text, 120-character file names). Anything else is rejected and logged by type and reason only; note content is never logged. There is no message to read or write an arbitrary path or run a command. Export file names are reduced to a safe name with a forced extension, and the user picks the real path in the Save dialog.
-- **Locked-down web view.** The app loads only from its own virtual host `cyberpad.example` (a reserved name that never resolves), keeping the strict CSP. Navigation anywhere else is cancelled, new windows are cancelled, and downloads are cancelled. Every permission request (camera, microphone, location, clipboard read, and so on) is denied. Dev tools and browser shortcut keys are off in release builds, and password and form autofill are off.
+- **Narrow host bridge.** The page can send only six message types: load, save, quarantine, export, flushed, and flushFailed. Each is checked for the exact origin (`https://cyberpad.example/`), a known `type`, exact field types, no extra fields, and size limits (64 MB of text, 120-character file names). Anything else is rejected and written to `cyberpad.log` by type and reason only; note content is never logged. There is no message to read or write an arbitrary path or run a command. Export file names are reduced to a safe name with a forced extension, and the user picks the real path in the Save dialog.
+- **Locked-down web view.** The app loads only from its own virtual host `cyberpad.example` (a reserved name that never resolves), keeping the strict CSP. Navigation anywhere else is cancelled, new windows are cancelled, and downloads are cancelled. Every permission request (camera, microphone, location, clipboard read, and so on) is denied. Dev tools and browser shortcut keys are off in release builds, password and form autofill are off, and SmartScreen reputation checks are off for the local page.
 - **External links.** A clicked link opens in the default browser only if it is a well-formed `http`, `https`, or `mailto` URL. `file:`, `javascript:`, `ms-settings:`, UNC paths, and every other scheme are ignored.
-- **Crash-safe storage.** Saves are atomic with a kept backup, and unreadable files are renamed, never deleted. The app and its host make no network requests and send no telemetry. The WebView2 runtime is Microsoft's own component and follows Microsoft's and Windows' settings for diagnostic data and reputation checks, which CyberPad does not control. The only runtime NuGet dependency is `Microsoft.Web.WebView2`; `Microsoft.NET.ILLink.Tasks` is a build-time package, and the published exe bundles the .NET runtime. Every build audits the NuGet packages in the lock files for known vulnerabilities, and fails if the audit finds any or cannot complete.
-- **Not covered:** the exe is unsigned, and the notes file is not encrypted as a whole (see above).
+- **Crash-safe storage.** Saves are atomic with a kept backup, and unreadable files are renamed, never deleted. The app and its host make no network requests and send no telemetry. The WebView2 runtime is Microsoft's own component and follows Microsoft's and Windows' settings for diagnostic data, which CyberPad does not control. The only runtime NuGet dependency is `Microsoft.Web.WebView2`; `Microsoft.NET.ILLink.Tasks` is a build-time package, and the published exe bundles the .NET runtime. Every build audits the NuGet packages in the lock files for known vulnerabilities, and fails if the audit finds any or cannot complete.
+- **Not covered:** the exe is unsigned, and the notes file is not encrypted as a whole (see above). WebView2 crash dumps under `%LOCALAPPDATA%\CyberPad\WebView2` can contain memory from the page, including the text of unlocked encrypted notes.
 
 ## Development
 
@@ -184,6 +186,7 @@ powershell -ExecutionPolicy Bypass -File desktop/build.ps1
 Manual checks for the desktop app:
 - Kill the WebView render process (`msedgewebview2.exe`) in Task Manager: the window reloads with your notes intact.
 - Kill `CyberPad.exe` while typing: the last save is intact on the next start.
+- Hold `notes.json` open in PowerShell (`$f = [IO.File]::Open("$env:LOCALAPPDATA\CyberPad\notes.json", 'Open', 'ReadWrite', 'None')`), type something, and close the window: the app asks before closing without saving, and **No** keeps it open. Run `$f.Dispose()` afterwards.
 - Minimize with an unlocked encrypted note: it is locked when you restore the window.
 - Click an NVD link in the preview: it opens in the default browser.
 - Start `CyberPad.exe` a second time: the first window comes to the front.
