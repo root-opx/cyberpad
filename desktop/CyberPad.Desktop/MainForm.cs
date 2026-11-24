@@ -29,6 +29,7 @@ internal sealed class MainForm : Form
     private readonly string _placementPath;
     private readonly Action<string> _log;
     private readonly SingleInstance _instance;
+    private readonly HostActions _hostActions;
     private readonly MessageDispatcher _dispatcher;
     private readonly System.Windows.Forms.Timer _closeTimer = new() { Interval = FlushTimeoutMs };
     private readonly Queue<long> _recentCrashes = new();
@@ -48,7 +49,8 @@ internal sealed class MainForm : Form
         _placementPath = Path.Combine(dataDir, "window.json");
         _log = log;
         _instance = instance;
-        _dispatcher = new MessageDispatcher(new HostActions(new NoteStore(dataDir), version, this, ConfirmClose), log);
+        _hostActions = new HostActions(new NoteStore(dataDir), version, this, ConfirmClose);
+        _dispatcher = new MessageDispatcher(_hostActions, log);
 
         Text = "CyberPad";
         MinimumSize = MinWindowSize;
@@ -439,6 +441,13 @@ internal sealed class MainForm : Form
         _closeTimer.Stop();
         SavePlacement();
         base.OnFormClosing(e);
+    }
+
+    protected override void OnFormClosed(FormClosedEventArgs e)
+    {
+        // An export whose Save dialog was posted but never shown must not leave the page's request hanging.
+        _hostActions.CancelPendingDialog();
+        base.OnFormClosed(e);
     }
 
     /// <summary>True while the close must wait for the page: the flush was posted now or earlier.</summary>

@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using CyberPad.Desktop.Bridge;
 using CyberPad.Desktop.Storage;
 
@@ -10,6 +11,9 @@ public sealed class HostActions : IHostActions
     private readonly Control _ui;
     private readonly Action _onFlushed;
     private int _exportOpen;
+    private TaskCompletionSource<string?>? _pendingDialog;
+
+    internal const string WindowClosedMessage = "The window closed before the export could finish.";
 
     /// <param name="ui">The window that owns the Save dialog; its thread is the UI thread.</param>
     /// <param name="onFlushed">Called (from any thread) when the page reports it has sealed and saved its notes.</param>
@@ -41,7 +45,17 @@ public sealed class HostActions : IHostActions
         if (Interlocked.Exchange(ref _exportOpen, 1) == 1) throw new StoreException("Another export is already open.");
         try
         {
-            var path = await OnUiThreadAsync(() => AskForPath(kind, safeName)).ConfigureAwait(false);
+            var dialog = new TaskCompletionSource<string?>(TaskCreationOptions.RunContinuationsAsynchronously);
+            Volatile.Write(ref _pendingDialog, dialog);
+            string? path;
+            try
+            {
+                path = await PostToUiAsync(_ui, () => AskForPath(kind, safeName), dialog).ConfigureAwait(false);
+            }
+            finally
+            {
+                Interlocked.CompareExchange(ref _pendingDialog, null, dialog);
+            }
             if (path is null) return null;
             // An export must never replace notes.json, its backup, or anything else the host owns.
             if (IsInsideDataDir(path, DataDir)) throw new StoreException("Choose a folder outside the CyberPad data folder.");
@@ -70,8 +84,16 @@ public sealed class HostActions : IHostActions
 
     public void Flushed() => _onFlushed();
 
+    /// <summary>
+    /// Fails an export whose Save dialog has been posted but not yet answered. The window calls this when it closes,
+    /// so the page's request ends with a failure instead of waiting forever. Safe to call from any thread, any time.
+    /// </summary>
+    public void CancelPendingDialog() =>
+        Volatile.Read(ref _pendingDialog)?.TrySetException(new StoreException(WindowClosedMessage));
+
     private string? AskForPath(ExportKind kind, string safeName)
     {
+        if (_ui.IsDisposed || !_ui.IsHandleCreated) throw new StoreException(WindowClosedMessage);
         using var dialog = new SaveFileDialog
         {
             Filter = ExportKinds.DialogFilter(kind),
@@ -85,24 +107,37 @@ public sealed class HostActions : IHostActions
         return dialog.ShowDialog(_ui) == DialogResult.OK && dialog.FileName.Length > 0 ? dialog.FileName : null;
     }
 
-    /// <summary>Runs <paramref name="func"/> on the UI thread without blocking the caller's thread.</summary>
-    private Task<T> OnUiThreadAsync<T>(Func<T> func)
+    /// <summary>
+    /// Posts <paramref name="func"/> to the UI thread and completes <paramref name="tcs"/> with its result or exception.
+    /// It always posts, never runs inline, even when already on the UI thread. The caller is typically still inside
+    /// WebView2's WebMessageReceived handler, and a modal dialog must not run its message loop there (it would hold
+    /// back later page messages, such as autosaves, until the dialog closes). If the window is gone, the task faults
+    /// with a <see cref="StoreException"/>; if <paramref name="tcs"/> is completed before the post runs (the window
+    /// is closing), <paramref name="func"/> is skipped.
+    /// </summary>
+    internal static Task<T> PostToUiAsync<T>(ISynchronizeInvoke ui, Func<T> func, TaskCompletionSource<T> tcs)
     {
-        if (!_ui.InvokeRequired) return Task.FromResult(func());
-
-        var tcs = new TaskCompletionSource<T>(TaskCreationOptions.RunContinuationsAsynchronously);
-        _ui.BeginInvoke(() =>
+        try
         {
-            try
+            ui.BeginInvoke(new Action(() =>
             {
-                tcs.SetResult(func());
-            }
-            catch (Exception ex)
-            {
-                // Not swallowed: the exception is handed to the awaiting caller, which reports it.
-                tcs.SetException(ex);
-            }
-        });
+                if (tcs.Task.IsCompleted) return;
+                try
+                {
+                    tcs.TrySetResult(func());
+                }
+                catch (Exception ex)
+                {
+                    // Not swallowed: the exception is handed to the awaiting caller, which reports it.
+                    tcs.TrySetException(ex);
+                }
+            }), null);
+        }
+        catch (InvalidOperationException ex)
+        {
+            // No window handle, or the window was disposed (ObjectDisposedException derives from this).
+            tcs.TrySetException(new StoreException(WindowClosedMessage, ex));
+        }
         return tcs.Task;
     }
 }
