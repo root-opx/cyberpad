@@ -13,6 +13,7 @@ namespace CyberPad.Desktop;
 public sealed partial class HostActions
 {
     internal const string NotFoundMessage = "The file could not be found.";
+    private const string RevealFailedMessage = "The folder could not be opened.";
     internal static readonly TimeSpan CheckTimeout = TimeSpan.FromSeconds(2);
 
     private const int MaxParallelChecks = 8;
@@ -20,6 +21,13 @@ public sealed partial class HostActions
     private readonly object _linkGate = new();
     private readonly HashSet<string> _sessionLinkIds = new(StringComparer.Ordinal);
     private string? _lastFolder;
+
+    private int _fileOpsInFlight;
+
+    /// <summary>
+    /// True while a linked file is being written, read or checked (the window asks before closing during one). Any thread.
+    /// </summary>
+    public bool IsFileOperationInFlight => Volatile.Read(ref _fileOpsInFlight) > 0;
 
     /// <summary>Test seam: replaces the whole UI-thread Save dialog step. Returns the chosen path, or null for cancel.</summary>
     internal Func<LinkFormat, string, string?>? AskSavePath { get; set; }
@@ -46,7 +54,7 @@ public sealed partial class HostActions
         // Refuse before writing: never overwrite a file another note is linked to.
         ThrowIfLinkedToAnother(fullPath, relinkId);
 
-        var record = await Task.Run(() => _files.WriteNew(fullPath, format, text)).ConfigureAwait(false);
+        var record = await TrackFileOperationAsync(() => Task.Run(() => _files.WriteNew(fullPath, format, text))).ConfigureAwait(false);
 
         string linkId;
         lock (_linkGate)
@@ -158,7 +166,29 @@ public sealed partial class HostActions
         }
     }
 
-    public async Task<WriteOutcome> WriteFileAsync(string linkId, string text, bool force)
+    public Task<WriteOutcome> WriteFileAsync(string linkId, string text, bool force) =>
+        TrackFileOperationAsync(() => WriteFileCoreAsync(linkId, text, force));
+
+    public Task<string?> ReadFileAsync(string linkId) => TrackFileOperationAsync(() => ReadFileCoreAsync(linkId));
+
+    public Task<IReadOnlyDictionary<string, FileStatus>> CheckFilesAsync(IReadOnlyList<string> linkIds) =>
+        TrackFileOperationAsync(() => CheckFilesCoreAsync(linkIds));
+
+    /// <summary>Counts <paramref name="operation"/> in <see cref="IsFileOperationInFlight"/> until it ends, however it ends.</summary>
+    private async Task<T> TrackFileOperationAsync<T>(Func<Task<T>> operation)
+    {
+        Interlocked.Increment(ref _fileOpsInFlight);
+        try
+        {
+            return await operation().ConfigureAwait(false);
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _fileOpsInFlight);
+        }
+    }
+
+    private async Task<WriteOutcome> WriteFileCoreAsync(string linkId, string text, bool force)
     {
         var record = RequireLink(linkId);
         var (outcome, updated) = await Task.Run(() =>
@@ -170,7 +200,7 @@ public sealed partial class HostActions
         return outcome;
     }
 
-    public async Task<string?> ReadFileAsync(string linkId)
+    private async Task<string?> ReadFileCoreAsync(string linkId)
     {
         var record = RequireLink(linkId);
         var (text, refreshed) = await Task.Run(() =>
@@ -182,7 +212,7 @@ public sealed partial class HostActions
         return text;
     }
 
-    public async Task<IReadOnlyDictionary<string, FileStatus>> CheckFilesAsync(IReadOnlyList<string> linkIds)
+    private async Task<IReadOnlyDictionary<string, FileStatus>> CheckFilesCoreAsync(IReadOnlyList<string> linkIds)
     {
         ArgumentNullException.ThrowIfNull(linkIds);
         var records = new Dictionary<string, LinkRecord>(StringComparer.Ordinal);
@@ -226,7 +256,7 @@ public sealed partial class HostActions
             }
             catch (Exception ex) when (ex is Win32Exception or InvalidOperationException)
             {
-                throw new StoreException("The folder could not be opened.", ex);
+                throw new StoreException(RevealFailedMessage, ex);
             }
         });
     }
@@ -234,14 +264,19 @@ public sealed partial class HostActions
     /// <summary>
     /// Explorer is started by its full path in the Windows folder: with UseShellExecute=false a bare name would be
     /// searched for in the app folder and the current directory first, so a planted explorer.exe could run.
+    /// Explorer splits its "/select," argument on commas, so the path is always quoted (ArgumentList quotes only paths
+    /// with whitespace). A path containing a quote is refused; Windows file names cannot contain one anyway.
     /// </summary>
     internal static ProcessStartInfo RevealStartInfo(string fullPath)
     {
+        ArgumentException.ThrowIfNullOrEmpty(fullPath);
+        if (fullPath.Contains('"')) throw new StoreException(RevealFailedMessage);
         var explorer = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "explorer.exe");
-        var info = new ProcessStartInfo(explorer) { UseShellExecute = false };
-        info.ArgumentList.Add("/select,");
-        info.ArgumentList.Add(fullPath);
-        return info;
+        return new ProcessStartInfo(explorer)
+        {
+            UseShellExecute = false,
+            Arguments = "/select,\"" + fullPath + "\"",
+        };
     }
 
     public Task PruneLinksAsync(IReadOnlyList<string> keep)
@@ -282,7 +317,8 @@ public sealed partial class HostActions
 
     /// <summary>
     /// Stores a record refreshed by a successful file operation. The operation itself already succeeded, so a failure to
-    /// persist is logged (type name only) instead of failing it; the next status check re-derives the record.
+    /// persist links.json is logged (type name only) instead of failing it. The in-memory record is updated either way
+    /// (a stale one would make CyberPad's own write look like a change elsewhere); the next successful persist writes it.
     /// </summary>
     private void PersistRefreshed(string linkId, LinkRecord before, LinkRecord after)
     {
@@ -293,7 +329,7 @@ public sealed partial class HostActions
             {
                 // Skip if the link was removed or moved to another file while the operation ran.
                 if (_links.TryGet(linkId, out var current) && string.Equals(current.Path, before.Path, StringComparison.Ordinal))
-                    _links.Update(linkId, after);
+                    _links.Refresh(linkId, after);
             }
         }
         catch (StoreException ex)

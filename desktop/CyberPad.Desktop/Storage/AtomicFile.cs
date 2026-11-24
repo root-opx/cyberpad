@@ -8,13 +8,19 @@ public static class AtomicFile
 {
     private static readonly UTF8Encoding Utf8NoBom = new(encoderShouldEmitUTF8Identifier: false);
 
-    public static void Write(string path, string text)
+    public static void Write(string path, string text) => Write(path, text, null, null);
+
+    /// <param name="move">Test seam: the final swap (File.Move with overwrite).</param>
+    /// <param name="sleep">Test seam: waits between swap retries.</param>
+    internal static void Write(string path, string text, Action<string, string>? move, Action<int>? sleep)
     {
+        var swap = move ?? ((from, to) => File.Move(from, to, overwrite: true));
         var tmp = path + ".tmp-" + Convert.ToHexString(RandomNumberGenerator.GetBytes(4)).ToLowerInvariant();
         try
         {
             WriteDurably(tmp, text);
-            File.Move(tmp, path, overwrite: true);
+            // A scanner or sync client briefly holding the new file is retried, as NoteStore.Save does.
+            SharingRetry.Run(() => swap(tmp, path), sleep);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {

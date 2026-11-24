@@ -135,6 +135,24 @@ public sealed class LinkStore
         }
     }
 
+    /// <summary>
+    /// Replaces a record after a file operation that already happened (a write, or a timestamp-only refresh). Memory
+    /// takes the new record first, so it keeps describing the file even if persisting links.json then fails (the
+    /// StoreException is still thrown); the next successful persist writes it.
+    /// </summary>
+    public void Refresh(string linkId, LinkRecord r)
+    {
+        ArgumentNullException.ThrowIfNull(linkId);
+        ArgumentNullException.ThrowIfNull(r);
+        lock (_gate)
+        {
+            if (!_links.ContainsKey(linkId)) throw new KeyNotFoundException("Unknown link.");
+            var next = new Dictionary<string, LinkRecord>(_links, StringComparer.Ordinal) { [linkId] = r };
+            _links = next;
+            Persist(next);
+        }
+    }
+
     public bool Remove(string linkId)
     {
         lock (_gate)
@@ -179,7 +197,14 @@ public sealed class LinkStore
 
     private void Persist(Dictionary<string, LinkRecord> links)
     {
-        Directory.CreateDirectory(DataDir);
+        try
+        {
+            Directory.CreateDirectory(DataDir);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            throw new StoreException("The links file could not be written.", ex);
+        }
         using var buffer = new MemoryStream();
         using (var w = new Utf8JsonWriter(buffer))
         {

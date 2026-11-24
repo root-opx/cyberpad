@@ -338,12 +338,92 @@ public sealed class HostFileActionsTests : IDisposable
     }
 
     [Fact]
-    public void RevealStartInfo_UsesExplorerFromTheWindowsFolder_AndArgumentList()
+    public void RevealStartInfo_UsesExplorerFromTheWindowsFolder_AndOneQuotedPath()
     {
-        var info = HostActions.RevealStartInfo(@"C:\docs b.txt");
+        // Explorer splits "/select," on commas: the path must stay one quoted argument.
+        var info = HostActions.RevealStartInfo(@"C:\docs, b\x,y.txt");
         Assert.True(Path.IsPathFullyQualified(info.FileName));
         Assert.Equal(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "explorer.exe"), info.FileName);
         Assert.False(info.UseShellExecute);
-        Assert.Equal(new[] { "/select,", @"C:\docs b.txt" }, info.ArgumentList.ToArray());
+        Assert.Equal("/select,\"C:\\docs, b\\x,y.txt\"", info.Arguments);
+        Assert.Empty(info.ArgumentList);
+    }
+
+    [Fact]
+    public void RevealStartInfo_RefusesAPathWithAQuote()
+    {
+        var ex = Assert.Throws<StoreException>(() => HostActions.RevealStartInfo("C:\\a\" /root,C:\\b.txt"));
+        Assert.Equal("The folder could not be opened.", ex.Message);
+    }
+
+    [Fact]
+    public async Task FileOperationInFlight_IsTrueOnlyWhileAWriteRuns()
+    {
+        var link = await SaveAs(Doc("a.txt"), text: "one");
+        using var entered = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        var files = new LinkedFiles(null)
+        {
+            ReplaceFile = (tmp, path) =>
+            {
+                entered.Set();
+                release.Wait(TimeSpan.FromSeconds(10));
+                File.Replace(tmp, path, null);
+            },
+        };
+        var host = new HostActions(new NoteStore(_data), _links, files, _queue, "1.0.0", _control, () => { }, () => { });
+        Assert.False(host.IsFileOperationInFlight);
+
+        var write = Task.Run(() => host.WriteFileAsync(link.LinkId, "two", false));
+        Assert.True(entered.Wait(TimeSpan.FromSeconds(10)));
+        Assert.True(host.IsFileOperationInFlight);
+        release.Set();
+        Assert.Equal(WriteOutcome.Written, await write);
+        Assert.False(host.IsFileOperationInFlight);
+    }
+
+    [Fact]
+    public async Task FileOperationInFlight_IsClearedAfterFailures()
+    {
+        var link = await SaveAs(Doc("a.txt"), text: "one");
+        var unknown = new string('f', 32);
+        await Assert.ThrowsAsync<UnknownLinkException>(() => _host.WriteFileAsync(unknown, "t", false));
+        await Assert.ThrowsAsync<UnknownLinkException>(() => _host.ReadFileAsync(unknown));
+        await Assert.ThrowsAsync<UnknownLinkException>(() => _host.CheckFilesAsync(new[] { unknown }));
+        File.SetAttributes(Doc("a.txt"), FileAttributes.ReadOnly);
+        await Assert.ThrowsAsync<StoreException>(() => _host.WriteFileAsync(link.LinkId, "two", true));
+        Assert.False(_host.IsFileOperationInFlight);
+        Assert.Equal("one", await _host.ReadFileAsync(link.LinkId));
+        await _host.CheckFilesAsync(new[] { link.LinkId });
+        Assert.False(_host.IsFileOperationInFlight);
+    }
+
+    [Fact]
+    public async Task WriteFile_LinksJsonPersistFails_NextWriteIsNotAConflict()
+    {
+        var link = await SaveAs(Doc("a.txt"), text: "one");
+        var log = new List<string>();
+        var host = new HostActions(new NoteStore(_data), _links, new LinkedFiles(), _queue, "1.0.0", _control, () => { }, () => { }, log.Add);
+        var linksPath = Path.Combine(_data, LinkStore.FileName);
+
+        // links.json held exclusively: the file write succeeds, persisting the refreshed record does not.
+        using (new FileStream(linksPath, FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            Assert.Equal(WriteOutcome.Written, await host.WriteFileAsync(link.LinkId, "two", false));
+        }
+        Assert.Contains("links: persist failed StoreException", log);
+        Assert.Equal("two", File.ReadAllText(Doc("a.txt")));
+
+        // Memory kept the record of the bytes just written, so CyberPad's own write is not taken for a change elsewhere.
+        Assert.Equal(WriteOutcome.Written, await host.WriteFileAsync(link.LinkId, "three", false));
+        Assert.Equal("three", File.ReadAllText(Doc("a.txt")));
+        Assert.Equal(FileStatus.Ok, (await host.CheckFilesAsync(new[] { link.LinkId }))[link.LinkId]);
+
+        // The next successful persist wrote the current record.
+        var reloaded = new LinkStore(_data);
+        reloaded.Load();
+        Assert.True(reloaded.TryGet(link.LinkId, out var onDisk));
+        Assert.True(_links.TryGet(link.LinkId, out var inMemory));
+        Assert.Equal(inMemory, onDisk);
     }
 }

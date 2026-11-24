@@ -144,4 +144,71 @@ public sealed class LinkStoreTests : IDisposable
         again.Load();
         Assert.Equal(1, again.Count);
     }
+
+    [Fact]
+    public void Refresh_PersistFails_KeepsTheNewRecordInMemory_AndTheNextPersistWritesIt()
+    {
+        var dir = NewDir();
+        var store = new LinkStore(dir);
+        store.Load();
+        var id = store.Add(Rec(@"C:\Notes\a.md"));
+        var newer = Rec(@"C:\Notes\a.md", new string('b', 64));
+
+        using (new FileStream(Path.Combine(dir, LinkStore.FileName), FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            Assert.Throws<CyberPad.Desktop.Storage.StoreException>(() => store.Refresh(id, newer));
+        }
+        Assert.True(store.TryGet(id, out var inMemory));
+        Assert.Equal(newer, inMemory);
+
+        store.Add(Rec(@"C:\Notes\b.md"));
+        var again = new LinkStore(dir);
+        again.Load();
+        Assert.True(again.TryGet(id, out var onDisk));
+        Assert.Equal(newer, onDisk);
+    }
+
+    [Fact]
+    public void Refresh_UnknownId_Throws()
+    {
+        var store = new LinkStore(NewDir());
+        store.Load();
+        Assert.Throws<KeyNotFoundException>(() => store.Refresh(new string('c', 32), Rec(@"C:\Notes\a.md")));
+    }
+
+    [Fact]
+    public void AtomicWrite_RetriesTheSwapOnSharingViolations()
+    {
+        var dir = NewDir();
+        Directory.CreateDirectory(dir);
+        var path = Path.Combine(dir, "x.json");
+        File.WriteAllText(path, "old");
+        var calls = 0;
+        var sleeps = new List<int>();
+        // A scanner holding the new temp file shows up as a sharing violation on the move.
+        CyberPad.Desktop.Storage.AtomicFile.Write(path, "new", (from, to) =>
+        {
+            if (++calls < 3) throw new IOException("busy") { HResult = unchecked((int)0x80070020) };
+            File.Move(from, to, overwrite: true);
+        }, sleeps.Add);
+        Assert.Equal(3, calls);
+        Assert.Equal(2, sleeps.Count);
+        Assert.Equal("new", File.ReadAllText(path));
+        Assert.Single(Directory.GetFiles(dir));
+    }
+
+    [Fact]
+    public void AtomicWrite_GivesUpAfterTheRetries_AndRemovesTheTemp()
+    {
+        var dir = NewDir();
+        Directory.CreateDirectory(dir);
+        var path = Path.Combine(dir, "x.json");
+        File.WriteAllText(path, "old");
+        var calls = 0;
+        Assert.Throws<CyberPad.Desktop.Storage.StoreException>(() => CyberPad.Desktop.Storage.AtomicFile.Write(path, "new",
+            (_, _) => { calls++; throw new IOException("busy") { HResult = unchecked((int)0x80070020) }; }, _ => { }));
+        Assert.Equal(4, calls);
+        Assert.Equal("old", File.ReadAllText(path));
+        Assert.Single(Directory.GetFiles(dir));
+    }
 }
