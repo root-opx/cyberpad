@@ -49,7 +49,7 @@ internal sealed class MainForm : Form
         _placementPath = Path.Combine(dataDir, "window.json");
         _log = log;
         _instance = instance;
-        _hostActions = new HostActions(new NoteStore(dataDir), version, this, ConfirmClose);
+        _hostActions = new HostActions(new NoteStore(dataDir), version, this, ConfirmClose, FlushFailed);
         _dispatcher = new MessageDispatcher(_hostActions, log);
 
         Text = "CyberPad";
@@ -177,6 +177,7 @@ internal sealed class MainForm : Form
         settings.IsGeneralAutofillEnabled = false;
         settings.IsPinchZoomEnabled = false;
         settings.AreHostObjectsAllowed = false;
+        settings.IsReputationCheckingRequired = false; // a local page: no SmartScreen lookups
     }
 
     private void AttachPolicyHandlers(CoreWebView2 core)
@@ -346,8 +347,12 @@ internal sealed class MainForm : Form
 
         switch (kind)
         {
-            case CoreWebView2ProcessFailedKind.RenderProcessExited:
             case CoreWebView2ProcessFailedKind.RenderProcessUnresponsive:
+                // Logged above, nothing else: a busy page may recover, and a reload would lose its unsaved work.
+                // It does not count toward the crash limit. During a close, the flush timeout still applies.
+                break;
+
+            case CoreWebView2ProcessFailedKind.RenderProcessExited:
                 _pageReady = false;
                 if (_closeRequested)
                 {
@@ -453,7 +458,7 @@ internal sealed class MainForm : Form
     /// <summary>True while the close must wait for the page: the flush was posted now or earlier.</summary>
     private bool WaitForFlush()
     {
-        if (_closeRequested) return true; // already waiting for "flushed" or the timer
+        if (_closeRequested) return true; // already waiting for "flushed", "flushFailed" or the timer
         _closeRequested = true;
         if (!TryPostToPage(FlushMessage)) return false; // no live page: nothing to flush
         _closeTimer.Start();
@@ -485,6 +490,35 @@ internal sealed class MainForm : Form
         if (!_closeRequested || _closeConfirmed || IsDisposed) return;
         _closeConfirmed = true;
         _closeTimer.Stop();
+        Close();
+    }
+
+    /// <summary>Called from any thread by the page's "flushFailed": its latest changes could not be saved.</summary>
+    private void FlushFailed()
+    {
+        try
+        {
+            // Posted: the dialog must not run inside the WebView2 message handler.
+            BeginInvoke(new Action(AskToCloseUnsaved));
+        }
+        catch (InvalidOperationException ex)
+        {
+            _log($"close: window gone {ex.GetType().Name}");
+        }
+    }
+
+    private void AskToCloseUnsaved()
+    {
+        // Like "flushed", a "flushFailed" the host never asked for is ignored.
+        if (!_closeRequested || _closeConfirmed || IsDisposed) return;
+        _closeTimer.Stop();
+        _closeRequested = false; // a later close starts the handshake again
+        _log("close: final save failed");
+        var answer = MessageBox.Show(this,
+            "CyberPad could not save your latest changes. Close anyway and lose them?",
+            "CyberPad", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2);
+        if (answer != DialogResult.Yes || IsDisposed || _closeConfirmed) return;
+        _closeConfirmed = true;
         Close();
     }
 

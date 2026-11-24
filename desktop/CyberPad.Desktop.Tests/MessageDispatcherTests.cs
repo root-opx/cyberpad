@@ -19,7 +19,7 @@ public class MessageDispatcherTests
         public (ExportKind Kind, string Name, string Text)? Exported;
         public string? ExportResult = "x.csv";
         public Exception? ExportThrows;
-        public int FlushedCalls, QuarantineCalls, Calls, DelayMs;
+        public int FlushedCalls, FlushFailedCalls, QuarantineCalls, Calls, DelayMs;
         private int _running, _max;
         public int MaxConcurrency => _max;
 
@@ -60,6 +60,8 @@ public class MessageDispatcherTests
         }
 
         public void Flushed() { Calls++; FlushedCalls++; }
+
+        public void FlushFailed() { Calls++; FlushFailedCalls++; }
     }
 
     private static (MessageDispatcher d, FakeHostActions f, List<string> log) Make()
@@ -197,6 +199,40 @@ public class MessageDispatcherTests
         var (d, f, _) = Make();
         Assert.Null(await d.HandleAsync(Src, """{"type":"flushed","id":"a"}"""));
         Assert.Equal(0, f.Calls);
+    }
+
+    [Fact]
+    public async Task FlushFailed_CallsActionAndRepliesNothing()
+    {
+        var (d, f, _) = Make();
+        Assert.Null(await d.HandleAsync(Src, """{"type":"flushFailed"}"""));
+        Assert.Equal(1, f.FlushFailedCalls);
+        Assert.Equal(0, f.FlushedCalls);
+    }
+
+    [Theory]
+    [InlineData("""{"type":"flushFailed","id":"a"}""")]
+    [InlineData("""{"type":"flushFailed","reason":"x"}""")]
+    [InlineData("""{"type":"flushFailed","type":"flushFailed"}""")]
+    public async Task FlushFailed_WithExtraOrDuplicateField_IsRejected(string json)
+    {
+        var (d, f, log) = Make();
+        Assert.Null(await d.HandleAsync(Src, json));
+        Assert.Equal(0, f.Calls);
+        Assert.Single(log);
+    }
+
+    [Fact]
+    public async Task FlushFailed_WaitsForARunningSave()
+    {
+        var (d, f, _) = Make();
+        f.DelayMs = 150;
+        var save = d.HandleAsync(Src, """{"type":"save","id":"s1","data":"x"}""");
+        var flush = d.HandleAsync(Src, """{"type":"flushFailed"}""");
+        await Task.WhenAll(save, flush);
+        Assert.Equal("x", f.Saved);
+        Assert.Equal(1, f.FlushFailedCalls);
+        Assert.Equal(1, f.MaxConcurrency);
     }
 
     [Fact]

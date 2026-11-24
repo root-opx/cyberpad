@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text;
 
 namespace CyberPad.Desktop.Storage;
 
@@ -9,10 +10,31 @@ public sealed class NoteStore
     public const string BackupFile = "notes.json.bak";
     public const string TempFile = "notes.json.tmp";
 
-    public NoteStore(string dataDir)
+    /// <summary>
+    /// Largest notes file Load reads: a 64 MB-character state is at most 3 bytes per UTF-16 char in UTF-8, plus slack.
+    /// Anything bigger was not written by CyberPad and is refused before it is read into memory.
+    /// </summary>
+    public const long MaxFileBytes = 3L * 64 * 1024 * 1024 + 1024 * 1024;
+
+    private const int SwapRetries = 3;
+    private const int SwapRetryDelayMs = 100;
+    private const int ErrorSharingViolation = unchecked((int)0x80070020);
+    private const int ErrorLockViolation = unchecked((int)0x80070021);
+
+    private readonly long _maxFileBytes;
+    private readonly Action<int> _sleep;
+
+    public NoteStore(string dataDir) : this(dataDir, MaxFileBytes, null) { }
+
+    /// <param name="maxFileBytes">Load limit (tests use a small one).</param>
+    /// <param name="sleep">Waits between swap retries (tests record the calls instead).</param>
+    internal NoteStore(string dataDir, long maxFileBytes = MaxFileBytes, Action<int>? sleep = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(dataDir);
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxFileBytes, 1);
         DataDir = dataDir;
+        _maxFileBytes = maxFileBytes;
+        _sleep = sleep ?? Thread.Sleep;
     }
 
     public string DataDir { get; }
@@ -31,14 +53,35 @@ public sealed class NoteStore
             Directory.CreateDirectory(DataDir);
             AtomicFile.WriteDurably(TempPath, data);
             if (File.Exists(MainPath))
-                File.Replace(TempPath, MainPath, BackupPath);
+                SwapWithRetry(() => File.Replace(TempPath, MainPath, BackupPath));
             else
-                File.Move(TempPath, MainPath);
+                SwapWithRetry(() => File.Move(TempPath, MainPath));
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             if (File.Exists(TempPath)) AtomicFile.DeleteQuietly(TempPath);
             throw new StoreException("The notes could not be saved to disk.", ex);
+        }
+    }
+
+    /// <summary>
+    /// Runs the final swap, retrying (at most <see cref="SwapRetries"/> times, <see cref="SwapRetryDelayMs"/> ms apart)
+    /// only while another process briefly holds a file open (sharing or lock violation, as an antivirus scanner or a
+    /// sync client does). Any other failure, or the last one, propagates unchanged.
+    /// </summary>
+    private void SwapWithRetry(Action swap)
+    {
+        for (var retry = 0; ; retry++)
+        {
+            try
+            {
+                swap();
+                return;
+            }
+            catch (IOException ex) when (retry < SwapRetries && ex.HResult is ErrorSharingViolation or ErrorLockViolation)
+            {
+                _sleep(SwapRetryDelayMs);
+            }
         }
     }
 
@@ -66,11 +109,16 @@ public sealed class NoteStore
         moved.Add(newName);
     }
 
-    private static string? ReadIfExists(string path)
+    private string? ReadIfExists(string path)
     {
         try
         {
-            return File.Exists(path) ? File.ReadAllText(path) : null;
+            if (!File.Exists(path)) return null;
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+            // Checked on the open handle, so the size read is the size of the file being read.
+            if (stream.Length > _maxFileBytes) throw new StoreException("The notes file is too large to open.");
+            using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+            return reader.ReadToEnd();
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {

@@ -25,6 +25,7 @@ public sealed class MessageDispatcher
         ["quarantine"] = new[] { "type", "id" },
         ["exportFile"] = new[] { "type", "id", "kind", "suggestedName", "text" },
         ["flushed"] = new[] { "type" },
+        ["flushFailed"] = new[] { "type" },
     };
 
     private readonly IHostActions _actions;
@@ -39,7 +40,7 @@ public sealed class MessageDispatcher
 
     /// <summary>Returns the reply JSON, or null when there is nothing to send.</summary>
     /// <remarks>
-    /// Store actions (load, save, quarantine) and "flushed" run one at a time. An export runs outside that gate:
+    /// Store actions (load, save, quarantine), "flushed" and "flushFailed" run one at a time. An export runs outside that gate:
     /// it waits on the user's Save dialog, and autosaves must not queue behind it until they time out on the page.
     /// </remarks>
     public async Task<string?> HandleAsync(string source, string json)
@@ -85,7 +86,7 @@ public sealed class MessageDispatcher
 
             // The id is read first so that every later rejection of this message can echo it back.
             string? id = null;
-            if (type != "flushed")
+            if (type is not ("flushed" or "flushFailed"))
             {
                 if (!root.TryGetProperty("id", out var idEl) || idEl.ValueKind != JsonValueKind.String)
                     return Reject(type, null, "missing id");
@@ -106,7 +107,10 @@ public sealed class MessageDispatcher
             switch (type)
             {
                 case "flushed":
-                    return await RunFlushedAsync().ConfigureAwait(false);
+                    return await RunFlushReplyAsync(type, _actions.Flushed).ConfigureAwait(false);
+
+                case "flushFailed":
+                    return await RunFlushReplyAsync(type, _actions.FlushFailed).ConfigureAwait(false);
 
                 case "load":
                     return await RunAsync(type, id!, Serialized(async () =>
@@ -179,17 +183,20 @@ public sealed class MessageDispatcher
         }
     };
 
-    /// <summary>Takes the store gate first, as before, so the window never closes while a store write is still running.</summary>
-    private async Task<string?> RunFlushedAsync()
+    /// <summary>
+    /// Handles "flushed" or "flushFailed". Takes the store gate first, so the window never closes (or asks to close)
+    /// while a store write is still running.
+    /// </summary>
+    private async Task<string?> RunFlushReplyAsync(string type, Action action)
     {
         await _gate.WaitAsync().ConfigureAwait(false);
         try
         {
-            _actions.Flushed();
+            action();
         }
         catch (Exception ex)
         {
-            _log($"flushed: unexpected {ex.GetType().Name}");
+            _log($"{type}: unexpected {ex.GetType().Name}");
         }
         finally
         {

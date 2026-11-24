@@ -117,7 +117,7 @@ public sealed class HostActionsTests
     public async Task ExportAsync_FailsCleanlyWithoutAWindowHandle_AndCanBeRetried()
     {
         using var control = new Control(); // never shown: no handle, so BeginInvoke has nowhere to post
-        var host = new HostActions(new NoteStore(Path.Combine(Path.GetTempPath(), "cyberpad-unused")), "1.0.0", control, () => { });
+        var host = new HostActions(new NoteStore(Path.Combine(Path.GetTempPath(), "cyberpad-unused")), "1.0.0", control, () => { }, () => { });
 
         for (var attempt = 0; attempt < 2; attempt++)
         {
@@ -131,7 +131,20 @@ public sealed class HostActionsTests
     public void CancelPendingDialog_WithNothingPending_DoesNothing()
     {
         using var control = new Control();
-        var host = new HostActions(new NoteStore(Path.Combine(Path.GetTempPath(), "cyberpad-unused")), "1.0.0", control, () => { });
+        var host = new HostActions(new NoteStore(Path.Combine(Path.GetTempPath(), "cyberpad-unused")), "1.0.0", control, () => { }, () => { });
         host.CancelPendingDialog();
+    }
+
+    [Fact]
+    public void FlushedAndFlushFailed_CallTheirOwnCallbacks()
+    {
+        using var control = new Control();
+        int flushed = 0, failed = 0;
+        var host = new HostActions(new NoteStore(Path.Combine(Path.GetTempPath(), "cyberpad-unused")), "1.0.0", control,
+            () => flushed++, () => failed++);
+        host.FlushFailed();
+        Assert.Equal((0, 1), (flushed, failed));
+        host.Flushed();
+        Assert.Equal((1, 1), (flushed, failed));
     }
 }

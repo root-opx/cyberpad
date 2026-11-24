@@ -10,6 +10,7 @@ public sealed class HostActions : IHostActions
     private readonly NoteStore _store;
     private readonly Control _ui;
     private readonly Action _onFlushed;
+    private readonly Action _onFlushFailed;
     private int _exportOpen;
     private TaskCompletionSource<string?>? _pendingDialog;
 
@@ -17,16 +18,19 @@ public sealed class HostActions : IHostActions
 
     /// <param name="ui">The window that owns the Save dialog; its thread is the UI thread.</param>
     /// <param name="onFlushed">Called (from any thread) when the page reports it has sealed and saved its notes.</param>
-    public HostActions(NoteStore store, string version, Control ui, Action onFlushed)
+    /// <param name="onFlushFailed">Called (from any thread) when the page reports its latest changes could not be saved.</param>
+    public HostActions(NoteStore store, string version, Control ui, Action onFlushed, Action onFlushFailed)
     {
         ArgumentNullException.ThrowIfNull(store);
         ArgumentException.ThrowIfNullOrWhiteSpace(version);
         ArgumentNullException.ThrowIfNull(ui);
         ArgumentNullException.ThrowIfNull(onFlushed);
+        ArgumentNullException.ThrowIfNull(onFlushFailed);
         _store = store;
         Version = version;
         _ui = ui;
         _onFlushed = onFlushed;
+        _onFlushFailed = onFlushFailed;
     }
 
     public string Version { get; }
@@ -83,6 +87,8 @@ public sealed class HostActions : IHostActions
     }
 
     public void Flushed() => _onFlushed();
+
+    public void FlushFailed() => _onFlushFailed();
 
     /// <summary>
     /// Fails an export whose Save dialog has been posted but not yet answered. The window calls this when it closes,

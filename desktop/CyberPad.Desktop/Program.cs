@@ -1,5 +1,5 @@
-using System.Diagnostics;
 using System.Security.Principal;
+using CyberPad.Desktop.Diagnostics;
 using Microsoft.Web.WebView2.Core;
 
 namespace CyberPad.Desktop;
@@ -10,6 +10,9 @@ internal static class Program
 
     private const string RuntimeMissingMessage =
         "CyberPad needs the Microsoft Edge WebView2 Runtime. Install it from https://developer.microsoft.com/microsoft-edge/webview2/ and start CyberPad again.";
+
+    /// <summary>%LOCALAPPDATA%\CyberPad\cyberpad.log (Trace only if local app data is unavailable). Fixed path, never from input.</summary>
+    private static readonly FileLog s_log = new(LogPath());
 
     [STAThread]
     private static int Main()
@@ -89,7 +92,12 @@ internal static class Program
     private static void ShowError(string message) =>
         MessageBox.Show(message, Title, MessageBoxButtons.OK, MessageBoxIcon.Error);
 
-    /// <summary>Content-free diagnostics only (message type, reason, exception type name).</summary>
-    private static void Log(string line) =>
-        Debug.WriteLine("CyberPad: " + line.Replace('\r', ' ').Replace('\n', ' '));
+    private static string? LogPath()
+    {
+        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        return string.IsNullOrEmpty(localAppData) ? null : Path.Combine(localAppData, "CyberPad", FileLog.FileName);
+    }
+
+    /// <summary>Content-free diagnostics only (message type, reason, exception type name). Never throws.</summary>
+    private static void Log(string line) => s_log.Write(line);
 }

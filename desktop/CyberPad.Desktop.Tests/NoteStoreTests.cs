@@ -91,6 +91,90 @@ public sealed class NoteStoreTests : IDisposable
     }
 
     [Fact]
+    public void MaxFileBytes_IsThreeTimesTheMessageLimitPlusOneMegabyte()
+    {
+        Assert.Equal(3L * 64 * 1024 * 1024 + 1024 * 1024, NoteStore.MaxFileBytes);
+    }
+
+    [Theory]
+    [InlineData(NoteStore.MainFile)]
+    [InlineData(NoteStore.BackupFile)]
+    public void Load_RefusesAFileOverTheLimit(string name)
+    {
+        var dir = NewDir();
+        Directory.CreateDirectory(dir);
+        File.WriteAllText(Path.Combine(dir, name), new string('x', 101));
+        var store = new NoteStore(dir, maxFileBytes: 100);
+        var ex = Assert.Throws<StoreException>(() => store.Load());
+        Assert.Equal("The notes file is too large to open.", ex.Message);
+    }
+
+    [Fact]
+    public void Load_AcceptsAFileExactlyAtTheLimit()
+    {
+        var dir = NewDir();
+        Directory.CreateDirectory(dir);
+        File.WriteAllText(Path.Combine(dir, NoteStore.MainFile), new string('x', 100));
+        var store = new NoteStore(dir, maxFileBytes: 100);
+        Assert.Equal(new string('x', 100), store.Load().Main);
+    }
+
+    [Fact]
+    public async Task Save_RetriesWhileNotesFileIsBrieflyLocked()
+    {
+        var dir = NewDir();
+        var store = new NoteStore(dir);
+        store.Save("a");
+        var main = Path.Combine(dir, NoteStore.MainFile);
+        var held = new FileStream(main, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+        var release = Task.Run(async () => { await Task.Delay(150); held.Dispose(); });
+        try
+        {
+            store.Save("b"); // blocks this thread; the first attempt hits the lock, a retry succeeds
+        }
+        finally
+        {
+            await release.WaitAsync(TimeSpan.FromSeconds(5));
+            held.Dispose();
+        }
+        Assert.Equal(("b", (string?)"a"), store.Load());
+        Assert.False(File.Exists(Path.Combine(dir, NoteStore.TempFile)));
+    }
+
+    [Fact]
+    public void Save_GivesUpWhenNotesFileStaysLocked()
+    {
+        var dir = NewDir();
+        var sleeps = new List<int>();
+        var store = new NoteStore(dir, sleep: sleeps.Add);
+        store.Save("a");
+        using (new FileStream(Path.Combine(dir, NoteStore.MainFile), FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        {
+            var ex = Assert.Throws<StoreException>(() => store.Save("b"));
+            Assert.Equal("The notes could not be saved to disk.", ex.Message);
+        }
+        Assert.Equal(new[] { 100, 100, 100 }, sleeps);
+        Assert.Equal(("a", (string?)null), store.Load());
+        Assert.False(File.Exists(Path.Combine(dir, NoteStore.TempFile)));
+    }
+
+    [Fact]
+    public void Save_DoesNotRetryOtherFailures()
+    {
+        var dir = NewDir();
+        var sleeps = new List<int>();
+        var store = new NoteStore(dir, sleep: sleeps.Add);
+        store.Save("a");
+        store.Save("b");
+        // A held backup fails File.Replace with ERROR_UNABLE_TO_REMOVE_REPLACED, not a sharing violation.
+        using (new FileStream(Path.Combine(dir, NoteStore.BackupFile), FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        {
+            Assert.Throws<StoreException>(() => store.Save("c"));
+        }
+        Assert.Empty(sleeps);
+    }
+
+    [Fact]
     public void AtomicFile_Write_ReplacesExistingAndLeavesNoTemp()
     {
         var dir = NewDir();

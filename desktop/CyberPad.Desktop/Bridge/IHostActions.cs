@@ -16,5 +16,9 @@ public interface IHostActions
     /// <exception cref="CyberPad.Desktop.Storage.StoreException">The write failed; the message is a safe user-facing reason.</exception>
     Task<string?> ExportAsync(ExportKind kind, string safeName, string text);
 
+    /// <summary>The page sealed and saved everything it had: the pending close may go ahead.</summary>
     void Flushed();
+
+    /// <summary>The page could not save its latest changes: the pending close must ask the user first.</summary>
+    void FlushFailed();
 }
