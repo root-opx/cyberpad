@@ -243,10 +243,145 @@ public sealed class LinkedFilesTests : IDisposable
         Assert.Equal(rec, updated);
         Assert.Equal("theirs", File.ReadAllText(path));
 
-        // Same decoded text but bytes this write would not produce (mixed line endings): still a conflict.
+        // Mixed line endings with different text: still a conflict.
         File.WriteAllBytes(path, Encoding.UTF8.GetBytes("x\r\ny\nz"));
-        Assert.Equal(WriteOutcome.Conflict, _files.Write(rec, "x\ny\nz", false, out _));
+        Assert.Equal(WriteOutcome.Conflict, _files.Write(rec, "x\nq\nz", false, out _));
         Assert.Equal(Encoding.UTF8.GetBytes("x\r\ny\nz"), File.ReadAllBytes(path));
+    }
+
+    [Fact]
+    public void Write_ChangedToMixedLineEndings_SameDecodedText_AdoptsWithoutRewriting()
+    {
+        var path = P("n.txt");
+        var rec = _files.WriteNew(path, LinkFormat.Txt, "a");
+        var theirs = Encoding.UTF8.GetBytes("x\r\ny\r\nz\nw"); // CRLF outnumbers lone LF; no encoding gives these bytes back
+        File.WriteAllBytes(path, theirs);
+        var mtime = rec.MtimeUtc.AddMinutes(5);
+        File.SetLastWriteTimeUtc(path, mtime);
+
+        Assert.Equal(WriteOutcome.Written, _files.Write(rec, "x\ny\nz\nw", false, out var updated));
+        Assert.Equal(theirs, File.ReadAllBytes(path)); // not rewritten
+        Assert.Equal(mtime, File.GetLastWriteTimeUtc(path));
+        Assert.Equal(Sha(theirs), updated.Sha256);
+        Assert.Equal(theirs.Length, updated.Size);
+        Assert.Equal(mtime, updated.MtimeUtc);
+        Assert.Equal(TextEncodingKind.Utf8, updated.Encoding);
+        Assert.False(updated.Bom);
+        Assert.Equal(LineEnding.CrLf, updated.LineEnding);
+        Assert.Empty(Directory.GetFiles(_root, ".*cyberpad-tmp-*"));
+
+        // Adopted: no conflict loop. The file counts as unchanged and the next write uses its line-ending style.
+        Assert.Equal(FileStatus.Ok, _files.Check(updated, out _, TimeSpan.FromSeconds(2)));
+        Assert.Equal(WriteOutcome.Written, _files.Write(updated, "k\nl", false, out _));
+        Assert.Equal(Encoding.UTF8.GetBytes("k\r\nl"), File.ReadAllBytes(path));
+    }
+
+    private const int UnableToMoveReplacement = unchecked((int)0x80070498);
+    private const int UnableToMoveReplacement2 = unchecked((int)0x80070499);
+
+    private static string[] Temps(string dir) => Directory.GetFiles(dir, ".*.cyberpad-tmp-*");
+
+    [Fact]
+    public void Write_ReplaceFailsWithTargetGone_MovesTheNewContentBackToItsPath()
+    {
+        var path = P("n.md");
+        var rec = _files.WriteNew(path, LinkFormat.Md, "a");
+        // ERROR_UNABLE_TO_MOVE_REPLACEMENT: the original is gone and the temp still exists under its own name.
+        var files = new LinkedFiles(null)
+        {
+            ReplaceFile = (_, target) =>
+            {
+                File.Delete(target);
+                throw new IOException("replace") { HResult = UnableToMoveReplacement };
+            },
+        };
+
+        Assert.Equal(WriteOutcome.Written, files.Write(rec, "new text", false, out var updated));
+        Assert.Equal("new text", File.ReadAllText(path));
+        Assert.Empty(Temps(_root));
+        Assert.Single(Directory.GetFiles(_root));
+        Assert.False(File.GetAttributes(path).HasFlag(FileAttributes.Hidden)); // the temp name was hidden, the file is not
+        Assert.Equal(Sha(File.ReadAllBytes(path)), updated.Sha256);
+        Assert.Equal(File.ReadAllBytes(path).Length, updated.Size);
+        Assert.Equal(FileStatus.Ok, _files.Check(updated, out _, TimeSpan.FromSeconds(2)));
+    }
+
+    [Fact]
+    public void Write_ReplaceFails1177WithOriginalRenamedAway_MovesTheNewContentBack()
+    {
+        var path = P("n.md");
+        var rec = _files.WriteNew(path, LinkFormat.Md, "a");
+        var files = new LinkedFiles(null)
+        {
+            ReplaceFile = (_, target) =>
+            {
+                File.Move(target, P("renamed-by-windows.md"));
+                throw new IOException("replace") { HResult = UnableToMoveReplacement2 };
+            },
+        };
+
+        Assert.Equal(WriteOutcome.Written, files.Write(rec, "b", false, out _));
+        Assert.Equal("b", File.ReadAllText(path));
+        Assert.Equal("a", File.ReadAllText(P("renamed-by-windows.md"))); // never touched
+        Assert.Empty(Temps(_root));
+    }
+
+    [Fact]
+    public void Write_ReplaceFails1177_KeepsTheTemp()
+    {
+        var path = P("n.md");
+        var rec = _files.WriteNew(path, LinkFormat.Md, "a");
+        var log = new List<string>();
+        var files = new LinkedFiles(log.Add)
+        {
+            ReplaceFile = (_, _) => throw new IOException("replace") { HResult = UnableToMoveReplacement2 },
+        };
+
+        var ex = Assert.Throws<StoreException>(() => files.Write(rec, "b", false, out _));
+        Assert.Equal("The file could not be written.", ex.Message);
+        var temp = Assert.Single(Temps(_root));
+        Assert.Equal("b", File.ReadAllText(temp));
+        Assert.Equal("a", File.ReadAllText(path));
+        Assert.Equal(new[] { "linked write: replace failed, temp kept" }, log);
+    }
+
+    [Fact]
+    public void Write_ReplaceFailsAndMovingBackFails_KeepsTheTempAndLogsNoPath()
+    {
+        var path = P("n.md");
+        var rec = _files.WriteNew(path, LinkFormat.Md, "a");
+        var log = new List<string>();
+        var files = new LinkedFiles(log.Add)
+        {
+            ReplaceFile = (_, target) =>
+            {
+                File.Delete(target);
+                Directory.CreateDirectory(target); // the path is taken, so the move back cannot succeed
+                throw new IOException("replace") { HResult = UnableToMoveReplacement };
+            },
+        };
+
+        var ex = Assert.Throws<StoreException>(() => files.Write(rec, "new text", false, out _));
+        Assert.Equal("The file could not be written.", ex.Message);
+        var temp = Assert.Single(Temps(_root));
+        Assert.Equal("new text", File.ReadAllText(temp)); // the only copy is never deleted
+        Assert.Equal(new[] { "linked write: replace failed, temp kept" }, log);
+    }
+
+    [Fact]
+    public void Write_SharingViolationOnReplace_StillRemovesTheTemp()
+    {
+        var path = P("n.md");
+        var rec = _files.WriteNew(path, LinkFormat.Md, "a");
+        var log = new List<string>();
+        var files = new LinkedFiles(log.Add)
+        {
+            ReplaceFile = (_, _) => throw new IOException("busy") { HResult = unchecked((int)0x80070020) },
+        };
+        Assert.Throws<StoreException>(() => files.Write(rec, "b", false, out _));
+        Assert.Empty(Temps(_root));
+        Assert.Equal("a", File.ReadAllText(path));
+        Assert.Empty(log);
     }
 
     [Fact]

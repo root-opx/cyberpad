@@ -23,6 +23,14 @@ public sealed class LinkedFiles
 
     private static readonly UTF8Encoding StrictUtf8 = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
 
+    private readonly Action<string> _log;
+
+    /// <param name="log">Content-free diagnostics only (reasons and exception type names, never paths or text).</param>
+    public LinkedFiles(Action<string>? log = null) => _log = log ?? (_ => { });
+
+    /// <summary>Test seam: the swap step of a write over an existing file (File.Replace without a backup).</summary>
+    internal Action<string, string> ReplaceFile { get; init; } = (tmp, path) => File.Replace(tmp, path, null);
+
     public (LinkRecord Record, string Text) ReadNew(string fullPath, LinkFormat format)
     {
         ArgumentException.ThrowIfNullOrEmpty(fullPath);
@@ -114,7 +122,7 @@ public sealed class LinkedFiles
             try
             {
                 status = Inspect(r, out _);
-                // Changed, but the file already holds exactly what this write would produce: adopt it, don't rewrite.
+                // Changed, but the file already holds exactly this text: adopt it as it is, don't rewrite.
                 if (status == FileStatus.Changed && !force && TryAdopt(r, text, out var current)) adopted = current;
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -194,9 +202,10 @@ public sealed class LinkedFiles
     }
 
     /// <summary>
-    /// True when the file decodes to exactly <paramref name="text"/> and encoding that text in the file's own encoding,
-    /// BOM and line endings gives back its exact bytes; <paramref name="adopted"/> is then the record of the file as it is.
-    /// A file that isn't valid text, is over the size cap, or doesn't round-trip byte for byte is never adopted.
+    /// True when the file decodes (with the reader's own normalisation) to exactly <paramref name="text"/>;
+    /// <paramref name="adopted"/> is then the record of the file as it is: its hash, size, last-write time, encoding, BOM
+    /// and line-ending style. Nothing is rewritten, so a file with mixed line endings is adopted as it is. A file that
+    /// isn't valid text, is over the size cap, or holds different text is never adopted.
     /// </summary>
     private static bool TryAdopt(LinkRecord r, string text, out LinkRecord adopted)
     {
@@ -212,22 +221,21 @@ public sealed class LinkedFiles
             return false;
         }
 
-        LinkRecord candidate;
-        byte[] mine;
         try
         {
             var (decoded, enc, bom, le) = Decode(r.Format, snap.Bytes);
             if (!string.Equals(decoded, text, StringComparison.Ordinal)) return false;
-            candidate = r with { Encoding = enc, Bom = bom, LineEnding = le };
-            mine = EncodeFor(candidate, text);
+            adopted = r with
+            {
+                Encoding = enc, Bom = bom, LineEnding = le,
+                Size = snap.Bytes.Length, MtimeUtc = snap.MtimeUtc, Sha256 = snap.Sha256,
+            };
+            return true;
         }
         catch (StoreException)
         {
             return false; // not text in a supported form: it can only be a conflict
         }
-        if (!mine.AsSpan().SequenceEqual(snap.Bytes)) return false;
-        adopted = candidate with { Size = snap.Bytes.Length, MtimeUtc = snap.MtimeUtc, Sha256 = snap.Sha256 };
-        return true;
     }
 
     private static (string Text, TextEncodingKind Enc, bool Bom, LineEnding Le) Decode(LinkFormat format, byte[] bytes)
@@ -272,14 +280,16 @@ public sealed class LinkedFiles
 
     /// <summary>
     /// Writes a hidden temp sibling, flushes it to disk, runs the optional gate (false means do not swap), then swaps it in (retrying only on sharing or lock
-    /// violations). The temp file is removed on any failure.
+    /// violations). The temp file is removed on failure, except when it may be the only copy of the content (see
+    /// <see cref="RecoverFailedReplace"/>).
     /// </summary>
-    private static bool WriteBytes(string path, byte[] bytes, bool replaceExisting, Func<bool>? gate = null)
+    private bool WriteBytes(string path, byte[] bytes, bool replaceExisting, Func<bool>? gate = null)
     {
         var dir = Path.GetDirectoryName(path) ?? throw new StoreException(WriteFailedMessage);
         var tmp = Path.Combine(dir, "." + Path.GetFileName(path) + ".cyberpad-tmp-"
             + Convert.ToHexString(RandomNumberGenerator.GetBytes(4)).ToLowerInvariant());
         var swapped = false;
+        var keepTemp = false;
         try
         {
             if (replaceExisting && (File.GetAttributes(path) & FileAttributes.ReadOnly) != 0)
@@ -296,7 +306,16 @@ public sealed class LinkedFiles
             if (gate is not null && !gate()) return false;
 
             if (replaceExisting)
-                SharingRetry.Run(() => File.Replace(tmp, path, null));
+            {
+                try
+                {
+                    SharingRetry.Run(() => ReplaceFile(tmp, path));
+                }
+                catch (IOException ex)
+                {
+                    if (!RecoverFailedReplace(tmp, path, ex, out keepTemp)) throw;
+                }
+            }
             else
             {
                 SharingRetry.Run(() => File.Move(tmp, path, overwrite: false));
@@ -312,8 +331,47 @@ public sealed class LinkedFiles
         }
         finally
         {
-            if (!swapped) AtomicFile.DeleteQuietly(tmp);
+            if (!swapped && !keepTemp) AtomicFile.DeleteQuietly(tmp);
         }
+    }
+
+    private const int ErrorUnableToMoveReplacement2 = unchecked((int)0x80070499); // ERROR_UNABLE_TO_MOVE_REPLACEMENT_2 (1177)
+
+    /// <summary>
+    /// After File.Replace failed: if the file is gone from its path but the temp exists (ERROR_UNABLE_TO_MOVE_REPLACEMENT
+    /// deletes the original; ERROR_UNABLE_TO_MOVE_REPLACEMENT_2 renames it away), the temp is moved to the path, never
+    /// over anything, and true means the write happened after all. Otherwise <paramref name="keepTemp"/> says the temp
+    /// must not be deleted: the move back failed, or the error was 1177 (the temp may be the only copy at a known name).
+    /// </summary>
+    private bool RecoverFailedReplace(string tmp, string path, IOException failure, out bool keepTemp)
+    {
+        keepTemp = false;
+        if (!File.Exists(path) && File.Exists(tmp))
+        {
+            try
+            {
+                File.Move(tmp, path, overwrite: false);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                keepTemp = true;
+                _log("linked write: replace failed, temp kept");
+                return false;
+            }
+            try
+            {
+                File.SetAttributes(path, FileAttributes.Normal); // the temp name was hidden, the file is not
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                _log($"linked write: attributes not reset {ex.GetType().Name}"); // the content is in place regardless
+            }
+            _log("linked write: replace failed, content moved back");
+            return true;
+        }
+        keepTemp = failure.HResult == ErrorUnableToMoveReplacement2;
+        if (keepTemp) _log("linked write: replace failed, temp kept");
+        return false;
     }
 
     private static string Hash(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
