@@ -119,6 +119,27 @@
     return !hasUnwritten && msSinceInput >= IDLE_RELOAD_MS ? 'reload' : 'conflict';
   }
 
+  /**
+   * Startup seeding, after the file was read: 'confirm' | 'adopt' | 'write' | 'conflict' | 'missing' | 'none'.
+   * `equal` is true when the file holds exactly the note's content. An unchanged file that differs from the note
+   * is written over only after a normal load (source 'main'): notes restored from notes.json.bak may be older
+   * than the file, so then the user chooses on the conflict bar.
+   */
+  function seedAction({ status, equal, source }) {
+    if (status === 'missing') return 'missing';
+    if (status !== 'ok' && status !== 'changed') return 'none';
+    if (equal === true) return status === 'ok' ? 'confirm' : 'adopt';
+    return status === 'ok' && source === 'main' ? 'write' : 'conflict';
+  }
+
+  /**
+   * True only for the host's rejection of a link id it does not know (the link is stale): a PlatformError with
+   * reason 'host', not user-facing, whose message is exactly "unknown link".
+   */
+  function isUnknownLink(err) {
+    return err instanceof Error && err.reason === 'host' && err.userFacing !== true && err.message === 'unknown link';
+  }
+
   /** Remembers the text last confirmed on disk per note. */
   function createTracker() {
     const confirmed = new Map();
@@ -172,6 +193,6 @@
 
   return {
     FileLinkError, fileTextOf, parseCpnote, matchesFile, noteFromFile, formatsFor, suggestedFileName, decide,
-    createTracker, createWriteQueue,
+    seedAction, isUnknownLink, createTracker, createWriteQueue,
   };
 });

@@ -442,9 +442,12 @@
             try {
               await platform.unlinkFile(link.linkId);
             } catch (e) {
-              console.error('unlink failed', errName(e));
-              unlinkFailed = true;
-              return null;
+              // A link the host does not know is already gone there: that counts as unlinked.
+              if (!FL.isUnknownLink(e)) {
+                console.error('unlink failed', errName(e));
+                unlinkFailed = true;
+                return null;
+              }
             }
             dropLink(note);
             plainFile = link;
@@ -2482,9 +2485,14 @@
     if (note.id === S.activeId) renderFileUi();
   }
 
-  /** Best-effort host unlink; a failure leaves an orphan link that the next startup prune removes. */
+  /**
+   * Best-effort host unlink; a failure leaves an orphan link that the next startup prune removes. A link the host
+   * does not know is already unlinked there, so that is not a failure.
+   */
   function forgetHostLink(linkId) {
-    platform.unlinkFile(linkId).catch((err) => console.error('unlink failed', errName(err)));
+    platform.unlinkFile(linkId).catch((err) => {
+      if (!FL.isUnknownLink(err)) console.error('unlink failed', errName(err));
+    });
   }
 
   function hasUnwrittenFiles() {
@@ -2717,7 +2725,7 @@
           console.error('link prune failed', errName(err));
         }
       }
-      if (fromDisk && pairs.length) await seedLinkedFiles(pairs);
+      if (fromDisk && pairs.length) await seedLinkedFiles(pairs, source);
     } catch (err) {
       console.error('file check failed', errName(err));
     } finally {
@@ -2726,19 +2734,20 @@
     }
   }
 
-  async function seedLinkedFiles(pairs) {
+  async function seedLinkedFiles(pairs, source) {
     for (const [n] of pairs) setFileStatus(n.id, 'pending');
     const statuses = await fileStatuses(pairs.map(([, linkId]) => linkId));
     for (const [n, linkId] of pairs) {
       if (!linkedTo(n.id, linkId)) continue;
       const status = statuses ? statuses[linkId] : undefined;
       if (status === 'missing') setFileStatus(n.id, 'missing');
-      else if (status === 'ok' || status === 'changed') await seedOne(n, linkId, status);
+      else if (status === 'ok' || status === 'changed') await seedOne(n, linkId, status, source);
       if (linkedTo(n.id, linkId) && fileStatusOf(n.id).state === 'pending') setFileStatus(n.id, 'unknown');
     }
   }
 
-  async function seedOne(note, linkId, status) {
+  /** Reads one linked file at startup and acts per FL.seedAction (after a backup restore, never writes over a different file). */
+  async function seedOne(note, linkId, status, source) {
     let res;
     try {
       res = await platform.readFile(linkId);
@@ -2747,13 +2756,16 @@
       return;
     }
     if (!linkedTo(note.id, linkId)) return;
-    if (res.missing) setFileStatus(note.id, 'missing');
-    else if (FL.matchesFile(note, res.text)) {
-      if (status === 'ok') confirmInSync(note); // the file still holds what CyberPad last wrote or adopted
-      else adoptFile(note, res.text);           // changed elsewhere to exactly the note's text: adopt it
-    }
-    else if (status === 'ok') { setFileStatus(note.id, 'unknown'); requestWrite(note.id); } // the note is newer, e.g. a close timed out
-    else setFileStatus(note.id, 'changed');
+    const action = FL.seedAction({
+      status: res.missing ? 'missing' : status,
+      equal: !res.missing && FL.matchesFile(note, res.text),
+      source,
+    });
+    if (action === 'missing') setFileStatus(note.id, 'missing');
+    else if (action === 'confirm') confirmInSync(note); // the file still holds what CyberPad last wrote or adopted
+    else if (action === 'adopt') adoptFile(note, res.text); // changed elsewhere to exactly the note's text: adopt it
+    else if (action === 'write') { setFileStatus(note.id, 'unknown'); requestWrite(note.id); } // the note is newer, e.g. a close timed out
+    else if (action === 'conflict') setFileStatus(note.id, 'changed');
   }
 
   // ---- commands
@@ -2812,19 +2824,38 @@
     if (S.sealFailed.has(note.id)) { toast('The latest changes could not be encrypted, so they were not saved to a file. Press Ctrl+S to retry.', 'error'); return; }
     const format = await chooseFormat(note, copy ? 'Save a copy as file' : 'Save as file');
     if (!format || !noteById(note.id) || !FL.formatsFor(note).includes(format)) return;
-    const relinkId = !copy && note.file ? note.file.linkId : null;
+    let relinkId = !copy && note.file ? note.file.linkId : null;
     files.hold.add(note.id);
     try {
       if (relinkId) await files.queue.idle(); // the write in flight to the old file finishes first
-      // Re-check after the await: the note may have been deleted, encrypted, decrypted or unlinked meanwhile, and
-      // plain text must never go into a .cpnote (nor ciphertext into a text file).
-      const linkNow = note.file ? note.file.linkId : null;
-      if (!noteById(note.id) || !FL.formatsFor(note).includes(format) || (!copy && relinkId !== linkNow)) {
-        toast('The note changed before it could be saved, so nothing was saved. Try again.', 'error');
-        return;
+      const suggestedName = suggestedNameFor(note, format, copy);
+      let text;
+      let res;
+      for (let attempt = 0; ; attempt++) {
+        // Re-check after every await: the note may have been deleted, encrypted, decrypted or unlinked meanwhile,
+        // and plain text must never go into a .cpnote (nor ciphertext into a text file).
+        const linkNow = note.file ? note.file.linkId : null;
+        if (!noteById(note.id) || !FL.formatsFor(note).includes(format) || (!copy && relinkId !== linkNow)) {
+          toast('The note changed before it could be saved, so nothing was saved. Try again.', 'error');
+          return;
+        }
+        text = FL.fileTextOf(note);
+        try {
+          res = await platform.saveAsFile({ format, suggestedName, text, relinkId });
+          break;
+        } catch (err) {
+          // The host does not know this link (stale): drop it, then save as a new link once.
+          // The re-check above then refuses if the note was linked elsewhere meanwhile.
+          if (!relinkId || attempt > 0 || !FL.isUnknownLink(err)) throw err;
+          if (linkedTo(note.id, relinkId)) {
+            dropLink(note);
+            persistNow();
+            renderList();
+            updateStatus();
+          }
+          relinkId = null;
+        }
       }
-      const text = FL.fileTextOf(note);
-      const res = await platform.saveAsFile({ format, suggestedName: suggestedNameFor(note, format, copy), text, relinkId });
       if (!res.linked) return;
       if (copy) {
         forgetHostLink(res.linkId); // a copy is not linked: the note stays with its own file
@@ -3021,7 +3052,7 @@
         act('Save mine as a copy…', () => saveAsFileFor(noteById(id), { copy: true })),
       );
     } else if (st.state === 'missing') {
-      fileUi.text.textContent = `${name} can’t be found. It may have been moved, renamed or deleted. The note is safe in CyberPad, and nothing is written to the file until you choose.`;
+      fileUi.text.textContent = `${name} can’t be found. It may have been moved, renamed or deleted. The note is safe in CyberPad, and CyberPad never recreates the file. If the file comes back unchanged, saving to it resumes on its own.`;
       fileUi.actions.replaceChildren(saveAs, act('Unlink', () => { if (linkedTo(id, linkId)) unlinkActive(); }), retry);
     } else {
       fileUi.text.textContent = `${label}${/[.!?]$/.test(label) ? '' : '.'} The note is safe in CyberPad.`;

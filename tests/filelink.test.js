@@ -188,3 +188,47 @@ test('noteFromFile: refuses damaged, oversized and invalid files', () => {
   assert.throws(() => F.noteFromFile(null), F.FileLinkError);
   assert.equal(F.noteFromFile({ ...ok, text: 'x'.repeat(1000000) }).body.length, 1000000);
 });
+
+test('seedAction: a file equal to the note confirms when unchanged and adopts when changed', () => {
+  for (const source of ['main', 'backup']) {
+    assert.equal(F.seedAction({ status: 'ok', equal: true, source }), 'confirm');
+    assert.equal(F.seedAction({ status: 'changed', equal: true, source }), 'adopt');
+  }
+});
+
+test('seedAction: an unchanged file older than the note is written only after a normal load', () => {
+  assert.equal(F.seedAction({ status: 'ok', equal: false, source: 'main' }), 'write');
+  // Restored from notes.json.bak (or anything else): the file may be newer than the note, so ask.
+  for (const source of ['backup', 'none', undefined, 'MAIN']) {
+    assert.equal(F.seedAction({ status: 'ok', equal: false, source }), 'conflict', String(source));
+  }
+});
+
+test('seedAction: a changed, different file is a conflict whatever the source', () => {
+  for (const source of ['main', 'backup']) assert.equal(F.seedAction({ status: 'changed', equal: false, source }), 'conflict');
+});
+
+test('seedAction: missing and unknown statuses', () => {
+  for (const source of ['main', 'backup']) {
+    assert.equal(F.seedAction({ status: 'missing', equal: false, source }), 'missing');
+    assert.equal(F.seedAction({ status: 'unknown', equal: true, source }), 'none');
+    assert.equal(F.seedAction({ status: 'bogus', equal: false, source }), 'none');
+  }
+  assert.equal(F.seedAction({ status: 'ok', equal: 'yes', source: 'main' }), 'write'); // only true counts as equal
+});
+
+class FakePlatformError extends Error {
+  constructor(reason, message, userFacing = false) { super(message || reason); this.reason = reason; this.userFacing = userFacing; }
+}
+
+test('isUnknownLink: only the host rejection "unknown link" counts', () => {
+  assert.equal(F.isUnknownLink(new FakePlatformError('host', 'unknown link')), true);
+  assert.equal(F.isUnknownLink(new FakePlatformError('host', 'Unknown link')), false);
+  assert.equal(F.isUnknownLink(new FakePlatformError('host', 'unknown link ')), false);
+  assert.equal(F.isUnknownLink(new FakePlatformError('host', 'invalid linkId')), false);
+  assert.equal(F.isUnknownLink(new FakePlatformError('timeout', 'unknown link')), false);
+  // A user-facing failure (fileFailed) is never a stale-link signal, whatever its text.
+  assert.equal(F.isUnknownLink(new FakePlatformError('host', 'unknown link', true)), false);
+  assert.equal(F.isUnknownLink(new Error('unknown link')), false);
+  for (const v of [null, undefined, 'unknown link', { reason: 'host', message: 'unknown link' }]) assert.equal(F.isUnknownLink(v), false);
+});
