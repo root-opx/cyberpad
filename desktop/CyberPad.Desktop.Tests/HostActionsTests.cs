@@ -149,4 +149,19 @@ public sealed class HostActionsTests
         host.Flushed();
         Assert.Equal((1, 1), (flushed, failed));
     }
+
+    [Fact]
+    public void FlushTimeout_AsksFirstOnlyWhileALinkedFileOperationRuns()
+    {
+        Assert.Equal(MainForm.FlushTimeoutAction.AskFirst, MainForm.OnFlushTimeout(fileOperationInFlight: true));
+        Assert.Equal(MainForm.FlushTimeoutAction.Close, MainForm.OnFlushTimeout(fileOperationInFlight: false));
+    }
+
+    [Fact]
+    public void ClosePrompts_UseTheAgreedTexts()
+    {
+        Assert.Equal("CyberPad could not save your latest changes (to its notes or to a linked file). Close anyway?",
+            MainForm.FlushFailedPrompt);
+        Assert.Equal("CyberPad is still saving to a linked file. Close anyway?", MainForm.StillSavingPrompt);
+    }
 }

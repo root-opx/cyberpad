@@ -26,6 +26,19 @@ internal sealed class MainForm : Form
     private const int MaxCrashesPerWindow = 3;
     private const long CrashWindowMs = 60_000;
 
+    /// <summary>The page's "flushFailed" carries no detail, so one text covers notes.json and linked files.</summary>
+    internal const string FlushFailedPrompt = "CyberPad could not save your latest changes (to its notes or to a linked file). Close anyway?";
+    internal const string StillSavingPrompt = "CyberPad is still saving to a linked file. Close anyway?";
+
+    internal enum FlushTimeoutAction { Close, AskFirst }
+
+    /// <summary>
+    /// What the 5 s close timeout does: close as before, or ask first while a linked-file operation is still running
+    /// (closing then could cut off a slow write, for example to a network share).
+    /// </summary>
+    internal static FlushTimeoutAction OnFlushTimeout(bool fileOperationInFlight) =>
+        fileOperationInFlight ? FlushTimeoutAction.AskFirst : FlushTimeoutAction.Close;
+
     private readonly string _dataDir;
     private readonly string _wwwroot;
     private readonly string _placementPath;
@@ -55,7 +68,7 @@ internal sealed class MainForm : Form
         _log = log;
         _instance = instance;
         _openRequests = openRequests;
-        _hostActions = new HostActions(new NoteStore(dataDir), links, new LinkedFiles(), openRequests, version, this,
+        _hostActions = new HostActions(new NoteStore(dataDir), links, new LinkedFiles(log), openRequests, version, this,
             ConfirmClose, FlushFailed, log);
         _hostActions.DialogClosed += OnFileActivityChanged;
         _hostActions.OpenCompleted += OnOpenCompleted;
@@ -547,8 +560,34 @@ internal sealed class MainForm : Form
 
     private void OnCloseTimerTick(object? sender, EventArgs e)
     {
+        _closeTimer.Stop();
         _log("close: flush timed out");
-        ConfirmClose();
+        if (OnFlushTimeout(_hostActions.IsFileOperationInFlight) == FlushTimeoutAction.Close)
+        {
+            ConfirmClose();
+            return;
+        }
+        try
+        {
+            // Posted, like the other close prompts.
+            BeginInvoke(new Action(AskToCloseWhileSaving));
+        }
+        catch (InvalidOperationException ex)
+        {
+            _log($"close: window gone {ex.GetType().Name}");
+        }
+    }
+
+    private void AskToCloseWhileSaving()
+    {
+        if (!_closeRequested || _closeConfirmed || IsDisposed) return;
+        _closeRequested = false; // a later close starts the handshake again; a late "flushed" is ignored meanwhile
+        _log("close: linked file still saving");
+        var answer = MessageBox.Show(this, StillSavingPrompt,
+            "CyberPad", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2);
+        if (answer != DialogResult.Yes || IsDisposed || _closeConfirmed) return;
+        _closeConfirmed = true;
+        Close();
     }
 
     /// <summary>Called from any thread by the page's "flushed", the timeout, or a page crash during close.</summary>
@@ -594,8 +633,7 @@ internal sealed class MainForm : Form
         _closeTimer.Stop();
         _closeRequested = false; // a later close starts the handshake again
         _log("close: final save failed");
-        var answer = MessageBox.Show(this,
-            "CyberPad could not save your latest changes. Close anyway and lose them?",
+        var answer = MessageBox.Show(this, FlushFailedPrompt,
             "CyberPad", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2);
         if (answer != DialogResult.Yes || IsDisposed || _closeConfirmed) return;
         _closeConfirmed = true;
