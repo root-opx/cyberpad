@@ -2401,6 +2401,7 @@
     outcome: new Map(),   // note id -> outcome of the last write: 'written' | 'conflict' | 'missing' | 'failed'
     lastInput: new Map(), // note id -> time of the last editor input in that note
     manual: new Map(),    // note id -> force flag of a write the user asked for (Save, Retry, Keep mine)
+    adopt: new Map(),     // note id -> file text the note adopted, to confirm with a non-forced write of exactly it
     hold: new Set(),      // note ids whose link is moving to a new file (Save as): no writes meanwhile
     ready: false,         // startup checks done: automatic writes and focus checks may run
     started: false,       // the page is ready to open files the host has queued
@@ -2449,6 +2450,16 @@
     if (id === S.activeId) renderFileUi();
   }
 
+  /**
+   * The user's note now holds the file's text (reload, "Use the file's version", an equal file at startup or on
+   * open). Reading never confirms content on the host, so adopt it with a non-forced write of exactly that text:
+   * the host takes the file as it is when the bytes match, and reports a conflict if it changed again meanwhile.
+   */
+  function adoptFile(note, text) {
+    files.adopt.set(note.id, text);
+    requestWrite(note.id);
+  }
+
   function confirmInSync(note) {
     const text = fileTextOrNull(note);
     if (text !== null) files.tracker.confirm(note.id, text);
@@ -2460,6 +2471,7 @@
     files.status.delete(id);
     files.outcome.delete(id);
     files.manual.delete(id);
+    files.adopt.delete(id);
     files.lastInput.delete(id);
   }
 
@@ -2488,9 +2500,12 @@
 
   /** The write queue's writer: one write per note at a time. Reports its own failures (the queue ignores them). */
   async function writeLinked(id) {
-    const manual = files.manual.has(id);
-    const force = files.manual.get(id) === true;
+    const adopting = files.adopt.has(id);
+    const adoptText = files.adopt.get(id);
+    const manual = adopting || files.manual.has(id);
+    const force = !adopting && files.manual.get(id) === true; // an adoption is never forced
     files.manual.delete(id);
+    files.adopt.delete(id);
     const note = noteById(id);
     if (!platform.isDesktop || !note || !note.file || files.hold.has(id)) return;
     if (!manual && writesPaused(id)) return;
@@ -2501,7 +2516,7 @@
     }
     let text;
     try {
-      text = FL.fileTextOf(note);
+      text = adopting ? adoptText : FL.fileTextOf(note);
     } catch (err) {
       if (!(err instanceof FL.FileLinkError)) console.error('file write failed', errName(err));
       setFileStatus(id, 'failed', fileReason(err));
@@ -2515,7 +2530,9 @@
       if (!linkedTo(id, linkId)) return;
       files.outcome.set(id, outcome);
       if (outcome === 'written') {
-        files.tracker.confirm(id, text);
+        // A .cpnote adopted as formatted elsewhere still holds this note: track the note's own text, so no rewrite follows.
+        const same = adopting && FL.matchesFile(note, text) ? fileTextOrNull(note) : null;
+        files.tracker.confirm(id, same !== null ? same : text);
         setFileStatus(id, 'saved');
       } else {
         setFileStatus(id, outcome === 'conflict' ? 'changed' : 'missing');
@@ -2590,7 +2607,7 @@
       if (text.length > store.LIMITS.body) throw new FL.FileLinkError('That file is too long for one note.');
       replaceNoteBody(note, text);
     }
-    confirmInSync(note);
+    adoptFile(note, text);
   }
 
   function replaceNoteBody(note, text) {
@@ -2632,7 +2649,7 @@
     if (!linkedTo(note.id, linkId)) return false;
     const { name } = note.file;
     if (res.missing) { setFileStatus(note.id, 'missing'); return false; }
-    if (FL.matchesFile(note, res.text)) { confirmInSync(note); return true; }
+    if (FL.matchesFile(note, res.text)) { adoptFile(note, res.text); return true; }
     if (silent && FL.decide({ status: 'changed', hasUnwritten: unwritten(note), msSinceInput: msSinceInput(note.id) }) !== 'reload') {
       setFileStatus(note.id, 'changed');
       return false;
@@ -2728,7 +2745,10 @@
     }
     if (!linkedTo(note.id, linkId)) return;
     if (res.missing) setFileStatus(note.id, 'missing');
-    else if (FL.matchesFile(note, res.text)) confirmInSync(note);
+    else if (FL.matchesFile(note, res.text)) {
+      if (status === 'ok') confirmInSync(note); // the file still holds what CyberPad last wrote or adopted
+      else adoptFile(note, res.text);           // changed elsewhere to exactly the note's text: adopt it
+    }
     else if (status === 'ok') { setFileStatus(note.id, 'unknown'); requestWrite(note.id); } // the note is newer, e.g. a close timed out
     else setFileStatus(note.id, 'changed');
   }
@@ -2924,7 +2944,7 @@
   /** The opened file is already linked to a note: show that note, and bring in the file's text if it changed. */
   async function showOpenedNote(note, res) {
     openNote(note.id);
-    if (FL.matchesFile(note, res.text)) { confirmInSync(note); return; }
+    if (FL.matchesFile(note, res.text)) { adoptFile(note, res.text); return; }
     if (FL.decide({ status: 'changed', hasUnwritten: unwritten(note), msSinceInput: msSinceInput(note.id) }) !== 'reload') {
       setFileStatus(note.id, 'changed');
       return;

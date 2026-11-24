@@ -168,20 +168,95 @@ public sealed class LinkedFilesTests : IDisposable
     }
 
     [Fact]
-    public void ReadCurrent_ReturnsTextAndRefreshedRecord_OrNullWhenMissing()
+    public void ReadCurrent_ChangedContent_ReturnsTextButDoesNotAdoptIt()
     {
         var path = P("n.txt");
         var rec = _files.WriteNew(path, LinkFormat.Txt, "a");
         File.WriteAllBytes(path, WithBom("x\r\ny\r\n"));
         var text = _files.ReadCurrent(rec, out var refreshed);
         Assert.Equal("x\ny\n", text);
-        Assert.True(refreshed.Bom);
-        Assert.Equal(LineEnding.CrLf, refreshed.LineEnding);
-        Assert.Equal(Sha(File.ReadAllBytes(path)), refreshed.Sha256);
-        Assert.Equal(WriteOutcome.Written, _files.Write(refreshed, "q", false, out _));
+        Assert.Equal(rec, refreshed); // reading is not adopting: the record still means "what CyberPad last wrote"
+        Assert.Equal(FileStatus.Changed, _files.Check(refreshed, out _, TimeSpan.FromSeconds(2)));
+        Assert.Equal(WriteOutcome.Conflict, _files.Write(refreshed, "q", false, out _));
+        Assert.Equal(WithBom("x\r\ny\r\n"), File.ReadAllBytes(path));
 
         File.Delete(path);
         Assert.Null(_files.ReadCurrent(rec, out _));
+    }
+
+    [Fact]
+    public void ReadCurrent_TimestampOnlyChange_RefreshesMtime()
+    {
+        var path = P("n.md");
+        var rec = _files.WriteNew(path, LinkFormat.Md, "a");
+        var later = rec.MtimeUtc.AddHours(1);
+        File.SetLastWriteTimeUtc(path, later);
+        Assert.Equal("a", _files.ReadCurrent(rec, out var refreshed));
+        Assert.Equal(later, refreshed.MtimeUtc);
+        Assert.Equal(rec.Sha256, refreshed.Sha256);
+        Assert.Equal(rec with { MtimeUtc = later }, refreshed);
+    }
+
+    [Fact]
+    public void Write_ChangedButIdenticalBytes_AdoptsWithoutRewriting()
+    {
+        var path = P("n.txt");
+        var rec = _files.WriteNew(path, LinkFormat.Txt, "a\nb");
+        var theirs = WithBom("x\r\ny\r\n"); // another editor: new text, BOM and CRLF
+        File.WriteAllBytes(path, theirs);
+        var mtime = rec.MtimeUtc.AddMinutes(5);
+        File.SetLastWriteTimeUtc(path, mtime);
+
+        Assert.Equal(WriteOutcome.Written, _files.Write(rec, "x\ny\n", false, out var updated));
+        Assert.Equal(theirs, File.ReadAllBytes(path));
+        Assert.Equal(mtime, File.GetLastWriteTimeUtc(path)); // not rewritten
+        Assert.Equal(Sha(theirs), updated.Sha256);
+        Assert.Equal(theirs.Length, updated.Size);
+        Assert.Equal(mtime, updated.MtimeUtc);
+        Assert.True(updated.Bom);
+        Assert.Equal(LineEnding.CrLf, updated.LineEnding);
+        Assert.Empty(Directory.GetFiles(_root, ".*cyberpad-tmp-*"));
+
+        // Adopted: the file now counts as unchanged, and later writes keep its encoding.
+        Assert.Equal(FileStatus.Ok, _files.Check(updated, out _, TimeSpan.FromSeconds(2)));
+        Assert.Equal(WriteOutcome.Written, _files.Write(updated, "z\n", false, out _));
+        Assert.Equal(WithBom("z\r\n"), File.ReadAllBytes(path));
+    }
+
+    [Fact]
+    public void Write_ChangedButIdenticalCpNote_Adopts()
+    {
+        var path = P("n.cpnote");
+        var rec = _files.WriteNew(path, LinkFormat.CpNote, "{\"v\":1}");
+        File.WriteAllText(path, "{\"v\":2}", new UTF8Encoding(false));
+        Assert.Equal(WriteOutcome.Written, _files.Write(rec, "{\"v\":2}", false, out var updated));
+        Assert.Equal(Sha(File.ReadAllBytes(path)), updated.Sha256);
+    }
+
+    [Fact]
+    public void Write_ChangedDifferentBytes_StillConflicts()
+    {
+        var path = P("n.txt");
+        var rec = _files.WriteNew(path, LinkFormat.Txt, "a");
+        File.WriteAllText(path, "theirs");
+        Assert.Equal(WriteOutcome.Conflict, _files.Write(rec, "mine", false, out var updated));
+        Assert.Equal(rec, updated);
+        Assert.Equal("theirs", File.ReadAllText(path));
+
+        // Same decoded text but bytes this write would not produce (mixed line endings): still a conflict.
+        File.WriteAllBytes(path, Encoding.UTF8.GetBytes("x\r\ny\nz"));
+        Assert.Equal(WriteOutcome.Conflict, _files.Write(rec, "x\ny\nz", false, out _));
+        Assert.Equal(Encoding.UTF8.GetBytes("x\r\ny\nz"), File.ReadAllBytes(path));
+    }
+
+    [Fact]
+    public void Write_MissingWithMatchingText_StaysMissing()
+    {
+        var path = P("n.txt");
+        var rec = _files.WriteNew(path, LinkFormat.Txt, "a");
+        File.Delete(path);
+        Assert.Equal(WriteOutcome.Missing, _files.Write(rec, "a", false, out _));
+        Assert.False(File.Exists(path));
     }
 
     [Fact]

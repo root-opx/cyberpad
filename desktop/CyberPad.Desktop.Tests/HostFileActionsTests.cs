@@ -200,6 +200,47 @@ public sealed class HostFileActionsTests : IDisposable
     }
 
     [Fact]
+    public async Task Open_AlreadyLinked_DoesNotAdoptChangedContent()
+    {
+        var first = await SaveAs(Doc("a.txt"), text: "v1");
+        File.WriteAllText(Doc("a.txt"), "v2 edited elsewhere");
+        _host.AskOpenPath = () => Doc("a.txt");
+        var r = await _host.OpenFileAsync();
+        Assert.True(r!.AlreadyLinked);
+        Assert.Equal(FileStatus.Changed, (await _host.CheckFilesAsync(new[] { first.LinkId }))[first.LinkId]);
+        Assert.Equal(WriteOutcome.Conflict, await _host.WriteFileAsync(first.LinkId, "v1 mine", false));
+        Assert.Equal("v2 edited elsewhere", File.ReadAllText(Doc("a.txt")));
+    }
+
+    [Fact]
+    public async Task ReadFile_DoesNotAdoptChangedContent()
+    {
+        var link = await SaveAs(Doc("a.txt"), text: "one");
+        File.WriteAllText(Doc("a.txt"), "edited elsewhere");
+        Assert.Equal("edited elsewhere", await _host.ReadFileAsync(link.LinkId));
+        Assert.Equal(FileStatus.Changed, (await _host.CheckFilesAsync(new[] { link.LinkId }))[link.LinkId]);
+        Assert.Equal(WriteOutcome.Conflict, await _host.WriteFileAsync(link.LinkId, "mine", false));
+        Assert.Equal("edited elsewhere", File.ReadAllText(Doc("a.txt")));
+
+        // Adopting the file's text explicitly (a non-forced write of exactly that text) confirms it.
+        Assert.Equal(WriteOutcome.Written, await _host.WriteFileAsync(link.LinkId, "edited elsewhere", false));
+        Assert.Equal(FileStatus.Ok, (await _host.CheckFilesAsync(new[] { link.LinkId }))[link.LinkId]);
+        Assert.Equal(WriteOutcome.Written, await _host.WriteFileAsync(link.LinkId, "mine", false));
+        Assert.Equal("mine", File.ReadAllText(Doc("a.txt")));
+    }
+
+    [Fact]
+    public async Task ReadFile_TimestampOnlyChange_RefreshesRecord()
+    {
+        var link = await SaveAs(Doc("a.txt"), text: "one");
+        File.SetLastWriteTimeUtc(Doc("a.txt"), DateTime.UtcNow.AddHours(1));
+        Assert.Equal("one", await _host.ReadFileAsync(link.LinkId));
+        Assert.True(_links.TryGet(link.LinkId, out var rec));
+        Assert.Equal(File.GetLastWriteTimeUtc(Doc("a.txt")), rec!.MtimeUtc);
+        Assert.Equal(FileStatus.Ok, (await _host.CheckFilesAsync(new[] { link.LinkId }))[link.LinkId]);
+    }
+
+    [Fact]
     public async Task Open_RejectsPolicyFailures()
     {
         _queue.TryEnqueue(@"C:\x.exe");

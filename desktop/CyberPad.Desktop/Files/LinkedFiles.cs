@@ -31,7 +31,10 @@ public sealed class LinkedFiles
         return (new LinkRecord(fullPath, format, enc, bom, le, snap.Bytes.Length, snap.MtimeUtc, snap.Sha256), text);
     }
 
-    /// <summary>The file's current text, with the record refreshed to what is now on disk; null if the file is gone.</summary>
+    /// <summary>
+    /// The file's current text; null if the file is gone. Reading never adopts new content: the record keeps meaning
+    /// "what CyberPad last wrote or the user adopted". Only a timestamp-only change (same hash) refreshes it.
+    /// </summary>
     public string? ReadCurrent(LinkRecord r, out LinkRecord refreshed)
     {
         ArgumentNullException.ThrowIfNull(r);
@@ -49,8 +52,9 @@ public sealed class LinkedFiles
         {
             return null;
         }
-        var (text, enc, bom, le) = Decode(r.Format, snap.Bytes);
-        refreshed = r with { Encoding = enc, Bom = bom, LineEnding = le, Size = snap.Bytes.Length, MtimeUtc = snap.MtimeUtc, Sha256 = snap.Sha256 };
+        var (text, _, _, _) = Decode(r.Format, snap.Bytes);
+        if (string.Equals(snap.Sha256, r.Sha256, StringComparison.Ordinal))
+            refreshed = r with { Size = snap.Bytes.Length, MtimeUtc = snap.MtimeUtc };
         return text;
     }
 
@@ -103,21 +107,29 @@ public sealed class LinkedFiles
         // The temp file is fully written and flushed first; the check runs only then, right before the swap,
         // so a save by another program can only slip in during that one metadata check.
         var outcome = WriteOutcome.Written;
+        LinkRecord? adopted = null;
         var swapped = WriteBytes(r.Path, bytes, replaceExisting: true, gate: () =>
         {
             FileStatus status;
             try
             {
                 status = Inspect(r, out _);
+                // Changed, but the file already holds exactly what this write would produce: adopt it, don't rewrite.
+                if (status == FileStatus.Changed && !force && TryAdopt(r, text, out var current)) adopted = current;
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
                 throw new StoreException(ReadFailedMessage, ex);
             }
             if (status == FileStatus.Missing) outcome = WriteOutcome.Missing;
-            else if (status == FileStatus.Changed && !force) outcome = WriteOutcome.Conflict;
-            return outcome == WriteOutcome.Written;
+            else if (status == FileStatus.Changed && !force && adopted is null) outcome = WriteOutcome.Conflict;
+            return outcome == WriteOutcome.Written && adopted is null;
         });
+        if (adopted is not null)
+        {
+            updated = adopted;
+            return WriteOutcome.Written;
+        }
         if (!swapped) return outcome;
         updated = r with { Size = bytes.Length, MtimeUtc = File.GetLastWriteTimeUtc(r.Path), Sha256 = Hash(bytes) };
         return WriteOutcome.Written;
@@ -179,6 +191,43 @@ public sealed class LinkedFiles
         {
             return FileStatus.Missing;
         }
+    }
+
+    /// <summary>
+    /// True when the file decodes to exactly <paramref name="text"/> and encoding that text in the file's own encoding,
+    /// BOM and line endings gives back its exact bytes; <paramref name="adopted"/> is then the record of the file as it is.
+    /// A file that isn't valid text, is over the size cap, or doesn't round-trip byte for byte is never adopted.
+    /// </summary>
+    private static bool TryAdopt(LinkRecord r, string text, out LinkRecord adopted)
+    {
+        adopted = r;
+        Snapshot snap;
+        try
+        {
+            if (new FileInfo(r.Path).Length > MaxFileBytes) return false;
+            snap = ReadSnapshot(r.Path);
+        }
+        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
+        {
+            return false;
+        }
+
+        LinkRecord candidate;
+        byte[] mine;
+        try
+        {
+            var (decoded, enc, bom, le) = Decode(r.Format, snap.Bytes);
+            if (!string.Equals(decoded, text, StringComparison.Ordinal)) return false;
+            candidate = r with { Encoding = enc, Bom = bom, LineEnding = le };
+            mine = EncodeFor(candidate, text);
+        }
+        catch (StoreException)
+        {
+            return false; // not text in a supported form: it can only be a conflict
+        }
+        if (!mine.AsSpan().SequenceEqual(snap.Bytes)) return false;
+        adopted = candidate with { Size = snap.Bytes.Length, MtimeUtc = snap.MtimeUtc, Sha256 = snap.Sha256 };
+        return true;
     }
 
     private static (string Text, TextEncodingKind Enc, bool Bom, LineEnding Le) Decode(LinkFormat format, byte[] bytes)
