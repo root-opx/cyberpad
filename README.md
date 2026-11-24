@@ -1,8 +1,10 @@
 # CyberPad
 
-An offline, cyberpunk-retro notepad that runs in your browser. No install, no account, no network, no dependencies.
+An offline, cyberpunk-retro notepad that runs in your browser, or as a Windows desktop app. No account, no network, no dependencies.
 
 ## Run it
+
+**In a browser**
 
 Double-click `index.html` (Chrome, Edge, or another Chromium browser).
 
@@ -13,6 +15,8 @@ python -m http.server 8787 --bind 127.0.0.1
 ```
 
 Then open http://localhost:8787.
+
+**As a Windows app:** see [Desktop app](#desktop-app) below.
 
 ## What it does
 
@@ -89,13 +93,52 @@ Then open http://localhost:8787.
 | `Esc`, then `Tab` | Move focus out of the editor |
 | `F1` | All shortcuts |
 
+## Desktop app
+
+The same notepad in its own window and process, so a browser crash can never take it down. It is a .NET 8 + WebView2 host around the unchanged web app, for 64-bit Windows.
+
+**Get it**
+- Download `CyberPad-win-x64-<version>.zip`, or build it yourself (see Development). Unzip it anywhere and run `CyberPad.exe`. Nothing is installed.
+- The build is not code-signed, so Windows SmartScreen warns on first run. Click **More info**, then **Run anyway**.
+- It needs the Microsoft Edge WebView2 Runtime, which is preinstalled on Windows 11. If it is missing, the app shows a message with Microsoft's download page; it never downloads anything itself.
+
+**How it behaves**
+- Only one copy runs at a time. Starting it again brings the open window forward, so two copies never write the same file.
+- Notes are saved to disk as you type. Each save writes a temporary file and swaps it in, keeping the previous save as a backup, so a crash at any moment loses at most the last fraction of a second of typing and never corrupts your notes.
+- If the web engine's page process dies, the window reloads from the last save. If that happens three times within a minute, it shows a message instead of looping.
+- Closing the window waits up to 5 seconds for the last save (including any pending encryption), then exits.
+- Minimizing locks encrypted notes, as the lock-when-hidden setting does in a browser.
+- Exports and backups open the Windows Save dialog. They cannot be saved into the CyberPad data folder. Imports use the Open dialog or drag and drop, as before.
+- Links in the preview open in your default browser only when you click them, and only `http`, `https`, and `mailto` links.
+- If the app cannot read its notes file at startup, it restores the previous save, keeps the unreadable file in the data folder, and tells you. If it cannot load your notes at all, saving is turned off for that session, so nothing gets overwritten.
+
+**Moving notes from the browser version**
+
+The desktop app cannot read a browser's storage. In the browser version, export a backup (plain, or **Export encrypted backup**), then import that file here. A new install's welcome note says the same.
+
+**Your notes**
+
+They live in `%LOCALAPPDATA%\CyberPad` (paste it into Explorer's address bar). That is the local profile, so roaming profiles do not sync it.
+
+| File | What it is |
+| --- | --- |
+| `notes.json` | all your notes |
+| `notes.json.bak` | the previous good save |
+| `notes.unreadable-<time>.json`, `notes.unreadable-<time>.bak.json` | files the app could not read, kept instead of deleted |
+| `window.json` | window size and position |
+| `WebView2\` | the web engine's own profile |
+
+**Unencrypted notes are plain text in `notes.json`.** Anyone who can read your Windows profile or the disk can read them. Encrypt anything sensitive, and consider BitLocker for the disk. Encrypted notes are stored as ciphertext only.
+
 ## Where your data lives
 
-Notes are stored in your browser's `localStorage` on this device. Nothing ever leaves it: the Content Security Policy blocks all network connections.
+**Browser version.** Notes are stored in your browser's `localStorage` on this device. Nothing ever leaves it: the Content Security Policy blocks all network connections.
 
 - **Unencrypted notes are stored as plain text.** Anyone with access to this browser profile can read them. Encrypt anything sensitive.
 - When you open the app from `file://`, Chromium shares one storage area between all local HTML files. Serving it from `localhost`, as shown above, gives it a storage area of its own.
 - Clearing site data deletes your notes, so export a backup now and then.
+
+**Desktop app.** Notes are in `%LOCALAPPDATA%\CyberPad\notes.json` (details under [Desktop app](#desktop-app)). Nothing leaves your PC there either.
 
 ## Security notes
 
@@ -113,6 +156,14 @@ Notes are stored in your browser's `localStorage` on this device. Nothing ever l
 - MD5 is not offered: Web Crypto does not provide it and the app does not ship its own crypto. SHA-1 is offered only for matching against existing threat intel.
 - Unlocking backs off after repeated failures. Since everything runs client-side, the real protection is the slow PBKDF2 key derivation and a strong passphrase.
 
+### Desktop app
+
+- **Narrow host bridge.** The page can send only five message types: load, save, quarantine, export, and flushed. Each is checked for the exact origin (`https://cyberpad.example/`), a known `type`, exact field types, no extra fields, and size limits (64 MB of text, 120-character file names). Anything else is rejected and logged by type and reason only; note content is never logged. There is no message to read or write an arbitrary path or run a command. Export file names are reduced to a safe name with a forced extension, and the user picks the real path in the Save dialog.
+- **Locked-down web view.** The app loads only from its own virtual host `cyberpad.example` (a reserved name that never resolves), keeping the strict CSP. Navigation anywhere else is cancelled, new windows are cancelled, and downloads are cancelled. Every permission request (camera, microphone, location, clipboard read, and so on) is denied. Dev tools and browser shortcut keys are off in release builds, and password and form autofill are off.
+- **External links.** A clicked link opens in the default browser only if it is a well-formed `http`, `https`, or `mailto` URL. `file:`, `javascript:`, `ms-settings:`, UNC paths, and every other scheme are ignored.
+- **Crash-safe storage.** Saves are atomic with a kept backup, and unreadable files are renamed, never deleted. No network access and no telemetry. The app's only dependency is Microsoft's `Microsoft.Web.WebView2` package, pinned by lock file and audited for known vulnerabilities on every build.
+- **Not covered:** the exe is unsigned, and the notes file is not encrypted as a whole (see above).
+
 ## Development
 
 ```powershell
@@ -120,6 +171,22 @@ npm test
 ```
 
 The tests use Node's built-in test runner (Node 18+) and cover the calculator, Markdown parser, text tools, vault, store, security tools, CVSS scoring (checked against reference scores), and the subnet calculator, including negative cases such as injection payloads, tampered ciphertext, bad imports, and prototype pollution.
+
+**Desktop app.** You need the .NET 8 SDK and Node 18+.
+
+```powershell
+dotnet test desktop/CyberPad.sln -c Release
+powershell -ExecutionPolicy Bypass -File desktop/build.ps1
+```
+
+`desktop/build.ps1` runs `npm test` and the .NET tests, audits the .NET packages for known vulnerabilities (and fails if it finds any), publishes a self-contained single-file build, and zips it to `dist/CyberPad-win-x64-<version>.zip` (about 65 MB). It stops at the first failing step. The version is set once, in `desktop/CyberPad.Desktop/CyberPad.Desktop.csproj`. `dist/` is not committed.
+
+Manual checks for the desktop app:
+- Kill the WebView render process (`msedgewebview2.exe`) in Task Manager: the window reloads with your notes intact.
+- Kill `CyberPad.exe` while typing: the last save is intact on the next start.
+- Minimize with an unlocked encrypted note: it is locked when you restore the window.
+- Click an NVD link in the preview: it opens in the default browser.
+- Start `CyberPad.exe` a second time: the first window comes to the front.
 
 ```
 index.html          app shell and CSP
@@ -134,6 +201,8 @@ js/core/            pure logic, also loaded by Node tests
   cvss.js           CVSS 3.0/3.1 parsing and scoring
   netcalc.js        IPv4/IPv6 subnet calculator
 js/ui/              DOM helpers: renderer, caret position, sound
+js/platform.js      storage and file adapter (browser or desktop host)
 js/app.js           application controller
 tests/              node:test suites
+desktop/            Windows host (WinForms + WebView2), its xUnit tests, build.ps1
 ```
