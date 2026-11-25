@@ -1,4 +1,4 @@
-# Builds the CyberPad desktop app and packages it as dist/CyberPad-win-x64-<version>.zip.
+# Builds the CyberPad desktop app and packages it as dist/CyberPad-win-x64-<version>.zip and dist/CyberPad-Setup-<version>.exe.
 # Works in Windows PowerShell 5.1. Stops at the first failing step.
 #   powershell -ExecutionPolicy Bypass -File desktop/build.ps1
 
@@ -31,15 +31,15 @@ if ($version -notmatch '^\d+\.\d+\.\d+$') {
 
 Push-Location $root
 try {
-    Write-Host '== 1/5 npm test'
+    Write-Host '== 1/8 npm test'
     & npm test
     Assert-ExitCode 'npm test'
 
-    Write-Host '== 2/5 dotnet test'
+    Write-Host '== 2/8 dotnet test'
     & dotnet test $sln -c Release
     Assert-ExitCode 'dotnet test'
 
-    Write-Host '== 3/5 vulnerable package audit'
+    Write-Host '== 3/8 vulnerable package audit'
     # The CLI text is localized, so audit through the JSON output instead.
     $auditText = (& dotnet list $sln package --vulnerable --include-transitive --format json) -join "`n"
     Assert-ExitCode 'dotnet list package --vulnerable'
@@ -81,7 +81,7 @@ try {
     }
     Write-Host 'No vulnerable packages.'
 
-    Write-Host '== 4/5 dotnet publish'
+    Write-Host '== 4/8 dotnet publish'
     if (Test-Path -LiteralPath $publishDir) {
         Remove-Item -LiteralPath $publishDir -Recurse -Force
     }
@@ -92,7 +92,7 @@ try {
         -o $publishDir
     Assert-ExitCode 'dotnet publish'
 
-    Write-Host '== 5/5 zip'
+    Write-Host '== 5/8 zip'
     foreach ($required in @('CyberPad.exe', 'wwwroot\index.html')) {
         if (-not (Test-Path -LiteralPath (Join-Path $publishDir $required) -PathType Leaf)) {
             throw "Publish output is missing $required."
@@ -124,6 +124,51 @@ try {
         }
     }
     Write-Host "Created $zip"
+
+    $setupObj = Join-Path $dist 'obj-setup'
+    if (Test-Path -LiteralPath $setupObj) {
+        Remove-Item -LiteralPath $setupObj -Recurse -Force
+    }
+
+    Write-Host '== 6/8 build Uninstall.exe'
+    # DebugType=none: no .pdb (its embedded path names the build machine's user folder). The library goes
+    # into the exe, so it is built without a .pdb too.
+    $uninstallOut = Join-Path $setupObj 'uninstall'
+    & dotnet build (Join-Path $desktop 'CyberPad.Uninstall\CyberPad.Uninstall.csproj') -c Release --no-incremental `
+        -p:DebugType=none -p:Version=$version -o $uninstallOut
+    Assert-ExitCode 'dotnet build Uninstall'
+    $uninstallExe = Join-Path $uninstallOut 'Uninstall.exe'
+    if (-not (Test-Path -LiteralPath $uninstallExe -PathType Leaf)) {
+        throw 'Uninstall.exe was not built.'
+    }
+
+    Write-Host '== 7/8 build CyberPad-Setup.exe'
+    $setupBuilt = Join-Path $setupObj 'setup'
+    & dotnet build (Join-Path $desktop 'CyberPad.Setup\CyberPad.Setup.csproj') -c Release --no-incremental `
+        -p:DebugType=none -p:Version=$version -p:PayloadZip=$zip -p:UninstallerExe=$uninstallExe -o $setupBuilt
+    Assert-ExitCode 'dotnet build Setup'
+    $setupExe = Join-Path $setupBuilt 'CyberPad-Setup.exe'
+
+    Write-Host '== 8/8 check and copy the setup file'
+    if (-not (Test-Path -LiteralPath $setupExe -PathType Leaf)) {
+        throw 'CyberPad-Setup.exe was not built.'
+    }
+    $setupSize = (Get-Item -LiteralPath $setupExe).Length
+    $zipSize = (Get-Item -LiteralPath $zip).Length
+    if ($setupSize -lt $zipSize) {
+        throw "CyberPad-Setup.exe ($setupSize bytes) is smaller than the zip ($zipSize bytes): the payload was not embedded."
+    }
+    if ($setupSize -gt 150MB) {
+        throw "CyberPad-Setup.exe is larger than 150 MB ($setupSize bytes)."
+    }
+    $setupFinal = Join-Path $dist "CyberPad-Setup-$version.exe"
+    Copy-Item -LiteralPath $setupExe -Destination $setupFinal -Force
+    $strayPdb = @(Get-ChildItem -LiteralPath $dist -Filter '*.pdb' -File)
+    if ($strayPdb.Count -gt 0) {
+        throw ("A .pdb file is shipped in dist:`n" + (($strayPdb | ForEach-Object { $_.Name }) -join "`n"))
+    }
+    Remove-Item -LiteralPath $setupObj -Recurse -Force
+    Write-Host "Created $setupFinal"
 }
 finally {
     Pop-Location

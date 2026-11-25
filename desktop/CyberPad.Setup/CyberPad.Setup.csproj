@@ -1,0 +1,52 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    CyberPad-Setup.exe: a small WinForms program on the .NET Framework that ships with Windows (net471).
+    build.ps1 embeds the portable build and the uninstaller at build time:
+      -p:PayloadZip=<zip> -p:UninstallerExe=<Uninstall.exe> -p:Version=<app version>
+    Without them the project still builds, and the program says the setup file is incomplete.
+    No package of any kind.
+  -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net471</TargetFramework>
+    <AutomaticallyUseReferenceAssemblyPackages>false</AutomaticallyUseReferenceAssemblyPackages>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <AssemblyName>CyberPad-Setup</AssemblyName>
+    <RootNamespace>CyberPad.Setup</RootNamespace>
+    <ApplicationIcon>..\CyberPad.Desktop\app.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <Version>1.0.0</Version>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="System.Windows.Forms" />
+    <Reference Include="System.Drawing" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\CyberPad.Install\CyberPad.Install.csproj" Private="false" />
+    <Compile Include="..\Shared\UiCommon.cs" Link="Shared\UiCommon.cs" />
+    <Compile Include="..\Shared\EmbeddedLibrary.cs" Link="Shared\EmbeddedLibrary.cs" />
+  </ItemGroup>
+
+  <!-- One file, no loose DLL: the library is embedded and loaded by Shared\EmbeddedLibrary.cs. -->
+  <Target Name="EmbedInstallLibrary" BeforeTargets="AssignTargetPaths" DependsOnTargets="ResolveProjectReferences">
+    <ItemGroup>
+      <EmbeddedResource Include="@(_ResolvedProjectReferencePaths)" Condition="'%(Filename)' == 'CyberPad.Install'" LogicalName="CyberPad.Install.dll" />
+    </ItemGroup>
+  </Target>
+
+  <ItemGroup Condition="'$(PayloadZip)' != '' And Exists('$(PayloadZip)')">
+    <EmbeddedResource Include="$(PayloadZip)" LogicalName="payload.zip" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(UninstallerExe)' != '' And Exists('$(UninstallerExe)')">
+    <EmbeddedResource Include="$(UninstallerExe)" LogicalName="Uninstall.exe" />
+  </ItemGroup>
+
+</Project>
