@@ -1,0 +1,370 @@
+using System.Text;
+using CyberPad.Install;
+
+namespace CyberPad.Desktop.Tests;
+
+/// <summary>Installs into a temp folder with fake registry, shortcut and notify; nothing real is touched.</summary>
+[Collection(InstallTestCollection.Name)]
+public sealed class InstallerTests : IDisposable
+{
+    private readonly InstallTempDir _temp = new();
+    private readonly InstallEnvironment _env;
+    private readonly FakeRegistry _registry = new();
+    private readonly FakeShortcuts _shortcuts = new();
+    private readonly FakeNotify _notify = new();
+    private readonly FileSystemProbe _probe = new();
+    private readonly string _dir;
+    private readonly string _victim;
+
+    public InstallerTests()
+    {
+        _env = TestEnvironments.Under(_temp.Root);
+        _dir = _env.DefaultInstallFolder;
+        _victim = _temp.Path_("victim.txt");
+        File.WriteAllText(_victim, "keep me");
+    }
+
+    public void Dispose()
+    {
+        Assert.Equal("keep me", File.ReadAllText(_victim)); // every test: the file outside is never touched
+        _temp.Dispose();
+    }
+
+    internal static readonly (string, string)[] V1 =
+    {
+        ("CyberPad.exe", "app v1"),
+        ("wwwroot/index.html", "index v1"),
+        ("wwwroot/js/old.js", "old"),
+        ("legacy/only-v1/data.bin", "legacy"),
+    };
+
+    internal static readonly (string, string)[] V2 =
+    {
+        ("CyberPad.exe", "app v2"),
+        ("wwwroot/index.html", "index v2"),
+        ("wwwroot/js/new.js", "new"),
+    };
+
+    private Installer NewInstaller() => new(_registry, _shortcuts, _notify, _probe, _env);
+
+    private InstallResult Install((string, string)[] payload, string version, string? dir = null, Action<Installer>? setup = null, IProgress<int>? progress = null)
+    {
+        Installer installer = NewInstaller();
+        setup?.Invoke(installer);
+        using MemoryStream zip = TestZips.Build(payload);
+        using var uninstaller = new MemoryStream(Encoding.UTF8.GetBytes("uninstaller " + version));
+        return installer.Install(new InstallRequest(dir ?? _dir, version, zip, uninstaller), progress);
+    }
+
+    private string State() => _temp.Dump() + "\n--\n" + _registry.Dump() + "\n--\n" + _shortcuts.Dump();
+
+    [Fact]
+    public void FreshInstall_WritesFilesManifestShortcutAndRegistry()
+    {
+        var progress = new ListProgress();
+        InstallResult result = Install(V1, "1.0.0", progress: progress);
+
+        Assert.Equal(_dir, result.InstallDir);
+        Assert.False(result.WasUpdate);
+        Assert.Empty(result.Leftovers);
+        Assert.Equal("CyberPad is installed.", result.Message);
+        Assert.Equal(100, progress.Values.Last());
+
+        Assert.Equal("app v1", File.ReadAllText(Path.Combine(_dir, "CyberPad.exe")));
+        Assert.Equal("uninstaller 1.0.0", File.ReadAllText(Path.Combine(_dir, "Uninstall.exe")));
+        Assert.Equal(
+            "CyberPad-Install 1\nversion=1.0.0\nCyberPad.exe\nwwwroot\\index.html\nwwwroot\\js\\old.js\nlegacy\\only-v1\\data.bin\n",
+            File.ReadAllText(Path.Combine(_dir, "install.manifest")));
+        Assert.DoesNotContain(Directory.GetDirectories(_dir), d => Path.GetFileName(d).StartsWith(".cyberpad-setup-"));
+
+        string exe = _dir + @"\CyberPad.exe";
+        Assert.Equal($"{exe}|{_dir}|{exe}", _shortcuts.Dump());
+        Assert.Equal(1, _notify.Calls);
+
+        Assert.Equal("CyberPad", _registry.GetValue(RegistryKeyId.UninstallEntry, "DisplayName"));
+        Assert.Equal("1.0.0", _registry.GetValue(RegistryKeyId.UninstallEntry, "DisplayVersion"));
+        Assert.Equal("CyberPad", _registry.GetValue(RegistryKeyId.UninstallEntry, "Publisher"));
+        Assert.Equal(_dir, _registry.GetValue(RegistryKeyId.UninstallEntry, "InstallLocation"));
+        Assert.Equal(exe, _registry.GetValue(RegistryKeyId.UninstallEntry, "DisplayIcon"));
+        Assert.Equal("\"" + _dir + "\\Uninstall.exe\"", _registry.GetValue(RegistryKeyId.UninstallEntry, "UninstallString"));
+        Assert.Equal(1, _registry.GetValue(RegistryKeyId.UninstallEntry, "NoModify"));
+        Assert.Equal(1, _registry.GetValue(RegistryKeyId.UninstallEntry, "NoRepair"));
+        Assert.Equal(1, _registry.GetValue(RegistryKeyId.UninstallEntry, "EstimatedSize"));
+        Assert.Equal("CyberPad", _registry.GetValue(RegistryKeyId.OpenWithApplication, "FriendlyAppName"));
+        Assert.Equal("\"" + exe + "\" \"%1\"", _registry.GetValue(RegistryKeyId.OpenWithCommand, ""));
+        Assert.Equal(new[] { ".cpnote", ".md", ".txt" }, _registry.GetValueNames(RegistryKeyId.OpenWithSupportedTypes).OrderBy(x => x));
+        Assert.Equal(9, _registry.GetValueNames(RegistryKeyId.UninstallEntry).Count);
+
+        ExistingInstall? existing = Installer.FindExisting(_registry, _probe, _env);
+        Assert.NotNull(existing);
+        Assert.Equal(_dir, existing!.InstallDir);
+        Assert.Equal("1.0.0", existing.Version);
+    }
+
+    [Fact]
+    public void EstimatedSize_IsKilobytesRoundedUp()
+    {
+        var payload = new[] { ("CyberPad.exe", new string('x', 5000)) };
+        Install(payload, "1.0.0");
+        long bytes = 5000 + "uninstaller 1.0.0".Length + "CyberPad-Install 1\nversion=1.0.0\nCyberPad.exe\n".Length;
+        Assert.Equal((int)((bytes + 1023) / 1024), _registry.GetValue(RegistryKeyId.UninstallEntry, "EstimatedSize"));
+    }
+
+    [Fact]
+    public void Update_ReplacesFiles_AndRemovesOnlyFilesTheOldManifestHad()
+    {
+        Install(V1, "1.0.0");
+        File.WriteAllText(Path.Combine(_dir, "wwwroot", "js", "mine.js"), "user file");
+        File.WriteAllText(Path.Combine(_dir, "notes.txt"), "user file");
+
+        Assert.Equal(InstallPathKind.ExistingInstall, InstallPathPolicy.Evaluate(_dir, _probe, _env).Kind);
+        InstallResult result = Install(V2, "2.0.0");
+
+        Assert.True(result.WasUpdate);
+        Assert.Empty(result.Leftovers);
+        Assert.Equal("app v2", File.ReadAllText(Path.Combine(_dir, "CyberPad.exe")));
+        Assert.Equal("index v2", File.ReadAllText(Path.Combine(_dir, "wwwroot", "index.html")));
+        Assert.Equal("new", File.ReadAllText(Path.Combine(_dir, "wwwroot", "js", "new.js")));
+        Assert.Equal("uninstaller 2.0.0", File.ReadAllText(Path.Combine(_dir, "Uninstall.exe")));
+        Assert.False(File.Exists(Path.Combine(_dir, "wwwroot", "js", "old.js")));
+        Assert.False(Directory.Exists(Path.Combine(_dir, "legacy")));
+        Assert.Equal("user file", File.ReadAllText(Path.Combine(_dir, "wwwroot", "js", "mine.js")));
+        Assert.Equal("user file", File.ReadAllText(Path.Combine(_dir, "notes.txt")));
+        Assert.DoesNotContain(Directory.GetDirectories(_dir), d => Path.GetFileName(d).StartsWith(".cyberpad-setup-"));
+        Assert.Equal("2.0.0", _registry.GetValue(RegistryKeyId.UninstallEntry, "DisplayVersion"));
+        Assert.Equal("2.0.0", InstallManifest.TryReadFrom(_dir, _probe)!.Version);
+    }
+
+    [Fact]
+    public void Update_RefusesToReplaceAFileTheOldInstallDidNotWrite()
+    {
+        Install(V1, "1.0.0");
+        File.WriteAllText(Path.Combine(_dir, "wwwroot", "js", "new.js"), "user's own new.js");
+        string before = State();
+
+        var ex = Assert.Throws<InstallException>(() => Install(V2, "2.0.0"));
+
+        Assert.Equal(InstallMessages.FilesInTheWay, ex.Message);
+        Assert.Equal(before, State());
+    }
+
+    public static IEnumerable<object[]> Steps() => new[]
+    {
+        new object[] { "payload" },
+        new object[] { "uninstaller" },
+        new object[] { "manifest" },
+        new object[] { "remove-old" },
+        new object[] { "shortcut" },
+        new object[] { "registry:UninstallEntry:DisplayName" },
+        new object[] { "registry:UninstallEntry:DisplayVersion" },
+        new object[] { "registry:UninstallEntry:Publisher" },
+        new object[] { "registry:UninstallEntry:InstallLocation" },
+        new object[] { "registry:UninstallEntry:DisplayIcon" },
+        new object[] { "registry:UninstallEntry:UninstallString" },
+        new object[] { "registry:UninstallEntry:NoModify" },
+        new object[] { "registry:UninstallEntry:NoRepair" },
+        new object[] { "registry:UninstallEntry:EstimatedSize" },
+        new object[] { "registry:OpenWithApplication:FriendlyAppName" },
+        new object[] { "registry:OpenWithCommand:" },
+        new object[] { "registry:OpenWithSupportedTypes:.md" },
+        new object[] { "registry:OpenWithSupportedTypes:.txt" },
+        new object[] { "registry:OpenWithSupportedTypes:.cpnote" },
+        new object[] { "notify" },
+    };
+
+    [Theory]
+    [MemberData(nameof(Steps))]
+    public void FreshInstall_FailingAtAnyStep_LeavesEverythingAsBefore(string step)
+    {
+        string before = State();
+        Assert.Throws<InstallException>(() => RunWithFailure(step, V1, "1.0.0"));
+        Assert.Equal(before, State());
+        Assert.False(Directory.Exists(_dir));
+        Assert.False(Directory.Exists(Path.GetDirectoryName(_dir))); // the Programs folder this run created is gone too
+    }
+
+    [Theory]
+    [MemberData(nameof(Steps))]
+    public void Update_FailingAtAnyStep_RestoresTheOldInstall(string step)
+    {
+        Install(V1, "1.0.0");
+        File.WriteAllText(Path.Combine(_dir, "notes.txt"), "user file");
+        string before = State();
+        int notifyCalls = _notify.Calls;
+
+        Assert.Throws<InstallException>(() => RunWithFailure(step, V2, "2.0.0"));
+
+        Assert.Equal(before, State());
+        Assert.Equal("1.0.0", Installer.FindExisting(_registry, _probe, _env)!.Version);
+        Assert.Equal(notifyCalls, _notify.Calls);
+    }
+
+    private void RunWithFailure(string step, (string, string)[] payload, string version)
+    {
+        if (step == "payload")
+        {
+            // Valid entries are written first, then the size cap is hit on the last one.
+            var big = payload.Concat(new[] { ("zz-last.bin", new string('z', 4096)) }).ToArray();
+            Install(big, version, setup: i => i.Extractor = new PayloadExtractor(100, 1024));
+            return;
+        }
+
+        if (step == "uninstaller")
+        {
+            Installer installer = NewInstaller();
+            using MemoryStream zip = TestZips.Build(payload);
+            using var broken = new FailingStream();
+            installer.Install(new InstallRequest(_dir, version, zip, broken), null);
+            return;
+        }
+
+        if (step == "shortcut")
+        {
+            _shortcuts.FailNextCreate = true;
+        }
+        else if (step == "notify")
+        {
+            _notify.FailNext = true;
+        }
+        else if (step.StartsWith("registry:"))
+        {
+            string[] parts = step.Split(':');
+            _registry.FailOnceOn = (Enum.Parse<RegistryKeyId>(parts[1]), parts[2]);
+        }
+
+        InstallStep? injectAt = step switch
+        {
+            "manifest" => InstallStep.Manifest,
+            "remove-old" => InstallStep.RemoveOldFiles,
+            _ => null,
+        };
+
+        Install(payload, version, setup: i => i.StepStarting = s =>
+        {
+            if (s == injectAt) throw new InstallException("injected");
+        });
+    }
+
+    [Fact]
+    public void FailureWhenUndoAlsoFails_SaysSo()
+    {
+        _registry.FailOnceOn = (RegistryKeyId.UninstallEntry, "NoRepair");
+        _registry.FailDeletes = true; // the undo deletes the keys first, so it fails too
+
+        var ex = Assert.Throws<InstallException>(() => Install(V1, "1.0.0"));
+
+        Assert.Equal(InstallMessages.UndoIncomplete, ex.Message);
+        Assert.False(Directory.Exists(_dir)); // the files were still removed
+    }
+
+    [Fact]
+    public void RunningApp_StopsTheUpdate_WithNothingChanged()
+    {
+        Install(V1, "1.0.0");
+        string before = State();
+        using (new FileStream(Path.Combine(_dir, "CyberPad.exe"), FileMode.Open, FileAccess.Read, FileShare.Read))
+        {
+            var ex = Assert.Throws<InstallException>(() => Install(V2, "2.0.0"));
+            Assert.Equal("Close CyberPad, then choose Install again.", ex.Message);
+        }
+
+        Assert.Equal(before, State());
+    }
+
+    [Fact]
+    public void PayloadWithoutTheApp_IsRefused()
+    {
+        string before = State();
+        var ex = Assert.Throws<InstallException>(() => Install(new[] { ("readme.txt", "x") }, "1.0.0"));
+        Assert.Equal(InstallMessages.PayloadDamaged, ex.Message);
+        Assert.Equal(before, State());
+    }
+
+    [Fact]
+    public void HostilePayload_NeverWritesOutside()
+    {
+        string before = State();
+        var payload = new[] { ("CyberPad.exe", "x"), ("../../../victim.txt", "pwned") };
+        Assert.Throws<InstallException>(() => Install(payload, "1.0.0"));
+        Assert.Equal(before, State());
+    }
+
+    [Theory]
+    [InlineData("notes")]
+    [InlineData("profile")]
+    [InlineData("admin")]
+    [InlineData("unc")]
+    public void FolderBreakingARule_IsRefusedBeforeAnythingHappens(string which)
+    {
+        string dir = which switch
+        {
+            "notes" => _env.NotesFolder,
+            "profile" => _env.UserProfile,
+            "admin" => _env.ProgramFiles + @"\CyberPad",
+            _ => @"\\server\share\CyberPad",
+        };
+        string before = State();
+
+        Assert.Throws<InstallException>(() => Install(V1, "1.0.0", dir));
+
+        Assert.Equal(before, State());
+        Assert.Equal(0, _notify.Calls);
+    }
+
+    [Fact]
+    public void FolderWithOtherFiles_InstallsIntoTheCyberPadSubfolder()
+    {
+        string tools = _temp.Path_("Tools");
+        Directory.CreateDirectory(tools);
+        File.WriteAllText(Path.Combine(tools, "other.txt"), "x");
+
+        InstallResult result = Install(V1, "1.0.0", tools);
+
+        Assert.Equal(tools + @"\CyberPad", result.InstallDir);
+        Assert.True(File.Exists(Path.Combine(tools, "CyberPad", "CyberPad.exe")));
+        Assert.False(File.Exists(Path.Combine(tools, "CyberPad.exe")));
+    }
+
+    [Fact]
+    public void FindExisting_IgnoresARegistryEntryThatPointsAtARefusedOrInvalidFolder()
+    {
+        Assert.Null(Installer.FindExisting(_registry, _probe, _env));
+
+        // The notes folder, with a manifest planted in it.
+        Directory.CreateDirectory(_env.NotesFolder);
+        File.WriteAllText(Path.Combine(_env.NotesFolder, "install.manifest"), "CyberPad-Install 1\nversion=1\nnote.md\n");
+        _registry.SetString(RegistryKeyId.UninstallEntry, "InstallLocation", _env.NotesFolder);
+        Assert.Null(Installer.FindExisting(_registry, _probe, _env));
+
+        _registry.SetString(RegistryKeyId.UninstallEntry, "InstallLocation", _env.UserProfile);
+        Assert.Null(Installer.FindExisting(_registry, _probe, _env));
+
+        _registry.SetString(RegistryKeyId.UninstallEntry, "InstallLocation", @"\\server\share\CyberPad");
+        Assert.Null(Installer.FindExisting(_registry, _probe, _env));
+
+        _registry.SetDword(RegistryKeyId.UninstallEntry, "InstallLocation", 5);
+        Assert.Null(Installer.FindExisting(_registry, _probe, _env));
+
+        // A real folder without a manifest.
+        Directory.CreateDirectory(_dir);
+        File.WriteAllText(Path.Combine(_dir, "x.txt"), "x");
+        _registry.SetString(RegistryKeyId.UninstallEntry, "InstallLocation", _dir);
+        Assert.Null(Installer.FindExisting(_registry, _probe, _env));
+    }
+
+    [Fact]
+    public void InvalidVersion_IsRefused() =>
+        Assert.Throws<ArgumentException>(() => Install(V1, "1.0.0-beta"));
+
+    private sealed class FailingStream : MemoryStream
+    {
+        private int _reads;
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            if (_reads++ > 0) throw new IOException("injected");
+            buffer[offset] = (byte)'M';
+            return 1;
+        }
+    }
+}

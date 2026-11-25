@@ -27,6 +27,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\CyberPad.Desktop\CyberPad.Desktop.csproj" />
+    <ProjectReference Include="..\CyberPad.Install\CyberPad.Install.csproj" />
   </ItemGroup>
 
 </Project>

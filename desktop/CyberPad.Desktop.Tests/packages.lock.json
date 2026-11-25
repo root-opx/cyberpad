@@ -111,6 +111,9 @@
         "dependencies": {
           "Microsoft.Web.WebView2": "[1.0.4370.26, )"
         }
+      },
+      "cyberpad.install": {
+        "type": "Project"
       }
     }
   }

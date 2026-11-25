@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Installer and uninstaller logic. Built for net471 (the Setup and Uninstall programs, which run on the
+    .NET Framework that ships with Windows) and net8.0-windows (so the xUnit project can test it).
+    No package of any kind: net471 builds against the .NET Framework 4.7.1 developer pack installed with
+    Visual Studio, not the Microsoft.NETFramework.ReferenceAssemblies package.
+  -->
+  <PropertyGroup>
+    <TargetFrameworks>net471;net8.0-windows</TargetFrameworks>
+    <AutomaticallyUseReferenceAssemblyPackages>false</AutomaticallyUseReferenceAssemblyPackages>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <RootNamespace>CyberPad.Install</RootNamespace>
+    <AssemblyName>CyberPad.Install</AssemblyName>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'net471'">
+    <Reference Include="System.IO.Compression" />
+    <Reference Include="System.IO.Compression.FileSystem" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="CyberPad.Desktop.Tests" />
+  </ItemGroup>
+
+</Project>
