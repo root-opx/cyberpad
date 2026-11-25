@@ -210,6 +210,7 @@ Manual checks for the desktop app:
 - Linked files (use a scratch folder):
   - Save a note as `.md`, edit it, and see the file change on disk.
   - Edit the file in Notepad, then switch back to CyberPad: you get a quiet reload, or the conflict bar if you had typed.
+  - Close CyberPad, edit a linked file in Notepad, and start CyberPad: the note reloads quietly with "Reloaded <name> from disk." Do it again after typing in the note and closing while the file is read-only: the conflict bar asks instead.
   - Delete the file: the note shows "File not found".
   - Open a CRLF file and a UTF-16 file, save without edits, and confirm the bytes are identical (`Get-FileHash` before and after).
   - Edit a file that has mixed line endings elsewhere: **Use the file's version** loads it and the bar goes away; the file is not rewritten until you edit the note.
