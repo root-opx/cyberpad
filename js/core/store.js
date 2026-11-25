@@ -38,6 +38,9 @@
     return typeof setting === 'string' && SCREEN_THEMES.includes(setting) ? setting : 'neon';
   }
   const VIEWS = Object.freeze(['edit', 'split', 'preview']);
+  // Script-mode languages (same ids, same order as js/core/codeedit.js; a test checks it). '' is an ordinary Markdown note.
+  const LANGS = Object.freeze(['bash', 'c', 'cpp', 'csharp', 'css', 'go', 'html', 'java', 'javascript', 'json', 'powershell', 'python', 'rust', 'sql', 'typescript', 'yaml']);
+  const LINE_NUMBERS = Object.freeze(['script', 'all', 'off']);
   const AUTOLOCK = Object.freeze([1, 5, 10, 30, 60]);
 
   const DEFAULT_SETTINGS = Object.freeze({
@@ -51,6 +54,7 @@
     lockOnHide: true,
     clearClipboard: true,
     arrows: true,
+    lineNumbers: 'script',
     collapsedFolders: Object.freeze([]),
   });
 
@@ -117,6 +121,11 @@
     return /[\p{L}\p{N}\p{P}\p{S}]/u.test(name.replace(BLANK_LOOKING_RE, '')) ? name : ''; // a name of invisible characters is no name
   }
 
+  /** A language id from LANGS, else ''. Allow-list lookup: '__proto__' and the like never match. */
+  function cleanLang(v) {
+    return typeof v === 'string' && LANGS.includes(v) ? v : '';
+  }
+
   function validateNote(n, now = Date.now()) {
     if (!isObj(n) || !isId(n.id)) return null;
     let cipher = null;
@@ -138,6 +147,7 @@
       history: cipher ? [] : validateHistory(n.history),
       file: validateFile(n.file, cipher !== null),
       folder: cleanFolder(n.folder),
+      lang: cleanLang(n.lang),
     };
   }
 
@@ -197,6 +207,7 @@
       lockOnHide: bool(s.lockOnHide, d.lockOnHide),
       clearClipboard: bool(s.clearClipboard, d.clearClipboard),
       arrows: bool(s.arrows, d.arrows),
+      lineNumbers: LINE_NUMBERS.includes(s.lineNumbers) ? s.lineNumbers : d.lineNumbers,
       collapsedFolders: validateCollapsed(s.collapsedFolders),
     };
   }
@@ -263,12 +274,13 @@
         history: n.cipher ? [] : n.history,
         file: n.file || null,
         folder: n.folder || '',
+        lang: cleanLang(n.lang),
       })),
     });
   }
 
   function createNote(body = '', now = Date.now(), id = newId()) {
-    return { id, body, cipher: null, pinned: false, created: now, updated: now, history: [], file: null, folder: '' };
+    return { id, body, cipher: null, pinned: false, created: now, updated: now, history: [], file: null, folder: '', lang: '' };
   }
 
   /**
@@ -292,6 +304,7 @@
         id: n.id, body: n.cipher ? '' : n.body, cipher: n.cipher, pinned: n.pinned,
         created: n.created, updated: n.updated, history: n.cipher ? [] : n.history,
         folder: n.folder || '',
+        lang: cleanLang(n.lang),
         file: null, // a link to a file on this computer never travels in a backup
       })),
     }, null, 2);
@@ -394,7 +407,7 @@
   }
 
   return {
-    STORAGE_KEY, LEGACY_STORAGE_KEYS, FILE_FORMATS, SCHEMA, LIMITS, THEMES, SCREEN_THEMES, resolveTheme, VIEWS, AUTOLOCK, DEFAULT_SETTINGS, StoreError,
+    STORAGE_KEY, LEGACY_STORAGE_KEYS, FILE_FORMATS, SCHEMA, LIMITS, THEMES, SCREEN_THEMES, LANGS, LINE_NUMBERS, resolveTheme, VIEWS, AUTOLOCK, DEFAULT_SETTINGS, StoreError,
     newId, cleanFolder, folderList, validateEnvelope, validateNote, validateNotes, validateSettings, validateState, parseStored, pickState, serialize, createNote, addSnapshot,
     makeBackup, parseBackup, makeEncryptedBackup, parseEncryptedBackup, mergeNotes, checkImportFile, decodeImportBytes,
   };

@@ -35,7 +35,7 @@ test('invalid notes are dropped, not repaired into something unsafe', () => {
   };
   const { notes } = store.validateState(raw, 7);
   assert.equal(notes.length, 1);
-  assert.deepEqual(notes[0], { id: ID, body: 'ok', cipher: null, pinned: false, created: 7, updated: 7, history: [{ t: 5, body: 'old' }], file: null, folder: '' });
+  assert.deepEqual(notes[0], { id: ID, body: 'ok', cipher: null, pinned: false, created: 7, updated: 7, history: [{ t: 5, body: 'old' }], file: null, folder: '', lang: '' });
 });
 
 test('encrypted notes never keep plaintext body or history', () => {
@@ -372,4 +372,88 @@ test('the folder of an encrypted note survives save, load and backup', () => {
   const back = store.parseBackup(store.makeBackup([n]));
   assert.equal(back[0].folder, 'Vault');
   assert.ok(back[0].cipher);
+});
+
+// ---- script mode: lang and lineNumbers ----
+
+const withLang = (lang, extra = {}) => ({ id: ID, body: 'x', created: 1, updated: 1, lang, ...extra });
+
+test('lang: every listed id is kept, in the listed order', () => {
+  assert.equal(store.LANGS.length, 16);
+  assert.equal(Object.isFrozen(store.LANGS), true);
+  assert.deepEqual([...store.LANGS].slice(0, 3), ['bash', 'c', 'cpp']);
+  for (const id of store.LANGS) assert.equal(store.validateNote(withLang(id)).lang, id);
+});
+
+test('lang: an unknown, mixed-case, numeric, __proto__ or object value loads as empty and the note is kept', () => {
+  const bad = ['cobol', 'Python', 'PYTHON', ' python', 'python ', 5, true, null, undefined, [], ['python'], {}, { toString: 'python' }, '__proto__', 'constructor', 'toString', 'hasOwnProperty', ''];
+  for (const v of bad) {
+    const n = store.validateNote(withLang(v));
+    assert.ok(n, JSON.stringify(v));
+    assert.equal(n.lang, '', JSON.stringify(v));
+    assert.equal(n.body, 'x');
+  }
+  assert.equal(store.validateNote(JSON.parse('{"id":"' + ID + '","body":"x","lang":{"__proto__":"python"}}')).lang, '');
+});
+
+test('lang: a note saved before this change loads with an empty lang', () => {
+  const old = { v: 1, activeId: null, settings: {}, notes: [{ id: ID, body: 'old', pinned: false, created: 1, updated: 1, history: [], folder: 'A' }] };
+  const state = store.validateState(old);
+  assert.equal(state.notes[0].lang, '');
+  assert.equal(state.settings.lineNumbers, 'script');
+});
+
+test('lang: createNote gives an empty lang', () => {
+  assert.equal(store.createNote('a', 1, ID).lang, '');
+});
+
+test('lang: survives serialize then load, also on an encrypted note', () => {
+  const plain = { ...store.createNote('print(1)', 1, ID), lang: 'python' };
+  const sealed = { ...store.createNote('', 1, '1f8fad5b-d9cb-469f-a165-70867728950e'), cipher: ENV, lang: 'go' };
+  const text = store.serialize({ notes: [plain, sealed], settings: store.DEFAULT_SETTINGS, activeId: ID });
+  assert.equal(JSON.parse(text).notes[1].lang, 'go');
+  const back = store.parseStored(text);
+  assert.deepEqual(back.notes.map((n) => n.lang), ['python', 'go']);
+});
+
+test('lang: serialize writes an invalid in-memory value as empty', () => {
+  const n = { ...store.createNote('a', 1, ID), lang: '__proto__' };
+  assert.equal(JSON.parse(store.serialize({ notes: [n], settings: store.DEFAULT_SETTINGS, activeId: null })).notes[0].lang, '');
+});
+
+test('lang: travels in a backup and an import; a bad value in the file loads as empty', () => {
+  const n = { ...store.createNote('SELECT 1', 1, ID), lang: 'sql' };
+  const text = store.makeBackup([n], 5);
+  assert.equal(JSON.parse(text).notes[0].lang, 'sql');
+  assert.equal(store.parseBackup(text)[0].lang, 'sql');
+  const raw = JSON.parse(text);
+  raw.notes[0].lang = 'Klingon';
+  assert.equal(store.parseBackup(JSON.stringify(raw))[0].lang, '');
+  delete raw.notes[0].lang;
+  assert.equal(store.parseBackup(JSON.stringify(raw))[0].lang, '');
+});
+
+test('lang: mergeNotes keeps it, also for an imported note given a fresh id', () => {
+  const a = { ...store.createNote('a', 1, ID), lang: 'rust' };
+  const b = { ...store.createNote('b', 1, ID), lang: 'yaml' };
+  const merged = store.mergeNotes([a], [b]);
+  assert.equal(merged.notes[0].lang, 'rust');
+  assert.equal(merged.notes[1].lang, 'yaml');
+  assert.notEqual(merged.notes[1].id, ID);
+});
+
+test('lineNumbers setting: accepts script, all and off; defaults to script; anything else falls back to script', () => {
+  assert.equal(store.DEFAULT_SETTINGS.lineNumbers, 'script');
+  assert.deepEqual([...store.LINE_NUMBERS], ['script', 'all', 'off']);
+  for (const v of ['script', 'all', 'off']) assert.equal(store.validateSettings({ lineNumbers: v }).lineNumbers, v);
+  for (const v of ['ALL', 'on', '', true, false, 1, null, undefined, [], ['all'], {}, '__proto__']) {
+    assert.equal(store.validateSettings({ lineNumbers: v }).lineNumbers, 'script', JSON.stringify(v));
+  }
+  assert.equal(store.validateSettings(null).lineNumbers, 'script');
+  assert.equal(store.validateSettings({}).lineNumbers, 'script');
+});
+
+test('lineNumbers setting: survives serialize then load', () => {
+  const text = store.serialize({ notes: [], settings: { ...store.DEFAULT_SETTINGS, lineNumbers: 'off' }, activeId: null });
+  assert.equal(store.parseStored(text).settings.lineNumbers, 'off');
 });
