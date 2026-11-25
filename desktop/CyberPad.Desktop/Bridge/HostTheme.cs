@@ -36,6 +36,19 @@ public static class HostThemes
         _ => new TitleBarColors(Rgb(0x191338), Rgb(0xece6ff), Rgb(0x362a72)),
     };
 
+    /// <summary>
+    /// The page background (--void in css/style.css) of each theme: the window and WebView2 colour shown before the
+    /// page has painted, so a start-up never flashes another theme's colour.
+    /// </summary>
+    public static Color BackgroundFor(HostTheme theme) => theme switch
+    {
+        HostTheme.Amber => Rgb(0x1a1106),
+        HostTheme.Terminal => Rgb(0x010801),
+        HostTheme.Light => Rgb(0xfafaf7),
+        HostTheme.Dark => Rgb(0x16181d),
+        _ => Rgb(0x140f2e),
+    };
+
     /// <summary>The Windows immersive dark mode flag: off for Light, on for every other theme.</summary>
     public static bool UsesDarkCaption(HostTheme theme) => theme != HostTheme.Light;
 

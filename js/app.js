@@ -649,9 +649,22 @@
     });
   }
 
+  // The theme SETTING (one of the six names, nothing else) is kept as a start-up hint for js/early-theme.js.
+  let storedThemeHint = null;
+  function rememberTheme(setting) {
+    if (storedThemeHint === setting) return;
+    storedThemeHint = setting;
+    try {
+      localStorage.setItem('cyberpad.theme', setting);
+    } catch (e) {
+      // Storage may be unavailable (blocked, full); the value is only a start-up hint, so it is dropped silently.
+    }
+  }
+
   function applySettings() {
     const s = S.settings;
     document.documentElement.dataset.theme = screenTheme();
+    rememberTheme(s.theme);
     document.body.classList.toggle('crt', s.crt);
     els.app.classList.toggle('no-sidebar', !s.sidebar);
     els.workspace.dataset.view = s.view;

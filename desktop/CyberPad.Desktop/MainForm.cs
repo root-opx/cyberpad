@@ -17,7 +17,6 @@ internal sealed class MainForm : Form
 {
     private static readonly Size MinWindowSize = new(900, 600);
     private static readonly Size DefaultWindowSize = new(1280, 820);
-    private static readonly Color PageBackground = Color.FromArgb(0x14, 0x0f, 0x2e);
     private static readonly string[] AllowedMenuItems = { "cut", "copy", "paste", "pasteAndMatchStyle", "selectAll", "undo", "redo" };
 
     private const string OpenRequestedMessage = "{\"type\":\"openRequested\"}";
@@ -42,6 +41,7 @@ internal sealed class MainForm : Form
     private readonly string _dataDir;
     private readonly string _wwwroot;
     private readonly string _placementPath;
+    private readonly AppearanceStore _appearance;
     private readonly Action<string> _log;
     private readonly SingleInstance _instance;
     private readonly HostActions _hostActions;
@@ -55,7 +55,7 @@ internal sealed class MainForm : Form
     private bool _openRequestPosted; // the page has been asked and has not yet answered with openFile
     private ulong _appNavigationId;
     private bool _recoveryStopped;
-    private HostTheme _theme = HostTheme.Neon;
+    private HostTheme _theme; // the last theme on screen, remembered between runs (Neon when unknown)
     private bool _closeRequested;
     private bool _closeConfirmed;
     private FormWindowState _lastShownState = FormWindowState.Normal;
@@ -67,6 +67,9 @@ internal sealed class MainForm : Form
         _wwwroot = wwwroot;
         _placementPath = Path.Combine(dataDir, "window.json");
         _log = log;
+        // Before any window chrome exists: the colours of the last theme, so a Light start never flashes dark.
+        _appearance = new AppearanceStore(Path.Combine(dataDir, "appearance.json"), log);
+        _theme = _appearance.Read();
         _instance = instance;
         _openRequests = openRequests;
         _hostActions = new HostActions(new NoteStore(dataDir), links, new LinkedFiles(log), openRequests, version, this,
@@ -77,7 +80,7 @@ internal sealed class MainForm : Form
 
         Text = "CyberPad";
         MinimumSize = MinWindowSize;
-        BackColor = PageBackground;
+        BackColor = HostThemes.BackgroundFor(_theme);
         Icon = LoadAppIcon();
         ApplyPlacement();
 
@@ -89,13 +92,28 @@ internal sealed class MainForm : Form
     private void ApplyTheme(HostTheme theme)
     {
         _theme = theme;
+        var background = HostThemes.BackgroundFor(theme);
+        BackColor = background;
+        if (_webView is { IsDisposed: false } webView)
+        {
+            try
+            {
+                webView.DefaultBackgroundColor = background; // shown while a (re)loaded page has not painted yet
+            }
+            catch (Exception ex) when (ex is COMException or InvalidOperationException)
+            {
+                _log($"theme: background failed {ex.GetType().Name}");
+            }
+        }
         if (IsHandleCreated) TitleBar.Apply(Handle, theme, _log);
+        // A few bytes written synchronously, as SavePlacement does: AppearanceStore never throws and logs a failure by type only.
+        _appearance.Save(theme);
     }
 
     protected override void OnHandleCreated(EventArgs e)
     {
         base.OnHandleCreated(e);
-        // Dark before the page loads, and again after any handle re-creation.
+        // The remembered theme's bar before the page loads, and again after any handle re-creation.
         TitleBar.Apply(Handle, _theme, _log);
     }
 
@@ -186,7 +204,7 @@ internal sealed class MainForm : Form
         var webView = new WebView2
         {
             Dock = DockStyle.Fill,
-            DefaultBackgroundColor = PageBackground,
+            DefaultBackgroundColor = HostThemes.BackgroundFor(_theme),
             Visible = WindowState != FormWindowState.Minimized,
         };
         _webView = webView;

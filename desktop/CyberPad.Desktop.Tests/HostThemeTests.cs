@@ -37,6 +37,15 @@ public class HostThemeTests
     }
 
     [Theory]
+    [InlineData(HostTheme.Neon, 0x2E0F14)]
+    [InlineData(HostTheme.Amber, 0x06111A)]
+    [InlineData(HostTheme.Terminal, 0x010801)]
+    [InlineData(HostTheme.Light, 0xF7FAFA)]
+    [InlineData(HostTheme.Dark, 0x1D1816)]
+    public void BackgroundFor_MatchesTheCssVoidToken_AsColorRefs(HostTheme theme, int expected) =>
+        Assert.Equal(expected, HostThemes.ToColorRef(HostThemes.BackgroundFor(theme)));
+
+    [Theory]
     [InlineData(HostTheme.Neon, true)]
     [InlineData(HostTheme.Amber, true)]
     [InlineData(HostTheme.Terminal, true)]
