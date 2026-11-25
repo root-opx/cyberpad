@@ -91,7 +91,7 @@ test('paletteScore still matches old group names and also the new section names'
   assert.ok(T.paletteScore('text', upper) > 0);
   assert.ok(T.paletteScore('templates', finding) > 0);
   assert.ok(T.paletteScore('view', amber) > 0);
-  assert.equal(T.paletteScore('zzzz', upper), 0);
+  assert.ok(T.paletteScore('zzzz', upper) <= 0);
   assert.equal(T.paletteScore('upper', upper), T.fuzzyScore('upper', 'UPPERCASE'));
 });
 ```

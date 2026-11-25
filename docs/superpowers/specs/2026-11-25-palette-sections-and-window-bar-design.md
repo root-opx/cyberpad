@@ -1,6 +1,6 @@
 # Command palette sections, themed Windows bar and top-bar fixes: design
 
-Date: 2026-11-25. Branch: `feature/ux-ui`. Status: waiting for approval.
+Date: 2026-11-25. Branch: `feature/ux-ui`. Status: approved 2026-11-25; phone top-bar layout amended during the build.
 
 Read `docs/ux-handoff.md` first. Its rules (strict CSP, no `innerHTML`, no dependencies, accessibility, never launch `CyberPad.exe`) apply to everything here.
 
@@ -193,11 +193,11 @@ One sensible way for each fix, described below. No alternatives were worth keepi
 ### 3. Top bar at phone width (760 px and below)
 
 ```
-[=] CYBERPAD                      [Commands]
-[ Search notes           ]  [Write|Split|Read]
+[=] CYBERPAD          [ Search notes ]
+[Write|Split|Read]          [Commands]
 ```
 
-- Two rows instead of three.
+- Two rows instead of three: row 1 is the note-list toggle, the wordmark and search; row 2 is Write/Split/Read at the left and Commands at the right. Visual order must equal keyboard tab order, and the markup order was not changed.
 - The theme picker is hidden at this width; themes are in the palette under View. CRT and Sound are already hidden below 1100 px for the same reason.
 - No horizontal overflow at any width from 320 px up: the page is never wider than the window.
 

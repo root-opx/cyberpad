@@ -1,6 +1,8 @@
 /* CyberPad: a salvaged corporate terminal. */
 
 /* ---------- tokens ---------- */
+/* --panel, --ink and --line are copied in desktop/CyberPad.Desktop/Bridge/HostTheme.cs
+   (the Windows title bar colours). Change both together. */
 :root,
 [data-theme="neon"] {
   --void: #140f2e;      /* screen */
