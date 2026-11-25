@@ -73,17 +73,26 @@ public sealed partial class HostActions : IHostActions
 
     public Task SetThemeAsync(HostTheme theme)
     {
-        // The window handle may only be used on the UI thread. A closed window is not an error: nothing to colour.
+        // A closed window is not an error: there is no title bar left to colour.
         if (_ui.IsDisposed || !_ui.IsHandleCreated) return Task.CompletedTask;
+        return ApplyThemeOnUiAsync(_ui, _applyTheme, theme, _log);
+    }
+
+    /// <summary>
+    /// Runs <paramref name="apply"/> on the UI thread (the window handle may only be used there). Only "the window closed
+    /// before it ran" is absorbed; any other exception from the callback reaches the caller and is answered as rejected.
+    /// </summary>
+    internal static async Task ApplyThemeOnUiAsync(ISynchronizeInvoke ui, Action<HostTheme> apply, HostTheme theme, Action<string> log)
+    {
         var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        // PostToUiAsync reports a window that closed meanwhile through the task, not by throwing.
-        PostToUiAsync(_ui, () => { _applyTheme(theme); return true; }, tcs);
-        return tcs.Task.ContinueWith(
-            t =>
-            {
-                if (t.IsFaulted) _log("theme: " + t.Exception!.GetBaseException().GetType().Name);
-            },
-            TaskScheduler.Default);
+        try
+        {
+            await PostToUiAsync(ui, () => { apply(theme); return true; }, tcs).ConfigureAwait(false);
+        }
+        catch (StoreException ex) when (ex.Message == WindowClosedMessage)
+        {
+            log("theme: window closed");
+        }
     }
 
     public async Task<string?> ExportAsync(ExportKind kind, string safeName, string text)

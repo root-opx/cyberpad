@@ -164,4 +164,56 @@ public sealed class HostActionsTests
             MainForm.FlushFailedPrompt);
         Assert.Equal("CyberPad is still saving to a linked file. Close anyway?", MainForm.StillSavingPrompt);
     }
+
+    /// <summary>Runs the posted delegate at once on the calling thread: no window, no message loop.</summary>
+    private sealed class InlineInvoker : ISynchronizeInvoke
+    {
+        public bool InvokeRequired => false;
+        public IAsyncResult BeginInvoke(Delegate method, object?[]? args) { method.DynamicInvoke(args); return null!; }
+        public object? EndInvoke(IAsyncResult result) => null;
+        public object? Invoke(Delegate method, object?[]? args) => method.DynamicInvoke(args);
+    }
+
+    /// <summary>Simulates a window that is gone: posting throws, as a handle-less control does.</summary>
+    private sealed class ClosedInvoker : ISynchronizeInvoke
+    {
+        public bool InvokeRequired => false;
+        public IAsyncResult BeginInvoke(Delegate method, object?[]? args) => throw new InvalidOperationException();
+        public object? EndInvoke(IAsyncResult result) => null;
+        public object? Invoke(Delegate method, object?[]? args) => throw new InvalidOperationException();
+    }
+
+    [Fact]
+    public async Task SetTheme_WithNoWindowHandle_CompletesAndNeverCallsTheCallback()
+    {
+        using var control = new Control();
+        var calls = 0;
+        var host = new HostActions(new NoteStore(Unused), new LinkStore(Unused), new LinkedFiles(), new OpenRequestQueue(), "1.0.0", control,
+            () => { }, () => { }, _ => calls++);
+        await host.SetThemeAsync(HostTheme.Amber).WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(0, calls);
+    }
+
+    [Fact]
+    public async Task ApplyThemeOnUi_CallsTheCallbackOnceWithTheTheme()
+    {
+        var seen = new List<HostTheme>();
+        await HostActions.ApplyThemeOnUiAsync(new InlineInvoker(), seen.Add, HostTheme.Terminal, _ => { });
+        Assert.Equal(new[] { HostTheme.Terminal }, seen);
+    }
+
+    [Fact]
+    public async Task ApplyThemeOnUi_CallbackException_ReachesTheCaller()
+    {
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            HostActions.ApplyThemeOnUiAsync(new InlineInvoker(), _ => throw new InvalidOperationException("boom"), HostTheme.Neon, _ => { }));
+    }
+
+    [Fact]
+    public async Task ApplyThemeOnUi_WindowClosed_IsAbsorbedAndLogged()
+    {
+        var log = new List<string>();
+        await HostActions.ApplyThemeOnUiAsync(new ClosedInvoker(), _ => { }, HostTheme.Neon, log.Add);
+        Assert.Equal(new[] { "theme: window closed" }, log);
+    }
 }

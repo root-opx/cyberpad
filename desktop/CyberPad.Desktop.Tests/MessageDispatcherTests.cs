@@ -349,17 +349,29 @@ public class MessageDispatcherTests
     [InlineData("""{"type":"theme","id":"r1","theme":1}""")]
     [InlineData("""{"type":"theme","id":"r1","theme":null}""")]
     [InlineData("""{"type":"theme","id":"r1","theme":["neon"]}""")]
+    public async Task Theme_InvalidValue_IsRejectedAndNeverApplied(string json)
+    {
+        var (d, f, log) = Make();
+        var r = Parse(await d.HandleAsync(Src, json));
+        Assert.Equal("rejected", r.GetProperty("type").GetString());
+        Assert.Equal("r1", r.GetProperty("id").GetString());
+        Assert.Equal(0, f.ThemeCalls);
+        Assert.Equal(new[] { "theme: invalid theme" }, log);
+    }
+
+    [Theory]
     [InlineData("""{"type":"theme","id":"r1"}""")]
     [InlineData("""{"type":"theme","id":"r1","theme":"neon","color":"#fff"}""")]
     [InlineData("""{"type":"theme","id":"r1","theme":"neon","theme":"amber"}""")]
     [InlineData("""{"type":"theme","theme":"neon"}""")]
-    public async Task Theme_InvalidMessage_IsRejectedAndNeverApplied(string json)
+    public async Task Theme_InvalidShape_IsRejectedAndNeverApplied(string json)
     {
         var (d, f, log) = Make();
-        await d.HandleAsync(Src, json);
+        var reply = await d.HandleAsync(Src, json);
         Assert.Equal(0, f.ThemeCalls);
         Assert.Single(log);
-        Assert.DoesNotContain("#191338", log[0]);
+        Assert.DoesNotContain("#fff", log[0]);
+        if (reply is not null) Assert.Equal("rejected", Parse(reply).GetProperty("type").GetString());
     }
 
     [Fact]

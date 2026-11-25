@@ -11,6 +11,7 @@ public static class TitleBar
     private const int CaptionColor = 35;
     private const int TextColor = 36;
 
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [DllImport("dwmapi.dll", PreserveSig = true)]
     private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
 
