@@ -355,3 +355,7 @@ desktop/            Windows host (WinForms + WebView2), its xUnit tests, build.p
   CyberPad.Uninstall/ the uninstall window, built into Uninstall.exe
   Shared/             code shared by the two windows (the check that refuses to run as administrator and the single-instance guard, plus common UI helpers)
 ```
+
+## License
+
+MIT. See [LICENSE](LICENSE).
