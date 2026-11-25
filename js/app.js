@@ -2712,27 +2712,37 @@
       if (!ok) return;
       if (active() !== note || !isEditable(note)) { toast('The note was locked. Unlock it and try again.', 'error'); return; }
     }
-    const savedTitle = document.title;
-    let restored = false;
-    const restore = () => {
-      if (restored) return;
-      restored = true;
-      window.removeEventListener('afterprint', restore);
-      document.title = savedTitle;
-      // In Write layout the preview was only filled for the print; empty it again.
-      if (S.settings.view === 'edit') renderPreview();
-    };
-    window.addEventListener('afterprint', restore);
+    prepareForPrint();
     try {
-      renderPreview(true);
       document.title = titleOf(note);
       toast('In the print dialog, choose Save as PDF.');
       window.print();
-    } finally {
-      // print() blocks until the dialog closes in the engines CyberPad runs on, so this is
-      // the normal path (also when print() throws); afterprint covers engines that return early.
-      restore();
+    } catch {
+      afterPrint();
+      toast('The print dialog could not be opened.', 'error');
+      return;
     }
+    // Fallback for an engine that fires no afterprint: restore when the window next regains focus.
+    window.addEventListener('focus', afterPrint, { once: true });
+    printFocusCleanup = () => window.removeEventListener('focus', afterPrint);
+  }
+
+  // beforeprint/afterprint also cover Ctrl+P in a browser. In Write layout the preview is
+  // normally empty, so it is filled for the print and emptied again afterwards. A locked
+  // note is never rendered.
+  let printForced = false;
+  let printFocusCleanup = null;
+  function prepareForPrint() {
+    const note = active();
+    if (!isEditable(note)) return;
+    if (S.settings.view === 'edit') printForced = true;
+    renderPreview(true);
+  }
+  function afterPrint() {
+    if (printFocusCleanup) { printFocusCleanup(); printFocusCleanup = null; }
+    const note = active();
+    document.title = note ? `${titleOf(note)} | CyberPad` : 'CyberPad';
+    if (printForced) { printForced = false; if (S.settings.view === 'edit') renderPreview(); }
   }
 
   async function exportBackup() {
@@ -4041,6 +4051,8 @@
         if (S.settings.lockOnHide && S.keys.size) lockAll('Encrypted notes were locked because the tab was hidden.');
       }
     });
+    window.addEventListener('beforeprint', prepareForPrint);
+    window.addEventListener('afterprint', afterPrint);
     document.addEventListener('copy', noteSensitiveCopy);
     document.addEventListener('cut', noteSensitiveCopy);
     window.addEventListener('focus', () => { if (clip.pending && !clip.timer) clearClipboardNow(); });

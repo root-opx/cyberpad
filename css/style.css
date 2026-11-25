@@ -1412,4 +1412,17 @@ button.sev:hover { box-shadow: 0 0 0 1px currentColor; }
 
   h1, h2, h3 { break-after: avoid; }
   pre, blockquote, tr { break-inside: avoid; }
+
+  /* Browsers drop backgrounds by default: nothing below may depend on one. */
+  .filebar { display: none !important; }
+  .sev-critical { color: var(--hot); background: transparent; border-color: var(--hot); font-weight: 700; }
+  .preview hr { height: 0; background: none; border-top: 1px dashed var(--line); }
+  .preview mark { background: none; border-bottom: 1px solid var(--warn); }
+  .preview li.task input { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .preview li.task input:checked {
+    background: var(--ink);
+    border: 0.28rem solid var(--ink);
+    box-shadow: none;
+    -webkit-print-color-adjust: exact; print-color-adjust: exact;
+  }
 }
