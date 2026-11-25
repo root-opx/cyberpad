@@ -70,9 +70,9 @@ namespace CyberPad.Install
         public const string UpdatedDone = "CyberPad was updated.";
         public const string NotStarted = "CyberPad is installed, but it could not be started. Start it from the Start menu.";
         public const string NotInstalledForAccount = "CyberPad is not installed for this account.";
-        public const string AlreadyRunning = "CyberPad setup is already running.";
-        public const string SetupElevated = "Run setup without administrator rights. CyberPad is installed for your own account.";
-        public const string UninstallElevated = "Run uninstall without administrator rights.";
+        public const string AlreadyRunning = "CyberPad setup or uninstall is already running.";
+        public const string SetupElevated = "Run setup without administrator rights. CyberPad is installed for your own account. If User Account Control is turned off, sign in with a standard account.";
+        public const string UninstallElevated = "Run uninstall without administrator rights. If User Account Control is turned off, sign in with the account that installed CyberPad.";
         public const string TempCopyFailed = "Uninstall could not prepare its temporary copy. Try again.";
         public const string ProgressName = "Installation progress";
 

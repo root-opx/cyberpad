@@ -31,7 +31,7 @@ desktop/          Windows host, xUnit tests, build.ps1
 desktop/CyberPad.Install/    installer and uninstaller logic (folder rules, unpacking, manifest, registry, shortcut), tested by xUnit
 desktop/CyberPad.Setup/      the setup window (WinForms, .NET Framework 4.7.1), built into CyberPad-Setup-<version>.exe
 desktop/CyberPad.Uninstall/  the uninstall window, built into Uninstall.exe
-desktop/Shared/              code both windows share (UI helpers, embedded-library loader)
+desktop/Shared/              code both windows share (UI helpers, the check that refuses to run as administrator, the single-instance guard)
 ```
 
 **Themes.** These are set by `data-theme` on `<html>` and chosen in the titlebar:
@@ -114,7 +114,7 @@ These come from the project and from the user's security rules in `~/.claude/rul
 - **Tests:**
   - `npm test` (Node built-in runner, 371 tests);
   - `node --check js/app.js`;
-  - `dotnet test desktop/CyberPad.sln` (905 tests). The .NET test run rewrites `desktop/**/packages.lock.json`; revert that with `git checkout -- "desktop/**/packages.lock.json"`.
+  - `dotnet test desktop/CyberPad.sln` (909 tests). The .NET test run rewrites `desktop/**/packages.lock.json`; revert that with `git checkout -- "desktop/**/packages.lock.json"`.
 - **Manual checks:** README, "Manual checks for the desktop app". Add a line there for any desktop-visible UI change.
 
 ## Git

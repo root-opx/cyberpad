@@ -101,12 +101,14 @@ namespace CyberPad.Uninstall
                             UseShellExecute = false,
                             WorkingDirectory = env.Temp,
                         };
+                        // Allowed before the start: the new process is not yet known to the window manager.
+                        _ = AllowSetForegroundWindow(AsfwAny);
                         using (Process? process = Process.Start(start))
                         {
                             if (process != null)
                             {
                                 // Lets the uninstall window come to the front even though Settings has the focus.
-                                _ = AllowSetForegroundWindow(process.Id); // best effort; the window also activates itself
+                                _ = AllowSetForegroundWindow(unchecked((uint)process.Id)); // best effort second attempt; the window also activates itself
                             }
                         }
                     }
@@ -289,6 +291,8 @@ namespace CyberPad.Uninstall
         [DllImport("user32.dll", SetLastError = true)]
         [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
         [return: MarshalAs(UnmanagedType.Bool)]
-        private static extern bool AllowSetForegroundWindow(int processId);
+        private static extern bool AllowSetForegroundWindow(uint processId);
+
+        private const uint AsfwAny = 0xFFFFFFFF; // ASFW_ANY (-1)
     }
 }

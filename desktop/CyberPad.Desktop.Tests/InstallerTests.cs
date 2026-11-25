@@ -602,6 +602,62 @@ public sealed class InstallerTests : IDisposable
         Assert.Equal(before, _registry.Dump());
     }
 
+    [Fact]
+    public void OpenWith_StaleUninstallEntry_DoesNotMakeAFreshInstallReadSavedValues()
+    {
+        PortableRegistration();
+        _registry.SetString(RegistryKeyId.UninstallEntry, "InstallLocation", _env.UserProfile); // refused folder: not an existing install
+        string before = OpenWithDump();
+
+        InstallResult result = Install(V1, "1.0.0");
+        Assert.False(result.WasUpdate);
+        Assert.Equal(PortableCommand, _registry.GetValue(RegistryKeyId.UninstallEntry, RegistryKeys.PreviousOpenCommandValue));
+
+        NewUninstaller().Uninstall();
+
+        Assert.Equal(before, OpenWithDump());
+    }
+
+    [Fact]
+    public void OpenWith_OurOwnLeftoverCommand_IsNotTreatedAsAPreviousRegistration()
+    {
+        _registry.SetString(RegistryKeyId.OpenWithCommand, "", "\"" + _dir + "\\cyberpad.exe\" \"%1\"");
+
+        Install(V1, "1.0.0");
+        Assert.Null(_registry.GetValue(RegistryKeyId.UninstallEntry, RegistryKeys.OpenWithExistedValue));
+
+        NewUninstaller().Uninstall();
+
+        Assert.Empty(_registry.Keys);
+    }
+
+    [Fact]
+    public void OpenWith_ReRegisteredAfterInstall_IsRestoredAfterAnUpdateAndUninstall()
+    {
+        Install(V1, "1.0.0");
+        const string other = "\"C:\\Other\\CyberPad.exe\" \"%1\"";
+        _registry.SetString(RegistryKeyId.OpenWithCommand, "", other);
+
+        Install(V2, "2.0.0");
+        Assert.Equal("\"" + _dir + "\\CyberPad.exe\" \"%1\"", _registry.GetValue(RegistryKeyId.OpenWithCommand, ""));
+
+        NewUninstaller().Uninstall();
+
+        Assert.Equal(other, _registry.GetValue(RegistryKeyId.OpenWithCommand, ""));
+    }
+
+    [Fact]
+    public void OpenWith_SavedCommandOver2048Characters_IsIgnoredAndTheKeyDeleted()
+    {
+        Install(V1, "1.0.0");
+        _registry.SetDword(RegistryKeyId.UninstallEntry, RegistryKeys.OpenWithExistedValue, 1);
+        _registry.SetString(RegistryKeyId.UninstallEntry, RegistryKeys.PreviousOpenCommandValue, new string('a', 5000));
+
+        NewUninstaller().Uninstall();
+
+        Assert.False(_registry.KeyExists(RegistryKeyId.OpenWithApplication));
+    }
+
     private Uninstaller NewUninstaller() => new(_registry, _shortcuts, _notify, _probe, _env);
 
     private sealed class ThrowingAt100 : IProgress<int>

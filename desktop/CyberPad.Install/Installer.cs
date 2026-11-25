@@ -247,7 +247,7 @@ namespace CyberPad.Install
                 // it back; an update (the entry exists) keeps the record the first install saved.
                 OpenWithRegistration openWithBefore = Guard(
                     InstallMessages.RegistryFailed,
-                    () => _registry.KeyExists(RegistryKeyId.UninstallEntry) ? OpenWithRegistration.ReadSaved(_registry) : OpenWithRegistration.Capture(_registry));
+                    () => isUpdate ? OpenWithRegistration.ForUpdate(_registry, openCommand) : OpenWithRegistration.Capture(_registry, openCommand));
                 long totalBytes = extraction.TotalBytes + uninstallerBytes + manifestBytes.Length;
                 Guard(InstallMessages.RegistryFailed, () =>
                 {

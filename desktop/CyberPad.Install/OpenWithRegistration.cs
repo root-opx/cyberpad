@@ -18,6 +18,7 @@ namespace CyberPad.Install
 
         private const char Separator = ';';
         private const int MaxAddedLength = 200;
+        private const int MaxCommandLength = 2048;
 
         private OpenWithRegistration(bool existed, string? previousCommand, IReadOnlyList<string> added)
         {
@@ -40,8 +41,11 @@ namespace CyberPad.Install
 
         public static OpenWithRegistration None { get; } = new OpenWithRegistration(false, null, Array.Empty<string>());
 
-        /// <summary>Reads the registration as it is now, before setup writes anything.</summary>
-        public static OpenWithRegistration Capture(IRegistry registry)
+        /// <summary>
+        /// Reads the registration as it is now, before setup writes anything. A command that already equals
+        /// <paramref name="ourCommand"/> is setup's own leftover, not a previous registration.
+        /// </summary>
+        public static OpenWithRegistration Capture(IRegistry registry, string ourCommand)
         {
             if (!registry.KeyExists(RegistryKeyId.OpenWithApplication))
             {
@@ -49,6 +53,11 @@ namespace CyberPad.Install
             }
 
             string? command = registry.GetValue(RegistryKeyId.OpenWithCommand, string.Empty) as string;
+            if (command != null && string.Equals(command, ourCommand, StringComparison.OrdinalIgnoreCase))
+            {
+                return None;
+            }
+
             var added = new List<string>();
             if (!HasValue(registry, RegistryKeyId.OpenWithApplication, AddedFriendlyName))
             {
@@ -89,7 +98,13 @@ namespace CyberPad.Install
                 return None;
             }
 
-            string? previous = registry.GetValue(RegistryKeyId.UninstallEntry, RegistryKeys.PreviousOpenCommandValue) as string;
+            object? savedCommand = registry.GetValue(RegistryKeyId.UninstallEntry, RegistryKeys.PreviousOpenCommandValue);
+            if (savedCommand != null && !(savedCommand is string text && text.Length <= MaxCommandLength))
+            {
+                return None; // not a plausible command: handled as "did not exist before"
+            }
+
+            string? previous = savedCommand as string;
             var added = new List<string>();
             if (registry.GetValue(RegistryKeyId.UninstallEntry, RegistryKeys.OpenWithAddedValue) is string list && list.Length <= MaxAddedLength)
             {
@@ -105,11 +120,43 @@ namespace CyberPad.Install
             return new OpenWithRegistration(true, previous, added);
         }
 
+        /// <summary>
+        /// Update: the record the first install saved. When someone has registered another command since (neither
+        /// this install's nor the saved one), that command becomes the previous one so uninstall restores it.
+        /// </summary>
+        public static OpenWithRegistration ForUpdate(IRegistry registry, string ourCommand)
+        {
+            OpenWithRegistration saved = ReadSaved(registry);
+            if (!registry.KeyExists(RegistryKeyId.OpenWithApplication))
+            {
+                return saved;
+            }
+
+            string? current = registry.GetValue(RegistryKeyId.OpenWithCommand, string.Empty) as string;
+            if (current == null ||
+                string.Equals(current, ourCommand, StringComparison.OrdinalIgnoreCase) ||
+                (saved.PreviousCommand != null && string.Equals(current, saved.PreviousCommand, StringComparison.OrdinalIgnoreCase)))
+            {
+                return saved;
+            }
+
+            return saved.Existed ? new OpenWithRegistration(true, current, saved.Added) : Capture(registry, ourCommand);
+        }
+
         /// <summary>Saves the record in the uninstall entry (nothing when the key did not exist before).</summary>
         public void Save(IRegistry registry)
         {
             if (!Existed)
             {
+                // Drop a record left by an earlier install that is not valid any more.
+                foreach (string name in new[] { RegistryKeys.OpenWithExistedValue, RegistryKeys.PreviousOpenCommandValue, RegistryKeys.OpenWithAddedValue })
+                {
+                    if (HasValue(registry, RegistryKeyId.UninstallEntry, name))
+                    {
+                        registry.DeleteValue(RegistryKeyId.UninstallEntry, name);
+                    }
+                }
+
                 return;
             }
 

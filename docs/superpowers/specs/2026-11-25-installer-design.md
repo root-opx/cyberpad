@@ -73,7 +73,7 @@ This folder will be created.
 ```
 
 - Default folder: `%LOCALAPPDATA%\Programs\CyberPad`. If CyberPad is already installed (found through its uninstall entry), the field shows that folder and the heading reads `Update CyberPad to <version>`; the button reads `Update`.
-- Setup never installs a version lower than the installed one: the heading stays, Install is disabled, and the status line reads `A newer version of CyberPad (<installed>) is already installed.` An equal version reinstalls as an update.
+- Setup never installs a version lower than the installed one: the heading stays, the button (which reads `Update`) is disabled, and the status line reads `A newer version of CyberPad (<installed>) is already installed.` An equal version reinstalls as an update.
 - The line under the field tells the user what will happen: `This folder will be created.`, `CyberPad will be installed in this folder.`, `CyberPad is already installed here and will be updated.`, or the reason the folder cannot be used.
 - While installing, the controls are disabled and a progress bar shows files copied. Closing the window during the copy is refused with `Setup is still copying files.`
 - On success: `CyberPad is installed.` with a `Finish` button; CyberPad starts if the box is ticked.
@@ -132,7 +132,7 @@ C:\Users\you\AppData\Local\CyberPad
 
 - The install folder comes from the uninstall registry entry and must contain a valid manifest; a path given on the command line is never used.
 - If CyberPad is running: `Close CyberPad, then choose Uninstall again.`
-- Because a program cannot delete itself while it runs, `Uninstall.exe` copies itself to the user's temp folder and continues from there. That copy (about 100 KB) is left in the temp folder. *(my call)*
+- Because a program cannot delete itself while it runs, `Uninstall.exe` copies itself to the user's temp folder and continues from there. That copy (about 100 KB) is left in the temp folder. The next uninstall removes older copies. *(my call)*
 - It removes: every file named in the manifest (each checked to be inside the install folder), the manifest, `Uninstall.exe`, folders that are now empty, the Start menu shortcut if it still points at this install, and the two registry keys. Files in the install folder that setup did not write are left alone, and then the folder stays too.
 - If a file cannot be deleted (for example because it is in use), the registry keys are still removed and the manifest is rewritten to list exactly the files that are left.
 - If the install's folder no longer passes the folder rules, or its manifest is missing or damaged, no file is deleted at all: only the entry (and the shortcut, if it points at that folder) is removed, and the user is told the files were left.
@@ -173,3 +173,16 @@ Tests: every folder rule, with hostile inputs (`..`, UNC, device paths, trailing
 ## Verification
 
 `dotnet test desktop/CyberPad.sln` (then `git checkout -- "desktop/**/packages.lock.json"`); `npm test`; `desktop/build.ps1` produces both the zip and the setup file; no new package in any lock file; `CyberPad.Desktop` has no reference to the install projects; no `cmd`, `powershell` or `ShellExecute` use in the install code apart from starting `CyberPad.exe` and the temp copy of `Uninstall.exe` directly by full path.
+
+### Messages added during review
+
+- A path with `..`: `Type the full path of the folder, without "..".`
+- A `%` in the profile folder's name: `Your user folder's name contains %, which Windows would misread. CyberPad cannot be installed for this account.`
+- The folder changed since it was chosen: `That folder changed since you chose it. Check the folder and choose Install again.`
+- Installed but clean-up incomplete: `CyberPad was installed, but setup could not finish cleaning up.`
+- Setup or uninstall already running: `CyberPad setup or uninstall is already running.`
+- Setup refused as administrator: `Run setup without administrator rights. CyberPad is installed for your own account. If User Account Control is turned off, sign in with a standard account.`
+- Uninstall refused as administrator: `Run uninstall without administrator rights. If User Account Control is turned off, sign in with the account that installed CyberPad.`
+- Removed but shortcut or entry left: `CyberPad was removed, but its Start menu shortcut or its entry under Installed apps could not be deleted.`
+- File list missing or damaged: `CyberPad's entry was removed. The files in <folder> were left because setup's file list is missing or damaged.`
+- Install folder could not be checked: `CyberPad's entry was removed. No files were deleted because the install folder could not be checked.`
