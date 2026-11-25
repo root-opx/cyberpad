@@ -28,8 +28,15 @@
     folders: 100,
   });
 
-  const THEMES = Object.freeze(['neon', 'amber', 'terminal']);
+  // THEMES: the values a setting can hold, in picker order. SCREEN_THEMES: what data-theme can hold ('system' never).
+  const THEMES = Object.freeze(['system', 'light', 'dark', 'neon', 'amber', 'terminal']);
+  const SCREEN_THEMES = Object.freeze(['light', 'dark', 'neon', 'amber', 'terminal']);
   const THEME_ALIASES = Object.freeze({ phosphor: 'terminal' }); // renamed themes
+  // The theme to show for a setting. Unknown values give the default.
+  function resolveTheme(setting, prefersDark) {
+    if (setting === 'system') return prefersDark === true ? 'dark' : 'light';
+    return typeof setting === 'string' && SCREEN_THEMES.includes(setting) ? setting : 'neon';
+  }
   const VIEWS = Object.freeze(['edit', 'split', 'preview']);
   const AUTOLOCK = Object.freeze([1, 5, 10, 30, 60]);
 
@@ -387,7 +394,7 @@
   }
 
   return {
-    STORAGE_KEY, LEGACY_STORAGE_KEYS, FILE_FORMATS, SCHEMA, LIMITS, THEMES, VIEWS, AUTOLOCK, DEFAULT_SETTINGS, StoreError,
+    STORAGE_KEY, LEGACY_STORAGE_KEYS, FILE_FORMATS, SCHEMA, LIMITS, THEMES, SCREEN_THEMES, resolveTheme, VIEWS, AUTOLOCK, DEFAULT_SETTINGS, StoreError,
     newId, cleanFolder, folderList, validateEnvelope, validateNote, validateNotes, validateSettings, validateState, parseStored, pickState, serialize, createNote, addSnapshot,
     makeBackup, parseBackup, makeEncryptedBackup, parseEncryptedBackup, mergeNotes, checkImportFile, decodeImportBytes,
   };

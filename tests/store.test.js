@@ -58,6 +58,26 @@ test('settings are allow-listed', () => {
   assert.deepEqual(s, { ...store.DEFAULT_SETTINGS, theme: 'amber' });
 });
 
+test('themes: six settings, five screen themes, resolveTheme', () => {
+  assert.deepEqual([...store.THEMES], ['system', 'light', 'dark', 'neon', 'amber', 'terminal']);
+  assert.deepEqual([...store.SCREEN_THEMES], ['light', 'dark', 'neon', 'amber', 'terminal']);
+  for (const t of ['light', 'dark', 'neon', 'amber', 'terminal']) {
+    assert.equal(store.resolveTheme(t, true), t);
+    assert.equal(store.resolveTheme(t, false), t);
+  }
+  assert.equal(store.resolveTheme('system', true), 'dark');
+  assert.equal(store.resolveTheme('system', false), 'light');
+  for (const bad of ['__proto__', 'constructor', null, 5, undefined, 'solarized']) {
+    assert.equal(store.resolveTheme(bad, true), 'neon');
+    assert.equal(store.resolveTheme(bad, false), 'neon');
+  }
+});
+
+test('validateSettings accepts the six themes and falls back for an unknown one', () => {
+  for (const t of store.THEMES) assert.equal(store.validateState({ v: 1, settings: { theme: t } }).settings.theme, t);
+  assert.equal(store.validateState({ v: 1, settings: { theme: 'solarized' } }).settings.theme, 'neon');
+});
+
 test('renamed theme and legacy backups still load', () => {
   assert.equal(store.validateState({ v: 1, settings: { theme: 'phosphor' } }).settings.theme, 'terminal');
   assert.equal(store.validateState({ v: 1, settings: { theme: 'terminal' } }).settings.theme, 'terminal');

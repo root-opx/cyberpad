@@ -399,9 +399,9 @@ test('setHostTheme posts the theme and resolves on themeApplied', async () => {
 });
 
 test('every theme the store knows is accepted by the bridge', async () => {
-  const { THEMES } = require('../js/core/store.js');
-  assert.ok(THEMES.length > 0);
-  for (const value of THEMES) {
+  const { SCREEN_THEMES } = require('../js/core/store.js');
+  assert.equal(SCREEN_THEMES.length, 5);
+  for (const value of SCREEN_THEMES) {
     const fake = fakeWebview();
     const p = createPlatform(env({ chrome: fake.chrome }));
     const done = p.setHostTheme(value);
@@ -414,10 +414,10 @@ test('every theme the store knows is accepted by the bridge', async () => {
   }
 });
 
-test('setHostTheme refuses anything outside the three theme names and posts nothing', async () => {
+test('setHostTheme refuses anything outside the five theme names and posts nothing', async () => {
   const fake = fakeWebview();
   const p = createPlatform(env({ chrome: fake.chrome }));
-  for (const bad of ['Neon', 'dark', '', ' neon', '#191338', null, undefined, 3, {}, ['neon']]) {
+  for (const bad of ['Neon', 'solarized', 'system', 'Light', 'DARK', '', ' neon', '#191338', null, undefined, 3, {}, ['neon']]) {
     await assert.rejects(p.setHostTheme(bad), PlatformError);
   }
   assert.equal(fake.posted.length, 0);

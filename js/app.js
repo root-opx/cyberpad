@@ -28,8 +28,10 @@
 
   const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
   const narrow = window.matchMedia('(max-width: 760px)');
+  // Absent in some environments: System then behaves as Light.
+  const darkScheme = typeof window.matchMedia === 'function' ? window.matchMedia('(prefers-color-scheme: dark)') : null;
 
-  const THEME_NAMES = { neon: 'Neon', amber: 'Amber', terminal: 'Terminal green' };
+  const THEME_NAMES = { system: 'System', light: 'Light', dark: 'Dark', neon: 'Neon', amber: 'Amber', terminal: 'Terminal green' };
 
   const WELCOME = [
     '# Welcome to CyberPad',
@@ -634,8 +636,11 @@
 
   // Desktop: the Windows title bar follows the theme. Sent once per change, not on every settings save.
   // A failure is not shown: the bar keeps its previous colour, and forgetting the sent value retries next time.
+  // The theme on screen: the setting, or for System the operating system's current choice.
+  function screenTheme() { return store.resolveTheme(S.settings.theme, !!(darkScheme && darkScheme.matches)); }
+
   function syncHostTheme() {
-    const theme = S.settings.theme;
+    const theme = screenTheme();
     if (!platform.isDesktop || S.hostTheme === theme) return;
     S.hostTheme = theme;
     platform.setHostTheme(theme).catch((err) => {
@@ -646,7 +651,7 @@
 
   function applySettings() {
     const s = S.settings;
-    document.documentElement.dataset.theme = s.theme;
+    document.documentElement.dataset.theme = screenTheme();
     document.body.classList.toggle('crt', s.crt);
     els.app.classList.toggle('no-sidebar', !s.sidebar);
     els.workspace.dataset.view = s.view;
@@ -4113,6 +4118,8 @@
       });
     }
     narrow.addEventListener('change', () => setDrawer(false));
+    // Registered once. It only matters while the setting is System.
+    if (darkScheme) darkScheme.addEventListener('change', () => { if (S.settings.theme === 'system') applySettings(); });
     wireFileEvents();
   }
 

@@ -23,7 +23,7 @@
   const LINK_ID_RE = /^[0-9a-f]{32}$/;
   // eslint-disable-next-line no-control-regex
   const BAD_FILE_NAME_RE = /[\u0000-\u001f\u007f/\\]/;
-  const HOST_THEMES = Object.freeze(['neon', 'amber', 'terminal']);
+  const HOST_THEMES = Object.freeze(['neon', 'amber', 'terminal', 'light', 'dark']);
   const NO_FILES = 'Files are only available in the desktop app.';
 
   const isLinkId = (v) => typeof v === 'string' && LINK_ID_RE.test(v);

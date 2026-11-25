@@ -48,6 +48,35 @@
   --glow-strength: 0.65;
 }
 
+/* Plain themes: no glow. Light and Dark share the structure of the others. */
+[data-theme="light"] {
+  --void: #fafaf7;
+  --panel: #f0f0ea;
+  --raise: #e4e4dc;
+  --line: #bfbfb4;
+  --ink: #1b1b1f;
+  --dim: #5d5d66;
+  --hot: #b3005e;
+  --cool: #00635f;
+  --warn: #8a5a00;
+  --sel: rgb(179 0 94 / 0.18);
+  --glow-strength: 0;
+}
+
+[data-theme="dark"] {
+  --void: #16181d;
+  --panel: #1c1f26;
+  --raise: #272b34;
+  --line: #3a404c;
+  --ink: #e3e6ec;
+  --dim: #9aa3b2;
+  --hot: #ff8f5a;
+  --cool: #6cb6ff;
+  --warn: #f2cc60;
+  --sel: rgb(108 182 255 / 0.28);
+  --glow-strength: 0;
+}
+
 [data-theme="terminal"] .wordmark-text { text-shadow: 0 0 8px rgb(51 255 102 / 0.7); }
 [data-theme="terminal"] .btn-primary { color: #010801; }
 
@@ -64,6 +93,9 @@
   --radius: 2px;
   color-scheme: dark;
 }
+
+/* Light only: scroll bars and native controls follow it. */
+:root[data-theme="light"] { color-scheme: light; }
 
 /* ---------- base ---------- */
 *, *::before, *::after { box-sizing: border-box; }
@@ -1219,6 +1251,14 @@ body.crt::after {
     radial-gradient(ellipse at center, transparent 62%, rgb(0 0 0 / 0.42) 100%);
   animation: flicker 6s infinite steps(1);
 }
+
+/* Light: faint scanlines only. No dark corners, no flicker. */
+[data-theme="light"] body.crt::after {
+  background: repeating-linear-gradient(to bottom, transparent 0 2px, rgb(0 0 0 / 0.035) 2px 3px);
+  animation: none;
+}
+
+/* Dark: the same scanlines and corners, but no glow (the strength token is 0). */
 
 @keyframes flicker {
   0%, 100% { opacity: 1; }
