@@ -1,4 +1,4 @@
-# CyberPad
+<h1 align="center"><img src="docs/logo.png" alt="CyberPad" width="640"></h1>
 
 An offline, cyberpunk-retro notepad that runs in your browser, or as a Windows desktop app. No account, no network use of its own, no dependencies.
 
@@ -16,7 +16,7 @@ python -m http.server 8787 --bind 127.0.0.1
 
 Then open http://localhost:8787.
 
-**As a Windows app:** run the installer, or unzip the portable build. See [Desktop app](#desktop-app) below.
+**As a Windows app:** download the installer or the portable build from [Releases](https://github.com/root-opx/cyberpad/releases/latest). See [Desktop app](#desktop-app) below.
 
 ## What it does
 
@@ -141,7 +141,7 @@ Then open http://localhost:8787.
 The same notepad in its own window and process. If the page inside it crashes, the window stays open and your saved notes are not lost. It is a .NET 8 + WebView2 host around the unchanged web app, for 64-bit Windows.
 
 **Get it**
-- Build with `desktop/build.ps1` (see Development); there is no hosted download yet. It writes two files to `dist/`:
+- Download either file from [Releases](https://github.com/root-opx/cyberpad/releases/latest) (each release lists their SHA-256 hashes), or build them yourself with `desktop/build.ps1` (see Development), which writes them to `dist/`:
   - `CyberPad-Setup-<version>.exe`, the installer: run it and follow the setup window (see [Installing and uninstalling](#installing-and-uninstalling)).
   - `CyberPad-win-x64-<version>.zip`, the portable build: unzip it anywhere and run `CyberPad.exe`. It installs nothing and makes no registry changes.
 - Neither file is code-signed, so SmartScreen warns the first time you run the setup file, or CyberPad.exe from the portable zip. With Smart App Control on, Windows blocks unsigned programs outright. At the SmartScreen warning, click **More info**, then **Run anyway**. A company-managed PC may block unsigned programs.
