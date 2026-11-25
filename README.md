@@ -28,12 +28,15 @@ Then open http://localhost:8787.
 - `Ctrl+Enter` turns a line into a task or ticks it. You can also tick tasks in the preview.
 - Pasting a URL over selected text makes a Markdown link.
 - Select text that contains numbers and the status bar shows their sum and average.
+- Typing `->`, `<-`, `<->` or `=>` gives `→`, `←`, `↔` or `⇒`. It never happens inside a fenced code block or inline code, or for pasted text. Backspace right after a replacement, or `Ctrl+Z`, puts the typed characters back. Turn it off in the palette under View (**Turn off arrow replacement**).
 
 **Organising**
 - `[[Note title]]` links notes together. Clicking a missing link creates the note, and each note lists its backlinks.
 - `#tags` show up in the sidebar for filtering. A new note inherits the active tag filter.
 - Pinned notes, full-text search with highlighted snippets, and a daily log (`Alt+T`).
 - Version history: the app keeps a snapshot at most once a minute while you type, up to 20 per note, and you can restore any of them.
+- Folders: a note can be in one folder. The sidebar lists folders first, each with its note count and a header that opens and closes (the state is remembered), then the notes without a folder. Use **Move to folder…**, **Remove from folder** and **Rename folder…** in the palette (renaming to an existing folder's name merges the two after a confirmation), or drag a note onto a folder header, or onto the area below the folders to take it out. A new note joins the folder of the note that was open. A folder exists while at least one note is in it. **Folder names are not encrypted, even for encrypted notes.**
+- Deleting: the `×` on a note row (or the `Delete` key on a focused row) asks for confirmation, then the toast offers **Undo** for 10 seconds. Undo restores the text, folder, pin, history and file link, and an encrypted note comes back locked. A linked file on disk is never deleted.
 
 **Command palette (`Ctrl+K`)**
 - Runs every command and jumps to any note. Type `@` to jump to a heading in the current note.
@@ -46,6 +49,7 @@ Then open http://localhost:8787.
 - Unlocked notes lock again after a set idle time (configurable from 1 to 60 minutes) or right away with `Alt+L`.
 - They also lock when you switch away from the tab or minimize the window. Turn this off from the palette under Vault if it gets in the way. Locking cancels any open dialog that belongs to the encrypted note, so a confirmation can never act on a note that locked in the background.
 - Text copied while an encrypted note is open (with `Ctrl+C`, cut, or a Copy button) is cleared from the clipboard 30 seconds later. Browsers only let a page write to the clipboard while it has focus, so if you are in another app at that moment, it is cleared as soon as you come back. The app never reads the clipboard, so whatever is there at that point is overwritten, even if you copied something else in the meantime. You can turn this off under Vault.
+- **New encrypted credentials note** (palette, Insert, or `/credentials`) asks for a passphrase and creates an encrypted note with a table for system, username, password, URL and notes. The note is encrypted before it is saved. Typed in an unlocked encrypted note, `/credentials` inserts the table at the cursor.
 - A forgotten passphrase cannot be recovered.
 
 **Security tools** (palette group "Security")
@@ -73,6 +77,7 @@ Then open http://localhost:8787.
 - Zen mode (`Alt+Z`), and a layout that works on phone screens.
 
 **Files**
+- **Export note as PDF** opens the print dialog; choose Save as PDF there. The PDF of an encrypted note is not encrypted, so the app asks you to confirm first.
 - Export a note as `.md`, or export a JSON backup of every note. Encrypted notes stay encrypted in the backup, but the others are plain text.
 - **Export encrypted backup** seals the whole backup into one file with AES-256-GCM, under a passphrase you choose (PBKDF2-SHA256 with 600,000 iterations, a fresh salt and IV each time). Notes that were already encrypted keep their own passphrase inside it. Import the file like any other backup and the app asks for the passphrase.
 - Import `.txt`, `.md`, or backup `.json` files with the file picker or by dropping them on the window.
@@ -91,6 +96,8 @@ Then open http://localhost:8787.
 | `F3` / `Shift+F3` | Next / previous match |
 | `Alt+Z` | Zen mode |
 | `Alt+L` | Lock encrypted notes |
+| `Delete` | Delete the focused note in the list |
+| `Ctrl+Z` in the note list | Undo the last delete |
 | `Alt+I` | Extract IOCs |
 | `Esc`, then `Tab` | Move focus out of the editor |
 | `F1` | All shortcuts |
@@ -174,6 +181,10 @@ They live in `%LOCALAPPDATA%\CyberPad` (paste it into Explorer's address bar). T
 - Encrypted backups use a different AES-GCM associated-data label from notes, so a backup ciphertext can never be opened as a note or the other way round. A file that claims to be an encrypted backup but fails validation is reported as damaged and never imported as text. After decryption, the contents go through the same field-by-field backup validation as a plain backup.
 - The subnet calculator rejects ambiguous input instead of guessing: no leading zeros in IPv4 octets (which some tools read as octal), no hex or short IPv4 forms, only contiguous netmasks, and no IPv6 zone IDs.
 - MD5 is not offered: Web Crypto does not provide it and the app does not ship its own crypto. SHA-1 is offered only for matching against existing threat intel.
+- Folder names are validated: 1 to 40 characters, no `/`, `\`, control, or invisible and text-direction characters, and at most 100 folders. They are stored in plain text, also for encrypted notes.
+- The credentials note is sealed before it joins the note list, and cancelling the passphrase prompt leaves nothing behind.
+- The PDF of an encrypted note is plain text once saved.
+- Deleting a note removes it from storage immediately. Undo keeps it only in memory for 10 seconds.
 - Unlocking backs off after repeated failures. Since everything runs client-side, the real protection is the slow PBKDF2 key derivation and a strong passphrase.
 
 ### Desktop app
@@ -207,6 +218,12 @@ Manual checks for the desktop app:
 - Kill `CyberPad.exe` while typing: the last save is intact on the next start.
 - Hold `notes.json` open in PowerShell (`$f = [IO.File]::Open("$env:LOCALAPPDATA\CyberPad\notes.json", 'Open', 'ReadWrite', 'None')`), type something, and close the window: the app asks before closing without saving, and **No** keeps it open. Run `$f.Dispose()` afterwards.
 - Minimize with an unlocked encrypted note: it is locked when you restore the window.
+- Export note as PDF opens the print dialog, and Save as PDF gives a readable file with dark text on white.
+- Move a note into a folder, close the app and reopen it: the folder and its closed or open state are kept.
+- Delete a linked note and undo: the note returns still linked. Delete it again and wait: the file is still on disk.
+- Delete a linked note, then open its file with Ctrl+O within 10 seconds: the deleted note comes back and no second note is created.
+- Drag a note onto a folder header and onto the area below the folders: it moves, and the import drop zone does not appear.
+- Type -> in a note and in a fenced code block: only the first becomes an arrow.
 - Click an NVD link in the preview: it opens in the default browser.
 - Start `CyberPad.exe` a second time: the first window comes to the front.
 - With the CRT effect off, the Windows title bar is the same colour as the app's bar in each theme and changes when the theme changes. With CRT on it is the same base colour without the scanlines.
