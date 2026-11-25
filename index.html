@@ -124,9 +124,14 @@
   <dialog id="palette" class="palette" aria-label="Command palette">
     <div class="palette-input-row">
       <span class="prompt" aria-hidden="true">&gt;</span>
-      <input id="palette-input" type="text" placeholder="Type a command or note name. Use @ to jump to a heading." autocomplete="off" spellcheck="false" maxlength="200" role="combobox" aria-expanded="true" aria-controls="palette-list">
+      <input id="palette-input" type="text" placeholder="Type a command or note name. Use @ to jump to a heading." autocomplete="off" spellcheck="false" maxlength="200" role="combobox" aria-expanded="true" aria-controls="palette-list" aria-describedby="palette-foot">
     </div>
-    <ul id="palette-list" class="palette-list" role="listbox"></ul>
+    <div class="palette-body">
+      <div id="palette-sections" class="palette-sections" role="group" aria-label="Sections" hidden></div>
+      <ul id="palette-list" class="palette-list" role="listbox"></ul>
+    </div>
+    <p id="palette-status" class="sr-only" aria-live="polite"></p>
+    <p id="palette-foot" class="palette-foot"></p>
   </dialog>
 
   <dialog id="modal" class="modal" aria-labelledby="modal-title"></dialog>

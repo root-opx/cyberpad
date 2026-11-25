@@ -20,6 +20,7 @@
     stSave: $('st-save'), stSaveText: $('st-save-text'), stPos: $('st-pos'), stWords: $('st-words'), stSel: $('st-sel'),
     stLock: $('st-lock'), stTimer: $('st-timer'), stClock: $('st-clock'),
     slash: $('slash'), palette: $('palette'), paletteInput: $('palette-input'), paletteList: $('palette-list'),
+    paletteSections: $('palette-sections'), paletteStatus: $('palette-status'), paletteFoot: $('palette-foot'),
     modal: $('modal'), toasts: $('toasts'), boot: $('boot'), bootLog: $('boot-log'), dropzone: $('dropzone'),
     fileInput: $('file-input'), hashFileInput: $('hash-file-input'), wordmark: document.querySelector('.wordmark-text'),
     secretAlert: $('secret-alert'), secretAlertText: $('secret-alert-text'),
@@ -1342,10 +1343,11 @@
     const cmds = commandList();
     const notes = sortedNotes().map((n) => ({ group: 'Notes', title: titleOf(n), keys: T.relativeTime(n.updated), run: () => openNote(n.id), id: n.id }));
     if (!q) {
-      return [...notes.filter((n) => n.id !== S.activeId).slice(0, 5).map((n) => ({ ...n, group: 'Recent notes' })), ...cmds];
+      const browse = [...notes.filter((n) => n.id !== S.activeId).slice(0, 5).map((n) => ({ ...n, group: 'Recent notes' })), ...cmds];
+      return T.paletteSections(browse).flatMap((s) => s.items);
     }
     return [...cmds, ...notes]
-      .map((i) => ({ ...i, score: Math.max(T.fuzzyScore(q, i.title), T.fuzzyScore(q, `${i.group} ${i.title}`) - 50) }))
+      .map((i) => ({ ...i, score: T.paletteScore(q, i) }))
       .filter((i) => i.score > 0)
       .sort((a, b) => b.score - a.score)
       .slice(0, 60);
@@ -1373,21 +1375,56 @@
     }
     els.paletteInput.value = prefill;
     S.pal.idx = 0;
+    S.pal.section = null;
     renderPalette();
     els.paletteInput.focus();
     els.paletteInput.setSelectionRange(prefill.length, prefill.length);
   }
 
+  // The mode comes from the input on every render: '@' jumps to a heading,
+  // other text filters, and an empty (or spaces-only) box browses by section.
+  function paletteMode(q = els.paletteInput.value) {
+    const t = q.trim();
+    if (t.startsWith('@')) return 'heading';
+    return t ? 'filter' : 'browse';
+  }
+
+  // Browse items are flat and ordered by section, so each section is one run.
+  function paletteRanges(items) {
+    const ranges = [];
+    items.forEach((item, i) => {
+      const name = T.sectionOf(item.group);
+      const last = ranges[ranges.length - 1];
+      if (last && last.name === name) last.end = i + 1;
+      else ranges.push({ name, start: i, end: i + 1 });
+    });
+    return ranges;
+  }
+
+  function jumpPaletteSection(step) {
+    const ranges = paletteRanges(S.pal.items);
+    if (!ranges.length) return;
+    const cur = ranges.findIndex((r) => S.pal.idx >= r.start && S.pal.idx < r.end);
+    S.pal.idx = ranges[(cur + step + ranges.length) % ranges.length].start;
+    renderPalette();
+  }
+
   function renderPalette() {
     const q = els.paletteInput.value;
+    const mode = paletteMode(q);
     const items = paletteItems(q);
     S.pal.items = items;
     S.pal.idx = Math.min(S.pal.idx, Math.max(0, items.length - 1));
+    const browse = mode === 'browse';
+    const ranges = browse ? paletteRanges(items) : [];
+    const current = ranges.find((r) => S.pal.idx >= r.start && S.pal.idx < r.end) || null;
+    const shown = current ? items.slice(current.start, current.end) : items;
+    const offset = current ? current.start : 0;
     const frag = document.createDocumentFragment();
     let group = null;
-    const grouped = !q.trim() || q.trim().startsWith('@');
-    items.forEach((item, i) => {
-      if (grouped && item.group !== group) {
+    shown.forEach((item, k) => {
+      const i = offset + k;
+      if (mode === 'heading' && item.group !== group) {
         group = item.group;
         frag.append(h('li', { class: 'palette-group', role: 'presentation' }, group));
       }
@@ -1395,7 +1432,7 @@
         class: 'palette-item', role: 'option', id: `pal-${i}`, 'data-idx': i, 'aria-selected': String(i === S.pal.idx),
       },
       h('span', { class: 'label' }, item.title),
-      !grouped ? h('span', { class: 'hint' }, item.group) : null,
+      mode === 'filter' ? h('span', { class: 'hint' }, T.sectionOf(item.group)) : null,
       item.keys ? h('kbd', null, item.keys) : null));
     });
     if (!items.length) {
@@ -1403,8 +1440,35 @@
     }
     els.paletteList.replaceChildren(frag);
     els.paletteInput.setAttribute('aria-activedescendant', items.length ? `pal-${S.pal.idx}` : '');
+
+    els.paletteSections.hidden = !browse;
+    if (browse) {
+      els.paletteSections.replaceChildren(...ranges.map((r) => h('button', {
+        type: 'button', tabindex: '-1', class: 'palette-section', 'aria-pressed': String(r === current), 'data-start': r.start,
+      },
+      r.name,
+      r.name === 'Recent notes' ? null : h('span', { class: 'count' }, String(r.end - r.start)))));
+    } else {
+      els.paletteSections.replaceChildren();
+    }
+
+    const name = current ? current.name : null;
+    if (name !== S.pal.section) {
+      S.pal.section = name;
+      const n = current ? current.end - current.start : 0;
+      const noun = name === 'Recent notes' ? (n === 1 ? 'note' : 'notes') : (n === 1 ? 'command' : 'commands');
+      els.paletteStatus.textContent = current ? `${name}, ${n} ${noun}` : '';
+    }
+
+    els.paletteFoot.replaceChildren(...['↑ ↓ move', browse ? 'Tab next section' : null, 'Enter run', 'Esc close']
+      .filter(Boolean).map((t) => h('span', null, t)));
+
     const sel = els.paletteList.querySelector('[aria-selected="true"]');
     if (sel) sel.scrollIntoView({ block: 'nearest' });
+    if (browse) {
+      const pressed = els.paletteSections.querySelector('[aria-pressed="true"]');
+      if (pressed) pressed.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    }
   }
 
   // Chromium fires the dialog 'close' event a few hundred ms after close(), and
@@ -3428,7 +3492,18 @@
       } else if (e.key === 'Enter') {
         e.preventDefault();
         runPaletteItem(S.pal.idx);
+      } else if (paletteMode() === 'browse' && (e.key === 'Tab' || e.key === 'PageDown' || e.key === 'PageUp')) {
+        e.preventDefault();
+        jumpPaletteSection(e.key === 'PageUp' || (e.key === 'Tab' && e.shiftKey) ? -1 : 1);
       }
+    });
+    // mousedown must not take focus from the input, so keys keep working
+    els.paletteSections.addEventListener('mousedown', (e) => e.preventDefault());
+    els.paletteSections.addEventListener('click', (e) => {
+      const btn = e.target.closest('.palette-section');
+      if (!btn) return;
+      S.pal.idx = Number(btn.dataset.start);
+      renderPalette();
     });
     els.paletteList.addEventListener('click', (e) => {
       const item = e.target.closest('.palette-item');
