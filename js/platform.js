@@ -23,6 +23,7 @@
   const LINK_ID_RE = /^[0-9a-f]{32}$/;
   // eslint-disable-next-line no-control-regex
   const BAD_FILE_NAME_RE = /[\u0000-\u001f\u007f/\\]/;
+  const HOST_THEMES = Object.freeze(['neon', 'amber', 'terminal']);
   const NO_FILES = 'Files are only available in the desktop app.';
 
   const isLinkId = (v) => typeof v === 'string' && LINK_ID_RE.test(v);
@@ -175,6 +176,18 @@
         console.error('storage unavailable', err && err.name);
       }
       return out;
+    }
+
+    // ---------------------------------------------------------------- host theme
+
+    /**
+     * Tells the desktop host which of the three fixed themes is active (it colours the title bar).
+     * Only the allow-listed name is ever sent, never a colour. Browser: nothing is sent, resolves false.
+     */
+    async function setHostTheme(theme) {
+      if (typeof theme !== 'string' || !HOST_THEMES.includes(theme)) throw new PlatformError('host', 'invalid theme');
+      if (!isDesktop) return false;
+      return request('theme', { theme }, expect('themeApplied', () => true));
     }
 
     // ---------------------------------------------------------------- save
@@ -362,7 +375,7 @@
       flushHandler = typeof fn === 'function' ? fn : null;
     }
 
-    return { isDesktop, maxStateChars, loadState, saveState, removeLegacy, quarantine, exportFile, onFlushRequest,
+    return { isDesktop, maxStateChars, loadState, saveState, removeLegacy, quarantine, setHostTheme, exportFile, onFlushRequest,
       saveAsFile, openFile, writeFile, readFile, matchesLastWrite, checkFiles, unlinkFile, revealFile, pruneLinks, onOpenRequested,
     };
   }

@@ -76,6 +76,7 @@
     notes: [],
     settings: { ...store.DEFAULT_SETTINGS },
     activeId: null,
+    hostTheme: null,
     query: '',
     tag: null,
     keys: new Map(),        // note id -> { key: non-extractable CryptoKey, salt, iterations }
@@ -557,6 +558,15 @@
     runSecretScan();
   }
 
+  // Desktop: the Windows title bar follows the theme. Sent once per change, not on every settings save.
+  // A failure is not shown: the bar keeps its previous colour, and forgetting the sent value retries next time.
+  function syncHostTheme() {
+    const theme = S.settings.theme;
+    if (!platform.isDesktop || S.hostTheme === theme) return;
+    S.hostTheme = theme;
+    platform.setHostTheme(theme).catch(() => { if (S.hostTheme === theme) S.hostTheme = null; });
+  }
+
   function applySettings() {
     const s = S.settings;
     document.documentElement.dataset.theme = s.theme;
@@ -568,6 +578,7 @@
     els.btnCrt.setAttribute('aria-pressed', String(s.crt));
     els.btnSound.setAttribute('aria-pressed', String(s.sound));
     els.btnSidebar.setAttribute('aria-expanded', String(narrow.matches ? els.app.classList.contains('sidebar-open') : s.sidebar));
+    syncHostTheme();
   }
 
   function renderEditor() {

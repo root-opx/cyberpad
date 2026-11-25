@@ -384,3 +384,53 @@ test('file methods reject in the browser', async () => {
     await assert.rejects(c(), (e) => e instanceof PlatformError && e.reason === 'host' && e.message === 'Files are only available in the desktop app.');
   }
 });
+
+test('setHostTheme posts the theme and resolves on themeApplied', async () => {
+  const fake = fakeWebview();
+  const p = createPlatform(env({ chrome: fake.chrome }));
+  const done = p.setHostTheme('amber');
+  await tick();
+  const m = fake.posted[fake.posted.length - 1];
+  assert.deepEqual(Object.keys(m).sort(), ['id', 'theme', 'type']);
+  assert.equal(m.type, 'theme');
+  assert.equal(m.theme, 'amber');
+  fake.reply({ type: 'themeApplied', id: m.id });
+  assert.equal(await done, true);
+});
+
+test('setHostTheme refuses anything outside the three theme names and posts nothing', async () => {
+  const fake = fakeWebview();
+  const p = createPlatform(env({ chrome: fake.chrome }));
+  for (const bad of ['Neon', 'dark', '', ' neon', '#191338', null, undefined, 3, {}, ['neon']]) {
+    await assert.rejects(p.setHostTheme(bad), PlatformError);
+  }
+  assert.equal(fake.posted.length, 0);
+});
+
+test('setHostTheme does nothing in a browser', async () => {
+  const p = createPlatform(env({ localStorage: fakeStorage() }));
+  assert.equal(await p.setHostTheme('neon'), false);
+});
+
+test('setHostTheme rejects on a rejected or mismatched reply', async () => {
+  const fake = fakeWebview();
+  const p = createPlatform(env({ chrome: fake.chrome }));
+  const a = p.setHostTheme('terminal');
+  await tick();
+  fake.reply({ type: 'rejected', id: lastId(fake), reason: 'Unexpected error.' });
+  await assert.rejects(a, PlatformError);
+  const b = p.setHostTheme('terminal');
+  await tick();
+  fake.reply({ type: 'quarantined', id: lastId(fake) });
+  await assert.rejects(b, PlatformError);
+});
+
+test('setHostTheme rejects when the host never answers', async () => {
+  const fake = fakeWebview();
+  const p = createPlatform(env({ chrome: fake.chrome }), { timeoutMs: 20 });
+  await assert.rejects(p.setHostTheme('neon'), (e) => e instanceof PlatformError && e.reason === 'timeout');
+  const before = fake.posted.length;
+  const again = p.setHostTheme('neon');
+  assert.equal(fake.posted.length, before + 1);
+  await assert.rejects(again, PlatformError);
+});
