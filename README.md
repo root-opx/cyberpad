@@ -30,6 +30,38 @@ Then open http://localhost:8787.
 - Select text that contains numbers and the status bar shows their sum and average.
 - Typing `->`, `<-`, `<->` or `=>` gives `→`, `←`, `↔` or `⇒`. It never happens inside a fenced code block or inline code, or for pasted text. Backspace or `Ctrl+Z` right after a replacement puts back what was there before that keystroke, so after `<->` it gives `←>`. Find and replace never makes arrows. Turn it off in the palette under View (**Turn off arrow replacement**).
 
+**Scripts**
+- **Script mode** is set per note. In the palette, Note section, **Script mode: choose a language…** opens a list of languages and **Back to a Markdown note** returns. The status bar shows the language and opens the same list. Switching modes never changes the text.
+- Languages and what one indent is:
+
+  | Language | One indent |
+  | --- | --- |
+  | Bash | 2 spaces |
+  | C | 4 spaces |
+  | C++ | 4 spaces |
+  | C# | 4 spaces |
+  | CSS | 2 spaces |
+  | Go | 1 tab |
+  | HTML | 2 spaces |
+  | Java | 4 spaces |
+  | JavaScript | 2 spaces |
+  | JSON | 2 spaces |
+  | PowerShell | 4 spaces |
+  | Python | 4 spaces |
+  | Rust | 4 spaces |
+  | SQL | 4 spaces |
+  | TypeScript | 2 spaces |
+  | YAML | 2 spaces |
+
+- `Tab` and `Shift+Tab` indent and outdent by the language's unit, for the current line or for every selected line.
+- `Enter` keeps the indentation and adds one level after the language's block openers: `:` in Python, `{` in the C family, `then` or `do` in Bash, `|` in YAML, and so on. This also works when the line ends in a comment. `Enter` between a pair of brackets puts the closing bracket on its own line.
+- A closing bracket typed on an empty indented line steps back one level. `Backspace` in the indentation steps back one level. Each of these is one undo step. `Esc`, then `Tab` still leaves the editor.
+- Long lines scroll sideways instead of wrapping.
+- The preview shows the note as one code block with the language name and a Copy button. **Export note as PDF** prints that block, and **Export note as Markdown** writes the code in a fenced block. Linked files and exports keep the `.md` and `.txt` extensions.
+- Switched off in a script note: arrow replacement, list continuation, `Ctrl+Enter` tasks, `/` quick inserts, the inline calculator, URL-paste links, and `#tags`, `[[links]]` and "Go to heading", so a `# comment` is not a tag or a heading. The secret scanner stays on. There is no syntax colouring.
+- **The language of a script note is not encrypted, even for encrypted notes.**
+- **Line numbers** sit in a gutter at the left of the editor, and the caret's line is brighter. One palette command in the View section cycles three states: script notes only (the default), every note, and off. In a Markdown note a wrapped line gets one number, at its first row. In a wrapped note of more than 3,000 lines the numbers are hidden.
+
 **Organising**
 - `[[Note title]]` links notes together. Clicking a missing link creates the note, and each note lists its backlinks.
 - `#tags` show up in the sidebar for filtering. A new note inherits the active tag filter.
@@ -71,6 +103,7 @@ Then open http://localhost:8787.
 
 **Look and feel**
 - Six theme choices, picked from the menu in the title bar or the palette: System, Light, Dark, Neon, Amber, and Terminal green (classic monochrome green screen). Neon is the default. System follows your operating system's light or dark setting: Light in light mode, Dark in dark mode, and it switches live when the setting changes.
+- The app starts in the colours of the theme that was last on screen, with no flash of another theme. The window and title bar use it too in the desktop app.
 - In the desktop app, the Windows title bar takes the colour of the theme on screen, for all five themes (Windows 11; Windows 10 shows its own dark bar).
 - A CRT effect (scanlines, glow, vignette) that you can switch off. On Light it gives faint scanlines only. On Dark it gives scanlines and dark corners, with no text glow. Flicker is disabled when your system asks for reduced motion.
 - Optional synthesized typing sounds and a boot screen you can skip.
@@ -99,6 +132,7 @@ Then open http://localhost:8787.
 | `Delete` | Delete the focused note in the list |
 | `Ctrl+Z` in the note list | Undo the last delete |
 | `Alt+I` | Extract IOCs |
+| `Tab` / `Shift+Tab` | Indent / outdent in a script note |
 | `Esc`, then `Tab` | Move focus out of the editor |
 | `F1` | All shortcuts |
 
@@ -152,6 +186,7 @@ They live in `%LOCALAPPDATA%\CyberPad` (paste it into Explorer's address bar). T
 | `links.json` | which note is linked to which file on disk (the page only ever sees file names) |
 | `links.unreadable-<time>.json` | a links file the app could not read, kept instead of deleted |
 | `window.json` | window size and position |
+| `appearance.json` | the last theme, so the window starts in the right colours |
 | `cyberpad.log`, `cyberpad.log.1` | diagnostics log: UTC time, message type, rejection reason or error type name, never note content. When it reaches 256 KB it becomes `cyberpad.log.1` (replacing the older one) and a new log starts, so the two stay around half a megabyte. |
 | `WebView2\` | the web engine's own profile |
 
@@ -159,7 +194,7 @@ They live in `%LOCALAPPDATA%\CyberPad` (paste it into Explorer's address bar). T
 
 ## Where your data lives
 
-**Browser version.** Notes are stored in your browser's `localStorage` on this device. Nothing ever leaves it: the Content Security Policy blocks all network connections.
+**Browser version.** Notes are stored in your browser's `localStorage` on this device. Nothing ever leaves it: the Content Security Policy blocks all network connections. The theme name is also kept in `localStorage` under `cyberpad.theme`, so the page can start in the right colours.
 
 - **Unencrypted notes are stored as plain text.** Anyone with access to this browser profile can read them. Encrypt anything sensitive.
 - When you open the app from `file://`, Chromium shares one storage area between all local HTML files. Serving it from `localhost`, as shown above, gives it a storage area of its own.
@@ -182,6 +217,9 @@ They live in `%LOCALAPPDATA%\CyberPad` (paste it into Explorer's address bar). T
 - The subnet calculator rejects ambiguous input instead of guessing: no leading zeros in IPv4 octets (which some tools read as octal), no hex or short IPv4 forms, only contiguous netmasks, and no IPv6 zone IDs.
 - MD5 is not offered: Web Crypto does not provide it and the app does not ship its own crypto. SHA-1 is offered only for matching against existing threat intel.
 - Folder names are validated: 1 to 40 characters, no `/`, `\`, control characters, or invisible and text-direction characters, and at most 100 folders. This also refuses emoji built with a joiner (such as family or profession emoji) and the zero-width non-joiner some scripts use. They are stored in plain text, also for encrypted notes.
+- The language of a script note is stored in plain text, like the folder name, also for encrypted notes. The script preview and the line-number measuring element are built from text nodes and are cleared when a note locks.
+- `appearance.json` is read with a size cap and accepts only the five theme names; an unreadable file falls back to Neon. It holds a theme name and nothing else, as does `cyberpad.theme` in the browser.
+- The start-up theme script is an external file (`js/early-theme.js`) allowed by the existing CSP, so there is still no inline script.
 - The credentials note is sealed before it joins the note list, and cancelling the passphrase prompt leaves nothing behind.
 - The PDF of an encrypted note is plain text once saved.
 - Deleting a note removes it from storage immediately. Undo keeps it only in memory for 10 seconds.
@@ -202,7 +240,7 @@ They live in `%LOCALAPPDATA%\CyberPad` (paste it into Explorer's address bar). T
 npm test
 ```
 
-The tests use Node's built-in test runner (Node 18+) and cover the calculator, Markdown parser, text tools, vault, store, security tools, CVSS scoring (checked against reference scores), and the subnet calculator, including negative cases such as injection payloads, tampered ciphertext, bad imports, and prototype pollution.
+The tests use Node's built-in test runner (Node 18+) and cover the calculator, Markdown parser, text tools, vault, store, security tools, CVSS scoring (checked against reference scores), and the subnet calculator, and the script-mode indentation rules, including negative cases such as injection payloads, tampered ciphertext, bad imports, and prototype pollution.
 
 **Desktop app.** You need the .NET 8 SDK and Node 18+.
 
@@ -229,6 +267,10 @@ Manual checks for the desktop app:
 - With the CRT effect off, the Windows title bar is the same colour as the app's bar in each theme and changes when the theme changes. With CRT on it is the same base colour without the scanlines.
 - Choose System, then switch Windows between light and dark mode: the app and its title bar follow.
 - Choose Light: the title bar is light with dark text, and the CRT switch gives faint scanlines only.
+- With Light chosen, close and reopen the app: the window and title bar are light from the first moment.
+- Replace appearance.json in the data folder with random text and start the app: it starts in Neon colours without a message.
+- In a Python script note, Tab, Shift+Tab and Enter after a colon indent by four spaces, and a long line scrolls sideways.
+- With line numbers on, the numbers line up with the lines while scrolling, and disappear when an encrypted note locks.
 - Minimise, maximise, close, drag, snap and the title bar's system menu still work.
 - Linked files (use a scratch folder):
   - Save a note as `.md`, edit it, and see the file change on disk.
@@ -259,7 +301,9 @@ js/core/            pure logic, also loaded by Node tests
   secops.js         IOC extraction, defang, secret scanning, decoders, hashing
   cvss.js           CVSS 3.0/3.1 parsing and scoring
   netcalc.js        IPv4/IPv6 subnet calculator
+  codeedit.js       script-mode languages and indentation rules
 js/ui/              DOM helpers: renderer, caret position, sound
+js/early-theme.js   applies the last theme before first paint
 js/platform.js      storage and file adapter (browser or desktop host)
 js/app.js           application controller
 tests/              node:test suites

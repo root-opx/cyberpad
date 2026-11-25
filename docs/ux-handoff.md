@@ -23,7 +23,9 @@ js/ui/dom.js      NP.dom.h(tag, attrs, ...children): the only way UI builds elem
 js/ui/render.js   Markdown tree to DOM for the preview
 js/ui/caret.js    caret position (for the slash popup)
 js/ui/sound.js    typing sounds (Web Audio)
+js/early-theme.js applies the last theme (localStorage `cyberpad.theme`) before first paint; external file by design
 js/core/          pure logic with Node tests; usually no UI work here
+js/core/codeedit.js  script-mode languages, indent units and the Tab/Enter/Backspace rules
 js/platform.js    storage and file bridge (browser or desktop host)
 desktop/          Windows host, xUnit tests, build.ps1
 ```
@@ -50,10 +52,12 @@ The System setting resolves to Light or Dark and is never a `data-theme` value.
 - sidebar: New note, filter row, note list, tags;
 - find/replace bar;
 - secret-scanner alert bar;
-- editor;
+- editor, with the line-number gutter at its left edge;
+- script-mode language dialog (palette, Note: **Script mode: choose a language…**);
 - lock screen for encrypted notes;
 - preview and backlinks;
-- statusbar: save LED, position, words, selection, lock and timer, clock;
+- script code-block preview: one block with the language name and a Copy button;
+- statusbar: save LED, position, words, selection, language button (script notes; opens the language dialog), lock and timer, clock;
 - slash popup;
 - command palette (`Ctrl+K`);
 - modal dialogs (built in `app.js`, e.g. CVSS, subnet, hashes);
@@ -73,6 +77,9 @@ These come from the project and from the user's security rules in `~/.claude/rul
 - **No HTML strings.**
   - Never use `innerHTML` or `insertAdjacentHTML`; build elements with `NP.dom.h`.
   - Its attribute allow-list (`SAFE_ATTR` in `dom.js`) is a security control: widen it only if the user agrees.
+- **Start-up theme and held note text.**
+  - The start-up theme script (`js/early-theme.js`) must stay an external file: an inline script would break the CSP.
+  - Anything that holds note text off screen, such as the gutter's measuring element, must be emptied when a note locks.
 - **Offline, no dependencies.**
   - No CDN, no web fonts from the network, no npm packages, no build step: the page must work when opened by double-clicking `index.html`.
   - Bundling a font file under the repo (allowed by `font-src 'self'`) is still a new dependency and needs the user's OK, including its licence.

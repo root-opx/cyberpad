@@ -84,7 +84,9 @@ No bridge change: the file is written from the existing `theme` message. A missi
 | `typescript` | TypeScript | 2 spaces | `{` `(` `[` | `}` `)` `]` |
 | `yaml` | YAML | 2 spaces | `:` | (nothing) |
 
-"Ending in" ignores spaces at the end of the line. Word endings (`then`, `do`, `else`) must be whole words.
+"Ending in" ignores spaces and a trailing comment at the end of the line (`//` and `/* */` in the C family, `#` in Python, YAML, Bash and PowerShell, `--` in SQL), unless the comment marker sits inside quotes. Word endings (`then`, `do`, `else`) must be whole shell words. In YAML a line ending in `|` or `>` (block text, optionally followed by `-` or `+`) also adds an indent.
+
+Tab on a selection that covers a whole line's text indents the line; it never replaces the text. Shift+Tab with nothing to remove does nothing and keeps focus in the editor.
 
 **Editing in a script note.**
 
