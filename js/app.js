@@ -610,45 +610,44 @@
 
   /** One sidebar row: the note button plus its delete button. `grouped` rows sit under a folder header and can be dragged. */
   function noteRow(n, q, grouped) {
-    {
-      const m = metaOf(n);
-      const mark = n.pinned ? '◆' : n.cipher ? (isLocked(n) ? '▣' : '□') : '';
-      const extra = [];
-      if (q && m.body != null) {
-        const idx = m.body.toLowerCase().indexOf(q.toLowerCase());
-        if (idx >= 0) {
-          const from = Math.max(0, idx - 12);
-          extra.push(h('span', { class: 'snippet' },
-            (from > 0 ? '…' : '') + m.body.slice(from, idx).replace(/\s+/g, ' '),
-            h('mark', null, m.body.slice(idx, idx + q.length)),
-            m.body.slice(idx + q.length, idx + q.length + 40).replace(/\s+/g, ' ')));
-        }
-      } else if (m.tags.length) {
-        extra.push(h('span', { class: 'snippet' }, m.tags.slice(0, 3).map((t) => `#${t}`).join(' ')));
+    const m = metaOf(n);
+    const mark = n.pinned ? '◆' : n.cipher ? (isLocked(n) ? '▣' : '□') : '';
+    const extra = [];
+    if (q && m.body != null) {
+      const idx = m.body.toLowerCase().indexOf(q.toLowerCase());
+      if (idx >= 0) {
+        const from = Math.max(0, idx - 12);
+        extra.push(h('span', { class: 'snippet' },
+          (from > 0 ? '…' : '') + m.body.slice(from, idx).replace(/\s+/g, ' '),
+          h('mark', null, m.body.slice(idx, idx + q.length)),
+          m.body.slice(idx + q.length, idx + q.length + 40).replace(/\s+/g, ' ')));
       }
-      const linked = platform.isDesktop && !!n.file;
-      const states = [n.pinned && 'pinned', n.cipher && (isLocked(n) ? 'encrypted, locked' : 'encrypted, unlocked'), linked && 'linked to a file'].filter(Boolean).join(', ');
-      // In the flat (search or tag) list there are no headers, so the row names its folder.
-      const folderTag = !grouped && n.folder ? h('span', { class: 'note-folder' }, n.folder) : null;
-      const li = h('li', { class: grouped && n.folder ? 'note-row in-folder' : 'note-row', 'data-id': n.id, 'data-group': grouped ? n.folder : null },
-        h('button', {
-          type: 'button',
-          class: 'note-item',
-          'data-id': n.id,
-          'aria-current': String(n.id === S.activeId),
-        },
-        h('span', { class: 'note-mark', 'aria-hidden': 'true' }, mark),
-        h('span', { class: 'note-title' }, linked ? h('span', { class: 'note-file', 'aria-hidden': 'true' }, '⇄') : null, m.title,
-          states ? h('span', { class: 'sr-only' }, ` (${states})`) : null),
-        h('span', { class: 'note-meta' }, h('span', null, T.relativeTime(n.updated)), folderTag, extra)),
-        h('button', { type: 'button', class: 'note-del', 'data-id': n.id, 'aria-label': `Delete ${m.title}` }, '×'));
-      // draggable is not in the h() allow-list and the allow-list is deliberately not widened: it is set as a property, and the value is a fixed boolean, never data.
-      if (grouped) li.draggable = true;
-      return li;
+    } else if (m.tags.length) {
+      extra.push(h('span', { class: 'snippet' }, m.tags.slice(0, 3).map((t) => `#${t}`).join(' ')));
     }
+    const linked = platform.isDesktop && !!n.file;
+    const states = [grouped && n.folder && `in ${n.folder}`, n.pinned && 'pinned', n.cipher && (isLocked(n) ? 'encrypted, locked' : 'encrypted, unlocked'), linked && 'linked to a file'].filter(Boolean).join(', ');
+    // In the flat (search or tag) list there are no headers, so the row names its folder.
+    const folderTag = !grouped && n.folder ? h('span', { class: 'note-folder' }, n.folder) : null;
+    const li = h('li', { class: grouped && n.folder ? 'note-row in-folder' : 'note-row', 'data-id': n.id, 'data-group': grouped ? n.folder : null },
+      h('button', {
+        type: 'button',
+        class: 'note-item',
+        'data-id': n.id,
+        'aria-current': String(n.id === S.activeId),
+      },
+      h('span', { class: 'note-mark', 'aria-hidden': 'true' }, mark),
+      h('span', { class: 'note-title' }, linked ? h('span', { class: 'note-file', 'aria-hidden': 'true' }, '⇄') : null, m.title,
+        states ? h('span', { class: 'sr-only' }, ` (${states})`) : null),
+      h('span', { class: 'note-meta' }, h('span', null, T.relativeTime(n.updated)), folderTag, extra)),
+      h('button', { type: 'button', class: 'note-del', 'data-id': n.id, 'aria-label': `Delete ${m.title}` }, '×'));
+    // draggable is not in the h() allow-list and the allow-list is deliberately not widened: it is set as a property, and the value is a fixed boolean, never data.
+    if (grouped) li.draggable = true;
+    return li;
   }
 
   function renderList() {
+    dragId = null; // a drag cannot outlive the rows it started from
     const list = visibleNotes();
     const q = S.query.trim();
     const flat = isFlatList();
@@ -836,6 +835,9 @@
       if (setNoteFolder(note, group)) toast(group ? `Moved to ${group}.` : `Removed from ${old}.`);
     });
     list.addEventListener('dragend', () => { dragId = null; clearDropMarks(); });
+    // Whatever happens to a drag elsewhere, the id does not stay behind (after the list's own drop handler has run).
+    document.addEventListener('dragend', () => { dragId = null; clearDropMarks(); }, true);
+    document.addEventListener('drop', () => setTimeout(() => { dragId = null; clearDropMarks(); }, 0), true);
   }
 
   function renderTags() {
@@ -1006,7 +1008,10 @@
 
   const UNDO_MS = 10000;
 
-  /** Makes the pending delete final. Only now is the host told to forget a linked file; best effort, a failure is left for the next prune. */
+  /**
+   * Makes the pending delete final. Only now is the host told to forget a linked file, and only when no note on the
+   * page holds that link (another note may have taken it over during the undo window). Best effort: a failure is left for the next prune.
+   */
   function finalizePendingDelete() {
     const p = S.pendingDelete;
     if (!p) return;
@@ -1014,31 +1019,63 @@
     clearTimeout(p.timer);
     if (p.toastEl) p.toastEl.remove();
     if (platform.isDesktop) forgetFileState(p.note.id);
-    if (p.link) forgetHostLink(p.link.linkId);
+    if (p.link && !noteByLink(p.link.linkId)) forgetHostLink(p.link.linkId);
   }
 
-  function undoDelete(p) {
-    if (S.pendingDelete !== p) return; // already final
-    if (noteById(p.note.id)) return; // a note with this id exists: never two notes with one id
+  /**
+   * Puts the pending delete back. Returns whether the note is back. A refusal (the id exists, the note limit) ends the
+   * pending delete with a plain reason: nothing the user can do within the window would make a retry work.
+   */
+  function undoDelete(p = S.pendingDelete) {
+    if (!p || S.pendingDelete !== p) return false; // already final
+    if (noteById(p.note.id)) { finalizePendingDelete(); toast('That note is already back.'); return false; }
     if (S.notes.length >= store.LIMITS.notes) {
-      toast(`You have reached ${store.LIMITS.notes} notes. Delete some to make room, then press Undo again.`, 'error');
-      return;
+      finalizePendingDelete();
+      toast('You have the maximum number of notes. Delete one and import your backup to get this note back.', 'error');
+      return false;
     }
     S.pendingDelete = null;
     clearTimeout(p.timer);
+    if (p.toastEl) p.toastEl.remove();
+    const note = p.note;
+    const notes = [];
+    // Another note took this note's file link during the window: the note returns unlinked, so one file keeps one note.
+    if (note.file && noteByLink(note.file.linkId)) {
+      note.file = null;
+      if (platform.isDesktop) forgetFileState(note.id);
+      notes.push('Its file is now linked to another note.');
+    }
+    // The 101st distinct folder is not allowed: the note returns with no folder.
+    if (note.folder && !S.notes.some((n) => n.folder === note.folder) && store.folderList(S.notes).length >= store.LIMITS.folders) {
+      note.folder = '';
+      notes.push(`It is back without its folder, because you already have ${store.LIMITS.folders} folders.`);
+    }
     // The blank note made when the last note was deleted goes, unless the user has started using it.
     const blank = p.blankId ? noteById(p.blankId) : null;
     if (blank && !blank.body && !blank.cipher && !blank.pinned && !blank.folder && !blank.file && !blank.history.length && blank.updated === blank.created) {
       S.notes = S.notes.filter((n) => n.id !== blank.id);
       S.meta.delete(blank.id);
     }
-    S.notes.splice(Math.min(p.index, S.notes.length), 0, p.note); // an encrypted note has no key in S.keys, so it returns locked
+    S.notes.splice(Math.min(p.index, S.notes.length), 0, note); // an encrypted note has no key in S.keys, so it returns locked
     S.query = '';
     els.search.value = '';
-    openNote(p.note.id);
+    openNote(note.id); // renders the list, editor and preview
     renderTags();
     persistNow();
-    renderAll();
+    if (notes.length) toast(`Note restored. ${notes.join(' ')}`);
+    return true;
+  }
+
+  /**
+   * A file link held only by the pending delete: the host still has it, so the page must not treat it as free.
+   * The note is restored (one link per file), and its holder is returned; null when the link is not the pending note's.
+   */
+  function restorePendingHolding(linkId) {
+    const p = S.pendingDelete;
+    if (!p || !p.link || p.link.linkId !== linkId) return null;
+    // Whether or not the note can come back, this delete must not drop the link: the file is being opened or linked again.
+    p.link = null;
+    return undoDelete(p) ? noteByLink(linkId) : null;
   }
 
   async function deleteNote(note = active()) {
@@ -1065,7 +1102,7 @@
     renderAll();
     const p = { note, index, link, blankId, timer: 0, toastEl: null };
     S.pendingDelete = p;
-    p.toastEl = toast('Note deleted.', 'info', [{ label: 'Undo', fn: () => undoDelete(p) }]);
+    p.toastEl = toast('Note deleted. Press Ctrl+Z in the list or choose Undo.', 'info', [{ label: 'Undo', fn: () => undoDelete(p) }]);
     p.timer = setTimeout(finalizePendingDelete, UNDO_MS);
     if (fromList) {
       const row = [...els.noteList.querySelectorAll('.note-item')].find((b) => b.dataset.id === S.activeId);
@@ -1518,6 +1555,7 @@
       C('Note', 'Move to folder…', moveToFolder, null, !!note),
       C('Note', 'Remove from folder', removeFromFolder, null, !!(note && note.folder)),
       C('Note', 'Rename folder…', renameFolder, null, !!(note && note.folder)),
+      C('Note', 'Undo delete', () => undoDelete(), null, !!S.pendingDelete),
       C('Note', 'Delete note', () => deleteNote(), null, !!note),
       C('File', 'Save', saveCommand, 'Ctrl S', platform.isDesktop && !!note),
       C('File', 'Save as file…', () => saveAsFileFor(active()), 'Ctrl Shift S', platform.isDesktop && !!note),
@@ -3166,7 +3204,7 @@
   function reportFileError(err, prefix) {
     console.error('file action failed', errName(err));
     if (err instanceof PlatformError && err.userFacing && err.linkId) {
-      const holder = noteByLink(err.linkId);
+      const holder = noteByLink(err.linkId) || restorePendingHolding(err.linkId);
       toast('That file is already linked to another note.', 'error', holder ? [{ label: 'Show it', fn: () => openNote(holder.id) }] : null);
     } else {
       toast(`${prefix}: ${fileReason(err)}`, 'error');
@@ -3314,7 +3352,7 @@
 
   async function adoptOpened(res) {
     if (res.alreadyLinked) {
-      const holder = noteByLink(res.linkId);
+      const holder = noteByLink(res.linkId) || restorePendingHolding(res.linkId);
       if (holder) { await showOpenedNote(holder, res); return; }
     }
     if (S.notes.length >= store.LIMITS.notes) {
@@ -3699,6 +3737,11 @@
       if (b) openNote(b.dataset.id);
     });
     els.noteList.addEventListener('keydown', (e) => {
+      if ((e.key === 'z' || e.key === 'Z') && (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && S.pendingDelete) {
+        e.preventDefault();
+        undoDelete();
+        return;
+      }
       if (e.key !== 'Delete' || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
       const b = e.target instanceof Element ? e.target.closest('.note-item') : null;
       const n = b ? noteById(b.dataset.id) : null;
@@ -3849,6 +3892,7 @@
     window.addEventListener('pagehide', finalizePendingDelete);
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'hidden') {
+        finalizePendingDelete();
         if (S.saveTimer) saveNow();
         for (const id of [...S.sealTimers.keys()]) sealNow(id);
         if (S.settings.lockOnHide && S.keys.size) lockAll('Encrypted notes were locked because the tab was hidden.');

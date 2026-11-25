@@ -105,6 +105,7 @@
     if (typeof value !== 'string' || value.length > LIMITS.folderName * 8 || BAD_FOLDER_RE.test(value)) return '';
     const name = value.trim().replace(/\s+/g, ' ');
     if (name.length > LIMITS.folderName) return '';
+    if (/\p{Cf}/u.test(name)) return ''; // zero-width and direction-control characters can disguise a name
     return /[\p{L}\p{N}\p{P}\p{S}]/u.test(name) ? name : ''; // a name of invisible characters is no name
   }
 

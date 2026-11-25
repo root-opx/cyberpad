@@ -102,7 +102,7 @@ test('import file checks: extension allow-list, double extensions, size', () => 
 });
 
 test('import decoding rejects non-UTF-8 and binary', () => {
-  assert.equal(store.decodeImportBytes(new TextEncoder().encode('﻿hi\r\nthere')), 'hi\nthere');
+  assert.equal(store.decodeImportBytes(new TextEncoder().encode('\ufeffhi\r\nthere')), 'hi\nthere');
   assert.throws(() => store.decodeImportBytes(new Uint8Array([0xff, 0xfe, 0x00])), store.StoreError);
   assert.throws(() => store.decodeImportBytes(new Uint8Array([0x61, 0x00, 0x62])), store.StoreError);
 });
@@ -257,11 +257,11 @@ test('validateNotes keeps a duplicate link id only on the first note', () => {
 test('cleanFolder accepts a tidy name and rejects everything else', () => {
   assert.equal(store.cleanFolder('  Client   work '), 'Client work');
   assert.equal(store.cleanFolder('a'.repeat(40)), 'a'.repeat(40));
-  for (const bad of ['', '   ', 'a'.repeat(41), 'a/b', 'a\\b', 'a\u0008b', 'a\nb', '​', '​‍', '⁠ ﻿', '\u0085', 'a\u0000b', 'a\u007fb', 7, null, undefined, {}, ['x'], true]) {
+  for (const bad of ['', '   ', 'a'.repeat(41), 'a/b', 'a\\b', 'a\u0008b', 'a\nb', '\u200b', '\u200b\u200d', '\u2060 \ufeff', '\u0085', 'a\u0000b', 'a\u007fb', 7, null, undefined, {}, ['x'], true]) {
     assert.equal(store.cleanFolder(bad), '');
   }
   assert.equal(store.cleanFolder('__proto__'), '__proto__');
-  assert.equal(store.cleanFolder('A​B'), 'A​B');
+  for (const bad of ['A\u200bB', 'a\u202eb', '\u2066x\u2069']) assert.equal(store.cleanFolder(bad), '');
 });
 
 test('mergeNotes does not push the folder count past the limit', () => {
