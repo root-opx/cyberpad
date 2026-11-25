@@ -37,7 +37,7 @@ Then open http://localhost:8787.
 
 **Command palette (`Ctrl+K`)**
 - Runs every command and jumps to any note. Type `@` to jump to a heading in the current note.
-- Commands are grouped in sections (Note, File, View, Insert, Text, Tools, Vault, Security) listed on the left. `Tab` moves between sections, and typing searches all of them.
+- Commands are grouped in sections (Note, File, View, Insert, Text, Tools, Vault, Security) listed beside the commands. `Tab` moves to the next section and `Shift+Tab` back, and typing searches all of them.
 - Text transforms on the selection, or on the whole note if nothing is selected: case changes, sort, reverse, dedupe, trim, number lines, Base64, URL encode/decode, and JSON format/minify.
 - 25-minute focus timer and 5-minute break timer.
 

@@ -398,6 +398,22 @@ test('setHostTheme posts the theme and resolves on themeApplied', async () => {
   assert.equal(await done, true);
 });
 
+test('every theme the store knows is accepted by the bridge', async () => {
+  const { THEMES } = require('../js/core/store.js');
+  assert.ok(THEMES.length > 0);
+  for (const value of THEMES) {
+    const fake = fakeWebview();
+    const p = createPlatform(env({ chrome: fake.chrome }));
+    const done = p.setHostTheme(value);
+    await tick();
+    const m = fake.posted[fake.posted.length - 1];
+    assert.equal(m.type, 'theme');
+    assert.equal(m.theme, value);
+    fake.reply({ type: 'themeApplied', id: m.id });
+    assert.equal(await done, true);
+  }
+});
+
 test('setHostTheme refuses anything outside the three theme names and posts nothing', async () => {
   const fake = fakeWebview();
   const p = createPlatform(env({ chrome: fake.chrome }));

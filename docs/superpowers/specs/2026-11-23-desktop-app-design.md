@@ -138,6 +138,7 @@ The host project copies `index.html`, `css/`, and `js/` into a `wwwroot` folder 
 | `unlinkFile` | `{id, linkId}` | drop the link (never touches the file) | `{type:"fileUnlinked", id}` |
 | `revealFile` | `{id, linkId}` | open Explorer with the file selected | `{type:"fileRevealed", id}` |
 | `pruneLinks` | `{id, linkIds: string[] ≤ 2000}` | drop every link not in the list | `{type:"linksPruned", id}` |
+| `theme` | `{id, theme: "neon"\|"amber"\|"terminal"}` | colour the Windows title bar from constants held in the host; takes no gate | `{type:"themeApplied", id}` (an unexpected exception answers `rejected`) |
 
 `linkId` is exactly 32 lowercase hex characters, made by the host. The page never sends or receives a path, only link IDs and file names. Any file message can fail with `{type:"fileFailed", id, reason, linkId?}` (`linkId` only when the file is already linked to another note), and a `linkId` the host does not know is answered with `rejected`. A message the dispatcher refuses is answered with `{type:"rejected", id, reason}` when it carries a valid `id`.
 

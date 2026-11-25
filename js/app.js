@@ -564,7 +564,10 @@
     const theme = S.settings.theme;
     if (!platform.isDesktop || S.hostTheme === theme) return;
     S.hostTheme = theme;
-    platform.setHostTheme(theme).catch(() => { if (S.hostTheme === theme) S.hostTheme = null; });
+    platform.setHostTheme(theme).catch((err) => {
+      console.error('theme sync failed', err instanceof PlatformError ? err.reason : (err && err.name));
+      if (S.hostTheme === theme) S.hostTheme = null;
+    });
   }
 
   function applySettings() {
@@ -3503,9 +3506,13 @@
       } else if (e.key === 'Enter') {
         e.preventDefault();
         runPaletteItem(S.pal.idx);
-      } else if (paletteMode() === 'browse' && (e.key === 'Tab' || e.key === 'PageDown' || e.key === 'PageUp')) {
+      } else if (e.key === 'Tab') {
+        // Focus never leaves the search box; Tab only jumps sections in browse mode.
         e.preventDefault();
-        jumpPaletteSection(e.key === 'PageUp' || (e.key === 'Tab' && e.shiftKey) ? -1 : 1);
+        if (paletteMode() === 'browse') jumpPaletteSection(e.shiftKey ? -1 : 1);
+      } else if (paletteMode() === 'browse' && (e.key === 'PageDown' || e.key === 'PageUp')) {
+        e.preventDefault();
+        jumpPaletteSection(e.key === 'PageUp' ? -1 : 1);
       }
     });
     // mousedown must not take focus from the input, so keys keep working

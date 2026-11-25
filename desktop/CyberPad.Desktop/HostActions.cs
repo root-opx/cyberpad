@@ -89,6 +89,7 @@ public sealed partial class HostActions : IHostActions
         {
             await PostToUiAsync(ui, () => { apply(theme); return true; }, tcs).ConfigureAwait(false);
         }
+        // Recognised by message: depends on WindowClosedMessage, thrown by PostToUiAsync/CancelPendingDialog when the window is gone.
         catch (StoreException ex) when (ex.Message == WindowClosedMessage)
         {
             log("theme: window closed");

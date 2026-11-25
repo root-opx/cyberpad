@@ -998,7 +998,8 @@ dialog::backdrop { background: rgb(4 2 12 / 0.6); }
   }
   .palette-section[aria-pressed="true"] { border-left-color: transparent; border-bottom-color: var(--hot); }
   .palette-item { height: auto; min-height: 2.75rem; }
-  .palette-list { height: auto; max-height: 70dvh; }
+  /* The whole dialog (input, sections, list, footer) must fit under its 8vh top offset; 11rem is the rest of the dialog at its tallest (footer wrapped). */
+  .palette-list { height: auto; max-height: max(8rem, min(70dvh, calc(100dvh - 8vh - 11rem))); }
 }
 
 .modal {
@@ -1207,8 +1208,9 @@ body.crt::after {
 
   .wordmark { font-size: 1rem; }
   .chip-cmd kbd { display: none; }
-  /* Top bar, visual order = tab order: row 1 = menu, wordmark, search;
-     row 2 = layout switch, Commands. The theme picker lives in the palette. */
+  /* Top bar, visual order = tab order: menu, wordmark, search, layout switch, Commands.
+     The bar wraps onto a second row when they do not fit (two rows at 375 and 320 px;
+     one row at about 700 px, Commands alone on row 2 near 500 px). The theme picker lives in the palette. */
   .titlebar { flex-wrap: wrap; row-gap: 0.4rem; }
   .titlebar-actions { display: contents; }
   .theme-picker { display: none; }

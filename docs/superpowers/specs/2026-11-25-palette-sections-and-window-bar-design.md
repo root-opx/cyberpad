@@ -197,7 +197,7 @@ One sensible way for each fix, described below. No alternatives were worth keepi
 [Write|Split|Read]          [Commands]
 ```
 
-- Two rows instead of three: row 1 is the note-list toggle, the wordmark and search; row 2 is Write/Split/Read at the left and Commands at the right. Visual order must equal keyboard tab order, and the markup order was not changed.
+- The bar wraps onto a second row when its controls do not fit: two rows at 375 and 320 px (row 1 is the note-list toggle, the wordmark and search; row 2 is Write/Split/Read at the left and Commands at the right), while at wider phone and tablet widths everything fits on one row or Commands wraps alone. It was three rows before. Visual order must equal keyboard tab order, and the markup order was not changed.
 - The theme picker is hidden at this width; themes are in the palette under View. CRT and Sound are already hidden below 1100 px for the same reason.
 - No horizontal overflow at any width from 320 px up: the page is never wider than the window.
 
