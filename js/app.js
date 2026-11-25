@@ -115,6 +115,8 @@
   const isLocked = (n) => !!(n && n.cipher && !S.keys.has(n.id));
   const bodyOf = (n) => (n.cipher ? (S.plain.has(n.id) ? S.plain.get(n.id) : null) : n.body);
   const isEditable = (n) => !!n && !isLocked(n);
+  /** The last arrow typed, so one Backspace can give back the characters that made it. */
+  let arrowMemo = null;
 
   function metaOf(n) {
     const body = bodyOf(n);
@@ -408,20 +410,20 @@
     };
   }
 
-  async function encryptActive() {
-    const note = active();
-    if (!isEditable(note)) return;
-    if (note.cipher) { toast('This note is already encrypted.'); return; }
-
-    const fields = newPassphraseFields('enc');
+  /**
+   * The passphrase dialog shared by Encrypt note and the credentials note. It
+   * derives a key, runs `prepare()` (return false to stop and seal nothing),
+   * then seals `plain()` and hands the result to `commit(keyInfo, cipher, plain)`
+   * inside the same step. Resolves with the dialog result (true after a seal).
+   * Nothing is stored here; the caller decides what to do with the result.
+   */
+  async function sealWithNewPassphrase({ title, idPrefix, plain, prepare, commit, onError }) {
+    const fields = newPassphraseFields(idPrefix);
     const { pass1, pass2 } = fields;
     const err = h('p', { class: 'form-error', role: 'alert' });
-    let plainFile = null; // the text file this note was linked to, unlinked before any ciphertext exists
-    let unlinkFailed = false;
-
-    const ok = await showDialog({
-      title: 'Encrypt this note',
-      initialFocus: '#enc-pass',
+    return showDialog({
+      title,
+      initialFocus: `#${idPrefix}-pass`,
       body: [
         h('p', null, 'Only an encrypted copy will be saved, and its version history is deleted. If you forget the passphrase, nobody can recover the note.'),
         ...fields.nodes,
@@ -439,33 +441,15 @@
         btn.textContent = 'Encrypting…';
         try {
           const keyInfo = await vault.createKey(pass1.value);
-          if (platform.isDesktop && note.file) {
-            // A .txt/.md link must be gone before the first ciphertext exists; if it can't be removed, seal nothing.
-            const link = note.file;
-            try {
-              await platform.unlinkFile(link.linkId);
-            } catch (e) {
-              // A link the host does not know is already gone there: that counts as unlinked.
-              if (!FL.isUnknownLink(e)) {
-                console.error('unlink failed', errName(e));
-                unlinkFailed = true;
-                return null;
-              }
-            }
-            dropLink(note);
-            plainFile = link;
-          }
-          const plain = note.body;
-          note.cipher = await vault.seal(keyInfo, plain);
-          note.body = '';
-          note.history = [];
-          S.keys.set(note.id, keyInfo);
-          S.plain.set(note.id, plain);
+          if (prepare && (await prepare()) === false) return null;
+          const text = plain();
+          const cipher = await vault.seal(keyInfo, text);
+          commit(keyInfo, cipher, text);
           return true;
         } catch (e) {
           if (e instanceof vault.VaultError) err.textContent = e.message;
           else { console.error(e); err.textContent = 'Encryption failed in this browser. The note was not changed.'; }
-          if (plainFile) { persistNow(); renderList(); updateStatus(); } // the link is already gone: keep that on disk
+          if (onError) onError();
           btn.disabled = false;
           btn.textContent = 'Encrypt note';
           return undefined;
@@ -473,6 +457,49 @@
           pass1.value = '';
           pass2.value = '';
         }
+      },
+    });
+  }
+
+  async function encryptActive() {
+    const note = active();
+    if (!isEditable(note)) return;
+    if (note.cipher) { toast('This note is already encrypted.'); return; }
+
+    let plainFile = null; // the text file this note was linked to, unlinked before any ciphertext exists
+    let unlinkFailed = false;
+
+    const ok = await sealWithNewPassphrase({
+      title: 'Encrypt this note',
+      idPrefix: 'enc',
+      plain: () => note.body,
+      prepare: async () => {
+        if (!(platform.isDesktop && note.file)) return true;
+        // A .txt/.md link must be gone before the first ciphertext exists; if it can't be removed, seal nothing.
+        const link = note.file;
+        try {
+          await platform.unlinkFile(link.linkId);
+        } catch (e) {
+          // A link the host does not know is already gone there: that counts as unlinked.
+          if (!FL.isUnknownLink(e)) {
+            console.error('unlink failed', errName(e));
+            unlinkFailed = true;
+            return false;
+          }
+        }
+        dropLink(note);
+        plainFile = link;
+        return true;
+      },
+      commit: (keyInfo, cipher, plain) => {
+        note.cipher = cipher;
+        note.body = '';
+        note.history = [];
+        S.keys.set(note.id, keyInfo);
+        S.plain.set(note.id, plain);
+      },
+      onError: () => {
+        if (plainFile) { persistNow(); renderList(); updateStatus(); } // the link is already gone: keep that on disk
       },
     });
     if (unlinkFailed) {
@@ -485,6 +512,45 @@
       if (plainFile) noticePlainFileLeft(note, plainFile);
       else toast('Note encrypted. Only the encrypted copy is saved.');
     }
+  }
+
+  /**
+   * A new encrypted note holding the credentials template. The body lives only
+   * in a local variable until it is sealed; the note record is created after
+   * the seal, with the cipher set and an empty stored body. Cancel or failure
+   * adds and saves nothing.
+   */
+  async function newCredentialsNote() {
+    if (S.notes.length >= store.LIMITS.notes) {
+      toast(`You have reached ${store.LIMITS.notes} notes. Delete some to make room.`, 'error');
+      return;
+    }
+    let sealed = null;
+    const ok = await sealWithNewPassphrase({
+      title: 'New encrypted credentials note',
+      idPrefix: 'cred',
+      plain: () => T.credentialsTemplate(new Date()),
+      commit: (keyInfo, cipher, plain) => { sealed = { keyInfo, cipher, plain }; },
+    });
+    if (!ok || !sealed) return;
+    if (S.notes.length >= store.LIMITS.notes) { // the list may have grown while the dialog was open
+      toast(`You have reached ${store.LIMITS.notes} notes. Delete some to make room.`, 'error');
+      return;
+    }
+    const current = active();
+    const n = store.createNote('');
+    n.cipher = sealed.cipher;
+    n.folder = store.cleanFolder(current ? current.folder : '');
+    S.notes.push(n);
+    S.keys.set(n.id, sealed.keyInfo);
+    S.plain.set(n.id, sealed.plain);
+    S.query = '';
+    els.search.value = '';
+    openNote(n.id);
+    renderTags();
+    persistNow();
+    renderAll();
+    toast('Credentials note created. Only the encrypted copy is saved.');
   }
 
   async function decryptActive() {
@@ -936,6 +1002,7 @@
   function openNote(id, { focus = true } = {}) {
     if (!noteById(id)) return;
     closeSlash();
+    arrowMemo = null;
     S.activeId = id;
     expandFolder(noteById(id).folder); // opening a note shows the folder it is in
     schedulePersist();
@@ -1248,13 +1315,26 @@
     replaceRange(ed.selectionStart, ed.selectionEnd, text);
   }
 
-  function onEditorInput() {
+  function onEditorInput(e) {
     const note = active();
     if (!isEditable(note)) return;
+    arrowMemo = null;
     const value = els.editor.value;
     if (value.length > store.LIMITS.body) {
       toast('This note has reached the size limit.', 'error');
       return;
+    }
+    // "->" becomes an arrow as it is typed. The replacement raises its own input event, which does the rest once.
+    if (S.settings.arrows && e && e.inputType === 'insertText' && !e.isComposing
+      && typeof e.data === 'string' && e.data.length === 1
+      && els.editor.selectionStart === els.editor.selectionEnd) {
+      const r = T.arrowReplacement(value, els.editor.selectionStart, e.data);
+      if (r) {
+        const original = value.slice(r.start, r.end);
+        replaceRange(r.start, r.end, r.insert);
+        arrowMemo = { pos: r.start, original, insert: r.insert };
+        return;
+      }
     }
     note.updated = Date.now();
     if (note.cipher) {
@@ -1302,6 +1382,20 @@
     if (S.settings.sound && !e.ctrlKey && !e.metaKey && !e.altKey && !e.repeat
       && (e.key.length === 1 || e.key === 'Enter' || e.key === 'Backspace')) {
       sound.key(e.key === 'Enter' ? 'enter' : e.key === ' ' ? 'space' : 'key');
+    }
+
+    // Backspace right after an automatic arrow gives back the typed characters; any other key forgets it.
+    const memo = arrowMemo;
+    if (!['Shift', 'Control', 'Alt', 'Meta', 'CapsLock'].includes(e.key)) arrowMemo = null;
+    if (memo && e.key === 'Backspace' && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && !e.isComposing) {
+      const ed = els.editor;
+      if (ed.selectionStart === memo.pos + 1 && ed.selectionEnd === memo.pos + 1
+        && ed.value.slice(memo.pos, memo.pos + 1) === memo.insert) {
+        e.preventDefault();
+        replaceRange(memo.pos, memo.pos + 1, memo.original);
+        arrowMemo = null;
+        return;
+      }
     }
 
     if (e.key === 'Escape') { S.tabEscape = true; return; }
@@ -1417,6 +1511,13 @@
     const start = sl.start;
     const end = els.editor.selectionStart;
     closeSlash();
+    const note = active();
+    if (cmd.name === 'credentials' && note && !note.cipher) {
+      // In a plain note the template is never inserted: drop the typed text and make the encrypted note.
+      replaceRange(start, end, '');
+      newCredentialsNote();
+      return;
+    }
     insertExpansion(ex, start, end);
     closeSlash();
   }
@@ -1575,6 +1676,7 @@
       ...store.THEMES.filter((t) => t !== S.settings.theme).map((t) => C('Theme', `Theme: ${THEME_NAMES[t]}`, () => setTheme(t))),
       C('View', S.settings.crt ? 'Turn off CRT effect' : 'Turn on CRT effect', toggleCrt),
       C('View', S.settings.sound ? 'Turn off typing sounds' : 'Turn on typing sounds', toggleSound),
+      C('View', S.settings.arrows ? 'Turn off arrow replacement' : 'Turn on arrow replacement', toggleArrows),
       C('View', S.settings.boot ? 'Skip the boot screen on start' : 'Show the boot screen on start', toggleBoot),
       C('View', 'Keyboard shortcuts', showShortcuts, 'F1'),
       C('View', 'About CyberPad', showAbout, null, platform.isDesktop),
@@ -1585,6 +1687,7 @@
       C('Templates', 'Insert IOC table', () => insertSlash('ioc'), '/ioc', editable),
       C('Templates', 'Insert incident timeline (UTC)', () => insertSlash('timeline'), '/timeline', editable),
       C('Templates', 'Insert UTC timestamp', () => insertSlash('utc'), '/utc', editable),
+      C('Templates', 'New encrypted credentials note', newCredentialsNote, '/credentials'),
       tf('UPPERCASE', 'upper'),
       tf('lowercase', 'lower'),
       tf('Title Case', 'title'),
@@ -2393,6 +2496,12 @@
     saveSettings();
     if (S.settings.sound) sound.key('key');
     toast(S.settings.sound ? 'Typing sounds on.' : 'Typing sounds off.');
+  }
+
+  function toggleArrows() {
+    S.settings.arrows = !S.settings.arrows;
+    saveSettings();
+    toast(S.settings.arrows ? 'Arrow replacement on.' : 'Arrow replacement off.');
   }
 
   function toggleBoot() {
@@ -3692,7 +3801,7 @@
     ed.addEventListener('paste', onEditorPaste);
     ['keyup', 'mouseup', 'select', 'focus'].forEach((t) => ed.addEventListener(t, scheduleStatus));
     ed.addEventListener('blur', () => setTimeout(() => { if (document.activeElement !== ed) closeSlash(); }, 120));
-    ed.addEventListener('mousedown', closeSlash);
+    ed.addEventListener('mousedown', () => { arrowMemo = null; closeSlash(); });
     ed.addEventListener('scroll', () => {
       if (S.slash.open) renderSlash();
       if (S.settings.view !== 'split') return;

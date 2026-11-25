@@ -68,6 +68,10 @@ test('slash expansions', () => {
   const table = T.expandSlash('table', ctx);
   assert.equal(table.text.slice(table.caret - 2, table.caret + 2), '|  |'); // caret inside first body cell
   assert.equal(T.expandSlash('nope', ctx), null);
+  const cred = T.expandSlash('credentials', ctx);
+  assert.equal(cred.text, T.credentialsTemplate(ctx.now));
+  assert.equal(cred.block, true);
+  assert.ok(T.SLASH.some((c) => c.name === 'credentials' && c.desc === 'New encrypted credentials note'));
 });
 
 test('fuzzyScore ranks substring and subsequence matches', () => {

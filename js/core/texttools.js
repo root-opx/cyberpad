@@ -319,6 +319,7 @@
     { name: 'finding', desc: 'Pentest finding template', expand: (c) => findingTemplate(c.now) },
     { name: 'ioc', desc: 'IOC tracking table', expand: (c) => iocTableTemplate(c.now) },
     { name: 'timeline', desc: 'Incident timeline table (UTC)', expand: (c) => timelineTemplate(c.now) },
+    { name: 'credentials', desc: 'New encrypted credentials note', expand: (c) => { const text = credentialsTemplate(c.now); return { text, caret: text.length, block: true }; } },
     { name: 'todo', desc: 'Task item', expand: () => '- [ ] ' },
     { name: 'h1', desc: 'Big heading', expand: () => '# ' },
     { name: 'h2', desc: 'Section heading', expand: () => '## ' },
