@@ -104,3 +104,43 @@ test('engagement templates and UTC stamps', () => {
   assert.match(T.expandSlash('timeline', { now }).text, /\| 2026-11-23 14:05:12 UTC \| {2}\|/);
   assert.equal(T.expandSlash('nope', { now }), null);
 });
+
+test('sectionOf merges Theme, Templates and Transform and leaves the rest', () => {
+  assert.equal(T.sectionOf('Theme'), 'View');
+  assert.equal(T.sectionOf('Templates'), 'Insert');
+  assert.equal(T.sectionOf('Transform'), 'Text');
+  for (const g of ['Note', 'File', 'View', 'Insert', 'Tools', 'Vault', 'Security', 'Recent notes']) assert.equal(T.sectionOf(g), g);
+  assert.equal(T.sectionOf('__proto__'), '__proto__');
+});
+
+test('paletteSections orders, merges, drops empty sections and keeps item order', () => {
+  const items = [
+    { group: 'Security', title: 's1' }, { group: 'Templates', title: 't1' }, { group: 'Note', title: 'n1' },
+    { group: 'Insert', title: 'i1' }, { group: 'Theme', title: 'th1' }, { group: 'Recent notes', title: 'r1' },
+    { group: 'View', title: 'v1' }, { group: 'Transform', title: 'x1' },
+  ];
+  const out = T.paletteSections(items);
+  assert.deepEqual(out.map((s) => s.name), ['Recent notes', 'Note', 'View', 'Insert', 'Text', 'Security']);
+  assert.deepEqual(out.find((s) => s.name === 'Insert').items.map((i) => i.title), ['t1', 'i1']);
+  assert.deepEqual(out.find((s) => s.name === 'View').items.map((i) => i.title), ['th1', 'v1']);
+  assert.equal(items.length, 8);
+});
+
+test('paletteSections handles no items, one section and unknown groups', () => {
+  assert.deepEqual(T.paletteSections([]), []);
+  assert.deepEqual(T.paletteSections([{ group: 'Vault', title: 'a' }]).map((s) => s.name), ['Vault']);
+  const out = T.paletteSections([{ group: 'Zed', title: 'z' }, { group: 'Note', title: 'n' }, { group: 'constructor', title: 'c' }]);
+  assert.deepEqual(out.map((s) => s.name), ['Note', 'Zed', 'constructor']);
+});
+
+test('paletteScore still matches old group names and also the new section names', () => {
+  const upper = { group: 'Transform', title: 'UPPERCASE' };
+  const finding = { group: 'Templates', title: 'Insert pentest finding' };
+  const amber = { group: 'Theme', title: 'Theme: Amber' };
+  assert.ok(T.paletteScore('transform', upper) > 0);
+  assert.ok(T.paletteScore('text', upper) > 0);
+  assert.ok(T.paletteScore('templates', finding) > 0);
+  assert.ok(T.paletteScore('view', amber) > 0);
+  assert.ok(T.paletteScore('zzzz', upper) <= 0);
+  assert.equal(T.paletteScore('upper', upper), T.fuzzyScore('upper', 'UPPERCASE'));
+});

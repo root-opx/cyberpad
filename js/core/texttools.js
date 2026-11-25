@@ -324,6 +324,35 @@
     return score;
   }
 
+  // ---- palette sections -------------------------------------------------
+
+  const PALETTE_SECTIONS = Object.freeze(['Recent notes', 'Note', 'File', 'View', 'Insert', 'Text', 'Tools', 'Vault', 'Security']);
+  const SECTION_RENAMES = new Map([['Theme', 'View'], ['Templates', 'Insert'], ['Transform', 'Text']]);
+
+  function sectionOf(group) {
+    return SECTION_RENAMES.has(group) ? SECTION_RENAMES.get(group) : group;
+  }
+
+  function paletteSections(items) {
+    const bySection = new Map();
+    for (const item of items) {
+      const name = sectionOf(item.group);
+      if (!bySection.has(name)) bySection.set(name, []);
+      bySection.get(name).push(item);
+    }
+    const known = PALETTE_SECTIONS.filter((name) => bySection.has(name));
+    const extra = [...bySection.keys()].filter((name) => !PALETTE_SECTIONS.includes(name));
+    return [...known, ...extra].map((name) => ({ name, items: bySection.get(name) }));
+  }
+
+  function paletteScore(query, item) {
+    return Math.max(
+      fuzzyScore(query, item.title),
+      fuzzyScore(query, `${item.group} ${item.title}`) - 50,
+      fuzzyScore(query, `${sectionOf(item.group)} ${item.title}`) - 50,
+    );
+  }
+
   function relativeTime(ts, now = Date.now()) {
     const s = Math.round((now - ts) / 1000);
     if (s < 45) return 'just now';
@@ -337,5 +366,6 @@
     TransformError, TRANSFORMS, SLASH,
     ymd, hm, utcStamp, isoWeek, stats, position, deriveTitle, extractTags, extractWikiLinks, headings,
     listContinuation, isTask, toggleTask, numberStats, slugify, expandSlash, fuzzyScore, relativeTime,
+    PALETTE_SECTIONS, sectionOf, paletteSections, paletteScore,
   };
 });
