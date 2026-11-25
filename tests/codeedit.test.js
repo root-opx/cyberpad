@@ -299,7 +299,6 @@ test('Tab with an empty text', () => {
 
 test('Tab with a selection inside one line replaces it with spaces up to the next stop from the selection start', () => {
   assert.equal(tab('ab«cd»ef', 'python'), 'ab  ¦ef');
-  assert.equal(tab('«abcd»', 'python'), '    ¦');
   assert.equal(tab('x = «1»', 'javascript'), 'x =   ¦'); // column 4 is a stop: a full unit
   assert.equal(tab('a«bc»d', 'go'), 'a\t¦d');
 });
@@ -331,7 +330,7 @@ test('Tab on several lines leaves empty lines empty', () => {
 
 test('Tab on a selection of the whole text', () => {
   assert.equal(tab('«a\nb»', 'python'), '    «a\n    b»');
-  assert.equal(tab('«a»', 'python'), '    ¦');
+  assert.equal(tab('«a»', 'python'), '    «a»'); // the whole line selected: indented, not replaced
   assert.equal(tab('«\n»', 'python'), '«\n»'); // only empty lines: nothing to indent
 });
 
@@ -370,12 +369,13 @@ test('Shift+Tab in Go removes one tab, or up to four leading spaces', () => {
   assert.equal(tab('      a¦', 'go', true), '  a¦');
 });
 
-test('Shift+Tab with nothing to remove returns null', () => {
-  assert.equal(tab('a¦', 'python', true), null);
-  assert.equal(tab('¦', 'python', true), null);
-  assert.equal(tab('«a\nb»', 'python', true), null);
+test('Shift+Tab with nothing to remove is handled as a no-op, so focus never leaves the editor', () => {
+  assert.equal(tab('a¦', 'python', true), 'a¦');
+  assert.equal(tab('¦', 'python', true), '¦');
+  assert.equal(tab('«a\nb»', 'python', true), '«a\nb»');
+  assert.deepEqual(C.tab('ab', 1, 2, 'python', true), { start: 1, end: 1, insert: '', selStart: 1, selEnd: 2 });
   assert.equal(tab('x\n  ¦a', 'go', true), 'x\n¦a'); // not null: two spaces are removable in Go
-  assert.equal(tab('a ¦b', 'python', true), null); // the space is not leading
+  assert.equal(tab('a ¦b', 'python', true), 'a ¦b'); // the space is not leading
 });
 
 test('Shift+Tab with the caret inside the indentation being removed clamps it to the line start', () => {
@@ -566,6 +566,117 @@ test('every language with openers: Enter after its first opener indents by its u
     const none = C.enter('x', 1, 1, l.id);
     assert.equal(none.insert, '\n', l.id);
   }
+});
+
+// ---- review round 1 ----
+
+test('Tab with the whole line selected from column 0 indents the line and keeps its text', () => {
+  assert.equal(tab('«abcd»', 'python'), '    «abcd»');
+  assert.equal(tab('x\n«abcd»\ny', 'go'), 'x\n\t«abcd»\ny');
+  assert.equal(tab('«abcd»\r\nz', 'python'), '    «abcd»\r\nz');
+});
+
+test('Tab with a line selected from its first non-blank to its end indents the line', () => {
+  assert.equal(tab('  «abcd»', 'python'), '      «abcd»');
+  assert.equal(tab('«  abcd»', 'python'), '    «  abcd»');
+});
+
+test('Tab with a partial selection inside one line still replaces it with spaces', () => {
+  assert.equal(tab('«abc»d', 'python'), '    ¦d'); // from column 0 but not to the end of the line
+  assert.equal(tab('a«bcd»', 'python'), 'a   ¦'); // not from the first character
+  assert.equal(tab('ab«c»d', 'python'), 'ab  ¦d');
+});
+
+test('positions that split a surrogate pair give null from all four functions', () => {
+  const t = '  \u{1F600}  ';
+  const mid = 3; // between the two halves
+  for (const [s, e] of [[mid, mid], [0, mid], [mid, t.length]]) {
+    assert.equal(C.enter(t, s, e, 'javascript'), null);
+    assert.equal(C.tab(t, s, e, 'javascript', false), null);
+    assert.equal(C.tab(t, s, e, 'javascript', true), null);
+    assert.equal(C.backspace(t, s, e, 'javascript'), null);
+    assert.equal(C.closer(t, s, e, 'javascript', '}'), null);
+  }
+  assert.ok(C.enter(t, 2, 2, 'javascript'));
+  assert.ok(C.enter(t, 4, 4, 'javascript'));
+  assert.equal(enter('😀 {¦}', 'javascript'), '😀 {\n  ¦\n}');
+});
+
+test('tab: shift must be a boolean or undefined; anything else gives null', () => {
+  assert.ok(C.tab('  a', 2, 2, 'python', undefined));
+  assert.ok(C.tab('  a', 2, 2, 'python', false));
+  assert.ok(C.tab('  a', 2, 2, 'python', true));
+  for (const s of [1, 0, 'true', null, {}, []]) assert.equal(C.tab('  a', 2, 2, 'python', s), null, JSON.stringify(s));
+});
+
+const commentRows = [
+  ['python', 'if x:  # check¦', 'if x:  # check\n    ¦'],
+  ['python', '# if x:¦', '# if x:\n¦'],
+  ['python', 'x = "#"¦', 'x = "#"\n¦'],
+  ['python', 'x = "#":¦', 'x = "#":\n    ¦'],
+  ['python', 'x = "a # b":¦', 'x = "a # b":\n    ¦'],
+  ['python', 'f(a#b:¦', 'f(a#b:\n    ¦'], // a # not after whitespace is no comment; the colon still opens
+  ['javascript', 'if (x) { // c¦', 'if (x) { // c\n  ¦'],
+  ['javascript', 'if (x) { /* c */¦', 'if (x) { /* c */\n  ¦'],
+  ['javascript', 'if (x) { /* c */  ¦', 'if (x) { /* c */  \n  ¦'],
+  ['javascript', 'x = 1; // {¦', 'x = 1; // {\n¦'],
+  ['javascript', 'url = "http://x"¦', 'url = "http://x"\n¦'],
+  ['javascript', 'url = "http://x" + f(¦', 'url = "http://x" + f(\n  ¦'],
+  ['javascript', 'a /* x */ b /* y */¦', 'a /* x */ b /* y */\n¦'],
+  ['javascript', 'a /* x */ b {¦', 'a /* x */ b {\n  ¦'],
+  ['javascript', 'a { /* x */ y /* z */¦', 'a { /* x */ y /* z */\n¦'],
+  ['css', 'a { /* c */¦', 'a { /* c */\n  ¦'],
+  ['css', 'a { // not a comment¦', 'a { // not a comment\n¦'],
+  ['c', 'int f() { // c¦', 'int f() { // c\n    ¦'],
+  ['go', 'func f() { // c¦', 'func f() { // c\n\t¦'],
+  ['sql', 'SELECT ( -- c¦', 'SELECT ( -- c\n    ¦'],
+  ['bash', 'if x; then # c¦', 'if x; then # c\n  ¦'],
+  ['bash', 'echo ok # then¦', 'echo ok # then\n¦'],
+  ['powershell', 'if ($x) { # c¦', 'if ($x) { # c\n    ¦'],
+  ['yaml', 'key: # c¦', 'key: # c\n  ¦'],
+  ['yaml', 'key: "a # b":¦', 'key: "a # b":\n  ¦'],
+];
+for (const [id, before, after] of commentRows) {
+  test(`Enter (${id}) ignores a trailing comment: ${JSON.stringify(before)}`, () => {
+    assert.equal(enter(before, id), after);
+  });
+}
+
+test('Enter with an apostrophe or an odd number of quotes does not strip, and never throws', () => {
+  assert.equal(enter("echo don't # then¦", 'bash'), "echo don't # then\n  ¦"); // odd ': not stripped, so it ends in then
+  assert.equal(enter('x = "a // b {¦', 'javascript'), 'x = "a // b {\n  ¦');
+});
+
+test('Bash word openers must be whole shell words', () => {
+  for (const [before, after] of [
+    ['echo $do¦', 'echo $do\n¦'], ['cd /tmp/then¦', 'cd /tmp/then\n¦'], ['redo¦', 'redo\n¦'], ['done¦', 'done\n¦'],
+    ['x-else¦', 'x-else\n¦'], ['# do¦', '# do\n¦'],
+    ['if x; then¦', 'if x; then\n  ¦'], ['while true; do¦', 'while true; do\n  ¦'], ['do¦', 'do\n  ¦'], ['\telse¦', '\telse\n\t  ¦'],
+  ]) assert.equal(enter(before, 'bash'), after, before);
+});
+
+test('YAML block scalar headers indent the next line', () => {
+  for (const h of ['|', '>', '|-', '>-', '|+', '>+']) {
+    assert.equal(enter(`run: ${h}¦`, 'yaml'), `run: ${h}\n  ¦`, h);
+  }
+  assert.equal(enter('  run: |  ¦', 'yaml'), '  run: |  \n    ¦');
+  assert.equal(enter('- |¦', 'yaml'), '- |\n  ¦');
+  assert.equal(enter('x: a|¦', 'yaml'), 'x: a|\n¦');
+  assert.equal(enter('x: a>¦', 'yaml'), 'x: a>\n¦');
+  assert.equal(enter('run: |¦', 'python'), 'run: |\n¦');
+});
+
+test('Enter on a whitespace-only line keeps the indentation for the new line and leaves the old line whitespace as it is', () => {
+  const t = '    ';
+  const r = C.enter(t, 4, 4, 'python');
+  assert.equal(t.slice(0, r.start) + r.insert + t.slice(r.end), '    \n    ');
+});
+
+test('Enter does its comment stripping on its own line only (a 200,000-char line stays quick)', () => {
+  const t = 'x = "' + '#'.repeat(200000);
+  const t0 = process.hrtime.bigint();
+  C.enter(t, t.length, t.length, 'python');
+  assert.ok(Number(process.hrtime.bigint() - t0) / 1e6 < 100);
 });
 
 // ---- cost ----

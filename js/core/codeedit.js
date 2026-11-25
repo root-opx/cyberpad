@@ -54,7 +54,16 @@
     if (typeof text !== 'string') return null;
     if (!Number.isInteger(start) || !Number.isInteger(end)) return null;
     if (start < 0 || start > end || end > text.length) return null;
+    if (splitsPair(text, start) || splitsPair(text, end)) return null; // never create a lone surrogate
     return language(id);
+  }
+
+  /** True when pos sits between a high and a low surrogate. */
+  function splitsPair(text, pos) {
+    if (pos <= 0 || pos >= text.length) return false;
+    const hi = text.charCodeAt(pos - 1);
+    const lo = text.charCodeAt(pos);
+    return hi >= 0xD800 && hi <= 0xDBFF && lo >= 0xDC00 && lo <= 0xDFFF;
   }
 
   const lineStart = (text, pos) => (pos === 0 ? 0 : text.lastIndexOf('\n', pos - 1) + 1);
@@ -63,7 +72,6 @@
     return i === -1 ? text.length : i;
   };
   const isWs = (c) => c === ' ' || c === '\t';
-  const isWordChar = (c) => c !== undefined && /[A-Za-z0-9_]/.test(c);
 
   /** Length of the run of spaces and tabs at text[from..limit). */
   function wsRun(text, from, limit) {
@@ -81,13 +89,50 @@
     return n;
   }
 
-  /** The opener that the text before the caret ends in (trailing spaces ignored), or ''. */
+  const LINE_COMMENT = Object.freeze({
+    c: '//', cpp: '//', csharp: '//', go: '//', java: '//', javascript: '//', typescript: '//', rust: '//',
+    python: '#', yaml: '#', bash: '#', powershell: '#', sql: '--',
+  });
+  const BLOCK_COMMENT = Object.freeze(['c', 'cpp', 'csharp', 'css', 'go', 'java', 'javascript', 'typescript', 'rust']);
+
+  /**
+   * `s` (the line before the caret) without a trailing comment. Conservative: a marker counts only when
+   * the quote characters before it, counted naively, are even in number for both " and '.
+   */
+  function stripComment(s, lang) {
+    const line = LINE_COMMENT[lang.id];
+    const block = BLOCK_COMMENT.includes(lang.id);
+    let dq = 0;
+    let sq = 0;
+    for (let i = 0; i < s.length; i += 1) {
+      const c = s[i];
+      if (c === '"') dq += 1;
+      else if (c === "'") sq += 1;
+      else if (dq % 2 === 0 && sq % 2 === 0) {
+        if (line && s.startsWith(line, i) && (line !== '#' || i === 0 || isWs(s[i - 1]))) return s.slice(0, i);
+        if (block && s.startsWith('/*', i)) {
+          const rest = s.slice(i).replace(/[ \t]+$/, '');
+          if (rest.length >= 4 && rest.endsWith('*/') && rest.indexOf('*/', 2) === rest.length - 2) return s.slice(0, i);
+        }
+      }
+    }
+    return s;
+  }
+
+  /** The opener that the code before the caret ends in (comment and trailing spaces ignored), or ''. */
   function openerBefore(text, ls, start, lang) {
-    let e = start;
-    while (e > ls && isWs(text[e - 1])) e -= 1;
+    let s = stripComment(text.slice(ls, start), lang);
+    let e = s.length;
+    while (e > 0 && isWs(s[e - 1])) e -= 1;
+    s = s.slice(0, e);
+    if (lang.id === 'yaml' && /(^|[ \t])[|>][-+]?$/.test(s)) return '|'; // a block scalar header
     for (const o of lang.openers) {
-      if (e - o.length < ls || text.slice(e - o.length, e) !== o) continue;
-      if (/^[a-z]+$/.test(o) && isWordChar(text[e - o.length - 1])) continue; // `redo` is not `do`
+      if (s.length < o.length || !s.endsWith(o)) continue;
+      if (/^[a-z]+$/.test(o)) {
+        // a whole shell word: `redo`, `$do` and `/tmp/then` are not openers
+        const prev = s[s.length - o.length - 1];
+        if (prev !== undefined && !isWs(prev) && prev !== ';') continue;
+      }
       return o;
     }
     return '';
@@ -145,7 +190,8 @@
     const { first, last } = touched(text, start, end);
     const lines = linesOf(text, first, last);
     const removed = lines.map((l) => removable(text, l.ls, l.le, lang));
-    if (removed.every((n) => n === 0)) return null;
+    // Nothing to remove: still handled (a no-op), or the browser would move focus out of the editor.
+    if (removed.every((n) => n === 0)) return { start, end: start, insert: '', selStart: start, selEnd: end };
     const insert = lines.map((l, i) => text.slice(l.ls + removed[i], l.le)).join('\n');
     // A position inside a removed indentation goes to the start of its line, never before it.
     const shiftPos = (p) => p - lines.reduce((sum, l, i) => sum + Math.min(removed[i], Math.max(0, p - l.ls)), 0);
@@ -155,9 +201,17 @@
   function tab(text, start, end, id, shift) {
     const lang = check(text, start, end, id);
     if (!lang) return null;
-    if (shift) return dedentLines(text, start, end, lang);
+    if (shift !== undefined && typeof shift !== 'boolean') return null;
+    if (shift === true) return dedentLines(text, start, end, lang);
     const nl = text.indexOf('\n', start);
     if (nl !== -1 && nl < end) return indentLines(text, start, end, lang);
+    if (end > start) {
+      // The line's whole text selected (from column 0 or the first non-blank): indent it, never replace it.
+      const ls = lineStart(text, start);
+      let le = lineEnd(text, start);
+      if (le > ls && text[le - 1] === '\r') le -= 1;
+      if (start <= ls + wsRun(text, ls, le) && end >= le) return indentLines(text, start, end, lang);
+    }
     let insert = lang.unit;
     if (lang.unit !== '\t') {
       // A tab in the indentation counts as advancing to the next stop of one unit.
