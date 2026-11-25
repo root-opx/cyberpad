@@ -417,7 +417,7 @@
    * inside the same step. Resolves with the dialog result (true after a seal).
    * Nothing is stored here; the caller decides what to do with the result.
    */
-  async function sealWithNewPassphrase({ title, idPrefix, plain, prepare, commit, onError }) {
+  async function sealWithNewPassphrase({ title, intro, submitLabel, failureText, idPrefix, plain, prepare, commit, onError }) {
     const fields = newPassphraseFields(idPrefix);
     const { pass1, pass2 } = fields;
     const err = h('p', { class: 'form-error', role: 'alert' });
@@ -425,13 +425,13 @@
       title,
       initialFocus: `#${idPrefix}-pass`,
       body: [
-        h('p', null, 'Only an encrypted copy will be saved, and its version history is deleted. If you forget the passphrase, nobody can recover the note.'),
+        h('p', null, intro),
         ...fields.nodes,
         err,
       ],
       actions: [
         { label: 'Cancel', value: null },
-        { label: 'Encrypt note', submit: true, className: 'btn-primary' },
+        { label: submitLabel, submit: true, className: 'btn-primary' },
       ],
       onSubmit: async (form) => {
         const problem = fields.problem();
@@ -448,10 +448,10 @@
           return true;
         } catch (e) {
           if (e instanceof vault.VaultError) err.textContent = e.message;
-          else { console.error(e); err.textContent = 'Encryption failed in this browser. The note was not changed.'; }
+          else { console.error(e); err.textContent = failureText; }
           if (onError) onError();
           btn.disabled = false;
-          btn.textContent = 'Encrypt note';
+          btn.textContent = submitLabel;
           return undefined;
         } finally {
           pass1.value = '';
@@ -471,6 +471,9 @@
 
     const ok = await sealWithNewPassphrase({
       title: 'Encrypt this note',
+      intro: 'Only an encrypted copy will be saved, and its version history is deleted. If you forget the passphrase, nobody can recover the note.',
+      submitLabel: 'Encrypt note',
+      failureText: 'Encryption failed in this browser. The note was not changed.',
       idPrefix: 'enc',
       plain: () => note.body,
       prepare: async () => {
@@ -528,6 +531,9 @@
     let sealed = null;
     const ok = await sealWithNewPassphrase({
       title: 'New encrypted credentials note',
+      intro: 'This creates a new note that is encrypted before it is saved. A forgotten passphrase cannot be recovered.',
+      submitLabel: 'Create note',
+      failureText: 'The note was not created.',
       idPrefix: 'cred',
       plain: () => T.credentialsTemplate(new Date()),
       commit: (keyInfo, cipher, plain) => { sealed = { keyInfo, cipher, plain }; },
@@ -545,6 +551,7 @@
     S.keys.set(n.id, sealed.keyInfo);
     S.plain.set(n.id, sealed.plain);
     S.query = '';
+    S.tag = null; // the new note has no tag, so a tag filter would hide it
     els.search.value = '';
     openNote(n.id);
     renderTags();
@@ -672,6 +679,7 @@
   }
 
   const LIST_CAP = 500;
+  const LOOSE_RESERVE = 50; // rows kept for the newest notes without a folder, so open folders cannot use up the cap
   const isFlatList = () => !!(S.query.trim() || S.tag);
 
   /** One sidebar row: the note button plus its delete button. `grouped` rows sit under a folder header and can be dragged. */
@@ -722,7 +730,10 @@
       frag.append(h('li', { class: 'empty-list' }, S.query || S.tag ? 'No notes match. Clear the filter, or press Alt+N to start one.' : 'No notes yet. Press Alt+N to start one.'));
     }
     let rows = 0;
-    const add = (n, grouped) => { if (rows < LIST_CAP) { frag.append(noteRow(n, q, grouped)); rows += 1; } };
+    let omitted = 0;
+    const add = (n, grouped, limit = LIST_CAP) => {
+      if (rows < limit) { frag.append(noteRow(n, q, grouped)); rows += 1; } else omitted += 1;
+    };
     if (flat) {
       for (const n of list) add(n, false);
     } else {
@@ -734,6 +745,7 @@
         byFolder.get(n.folder).push(n);
       }
       const closed = new Set(S.settings.collapsedFolders);
+      const folderLimit = LIST_CAP - Math.min(LOOSE_RESERVE, loose.length);
       for (const f of store.folderList(S.notes)) {
         const open = !closed.has(f.name);
         frag.append(h('li', { class: 'folder-li', 'data-group': f.name },
@@ -741,9 +753,14 @@
             h('span', { class: 'folder-caret', 'aria-hidden': 'true' }, open ? '▾' : '▸'),
             h('span', { class: 'folder-name' }, f.name),
             h('span', { class: 'count' }, f.count))));
-        if (open) for (const n of byFolder.get(f.name) || []) add(n, true);
+        if (open) for (const n of byFolder.get(f.name) || []) add(n, true, folderLimit);
       }
       for (const n of loose) add(n, true);
+    }
+    if (omitted) {
+      frag.append(h('li', { class: 'empty-list' }, omitted === 1
+        ? '1 more note not shown. Search to find it.'
+        : `${omitted} more notes not shown. Search to find them.`));
     }
     els.noteList.replaceChildren(frag);
     els.filterRow.hidden = !S.tag;
@@ -786,7 +803,7 @@
     return true;
   }
 
-  const FOLDER_NAME_MSG = `Folder names are 1 to ${store.LIMITS.folderName} characters, without / or \\.`;
+  const FOLDER_NAME_MSG = `Folder names are 1 to ${store.LIMITS.folderName} characters, without / or \\, line breaks or invisible characters.`;
   const FOLDER_LIMIT_MSG = `You already have ${store.LIMITS.folders} folders. Move the note into one of them.`;
 
   /** Dialog with a name box and the existing folders as buttons. Resolves to the cleaned name, or null when cancelled. */
@@ -1055,7 +1072,8 @@
     const existing = findNoteByTitle(title);
     if (existing) { openNote(existing.id); return; }
     const body = `# ${title}\n\n`;
-    if (addNote(body, body.length)) toast(`Created "${title}".`);
+    const open = active();
+    if (addNote(body, body.length, open ? open.folder : '')) toast(`Created "${title}".`);
   }
 
   function togglePin() {
@@ -1093,7 +1111,7 @@
    * Puts the pending delete back. Returns whether the note is back. A refusal (the id exists, the note limit) ends the
    * pending delete with a plain reason: nothing the user can do within the window would make a retry work.
    */
-  function undoDelete(p = S.pendingDelete) {
+  function undoDelete(p = S.pendingDelete, { fromList = false } = {}) {
     if (!p || S.pendingDelete !== p) return false; // already final
     if (noteById(p.note.id)) { finalizePendingDelete(); toast('That note is already back.'); return false; }
     if (S.notes.length >= store.LIMITS.notes) {
@@ -1126,9 +1144,13 @@
     S.notes.splice(Math.min(p.index, S.notes.length), 0, note); // an encrypted note has no key in S.keys, so it returns locked
     S.query = '';
     els.search.value = '';
-    openNote(note.id); // renders the list, editor and preview
+    openNote(note.id, { focus: !fromList }); // renders the list, editor and preview; from the list, focus stays in the list
     renderTags();
     persistNow();
+    if (fromList) {
+      const row = [...els.noteList.querySelectorAll('.note-item')].find((b) => b.dataset.id === note.id);
+      if (row) row.focus();
+    }
     if (notes.length) toast(`Note restored. ${notes.join(' ')}`);
     return true;
   }
@@ -1154,6 +1176,9 @@
     // Pending edits of an unlocked encrypted note are sealed first, so Undo brings back its latest text.
     if (note.cipher) { await flushSeals(); if (!noteById(note.id)) return; }
     finalizePendingDelete(); // only the latest delete can be undone
+    const wasOpen = S.activeId === note.id;
+    const rowIds = [...els.noteList.querySelectorAll('.note-item')].map((b) => b.dataset.id);
+    const at = rowIds.indexOf(note.id);
     clearTimeout(S.sealTimers.get(note.id));
     S.sealTimers.delete(note.id);
     const index = S.notes.findIndex((n) => n.id === note.id);
@@ -1163,17 +1188,25 @@
     S.meta.delete(note.id);
     let blankId = null;
     if (!S.notes.length) { const blank = store.createNote(''); blankId = blank.id; S.notes.push(blank); }
-    S.activeId = sortedNotes()[0].id;
     pruneCollapsed();
     persistNow();
-    renderAll();
+    if (wasOpen || !noteById(S.activeId)) {
+      openNote(sortedNotes()[0].id, { focus: !fromList }); // the normal open path; the list keeps focus when the delete came from it
+      renderAll();
+    } else { // another note was deleted: the open note's editor is left alone
+      renderList();
+      renderTags();
+      updateStatus();
+    }
     const p = { note, index, link, blankId, timer: 0, toastEl: null };
     S.pendingDelete = p;
     p.toastEl = toast('Note deleted. Press Ctrl+Z in the list or choose Undo.', 'info', [{ label: 'Undo', fn: () => undoDelete(p) }]);
     p.timer = setTimeout(finalizePendingDelete, UNDO_MS);
-    if (fromList) {
-      const row = [...els.noteList.querySelectorAll('.note-item')].find((b) => b.dataset.id === S.activeId);
-      if (row) row.focus();
+    if (fromList) { // focus moves to the neighbouring row: the next one, else the previous one, else New note
+      const rows = [...els.noteList.querySelectorAll('.note-item')];
+      const pick = [rowIds[at + 1], rowIds[at - 1]].filter((id) => id && id !== note.id)
+        .map((id) => rows.find((b) => b.dataset.id === id)).find(Boolean);
+      (pick || els.btnNew).focus();
     }
   }
 
@@ -1194,7 +1227,17 @@
   }
 
   /** Replace a range in the editor while keeping the browser's undo stack. */
+  let programmaticInsert = false; // set while replaceRange runs, so its input event never counts as typing
   function replaceRange(start, end, text, caretStart = start + text.length, caretEnd = caretStart) {
+    programmaticInsert = true;
+    try {
+      replaceRangeNow(start, end, text, caretStart, caretEnd);
+    } finally {
+      programmaticInsert = false;
+    }
+  }
+
+  function replaceRangeNow(start, end, text, caretStart, caretEnd) {
     const ed = els.editor;
     ed.focus();
     ed.setSelectionRange(start, end);
@@ -1325,7 +1368,7 @@
       return;
     }
     // "->" becomes an arrow as it is typed. The replacement raises its own input event, which does the rest once.
-    if (S.settings.arrows && e && e.inputType === 'insertText' && !e.isComposing
+    if (S.settings.arrows && !programmaticInsert && e && e.inputType === 'insertText' && !e.isComposing
       && typeof e.data === 'string' && e.data.length === 1
       && els.editor.selectionStart === els.editor.selectionEnd) {
       const r = T.arrowReplacement(value, els.editor.selectionStart, e.data);
@@ -1995,7 +2038,7 @@
       const saved = await exportOut('iocCsv', `iocs-${T.slugify(titleOf(note))}-${stamp.slice(0, 10)}.csv`, secops.iocsToCsv(iocs, { defanged }), 'text/csv;charset=utf-8');
       if (saved) toast(`Saved ${saved}. Cells that a spreadsheet could run as formulas are escaped.`);
     } else if (res === 'note') {
-      addNote(secops.iocsToMarkdown(iocs, { defanged, source: titleOf(note), when: `${stamp.slice(0, 16).replace('T', ' ')} UTC` }));
+      addNote(secops.iocsToMarkdown(iocs, { defanged, source: titleOf(note), when: `${stamp.slice(0, 16).replace('T', ' ')} UTC` }), undefined, active() ? active().folder : '');
     }
   }
 
@@ -2659,6 +2702,7 @@
       ['Alt L', 'Lock encrypted notes'], ['Alt I', 'Extract IOCs from the note or selection'], ['/', 'Quick inserts (at the start of a word)'], ['Tab after "="', 'Work out the sum on that line'],
       ['Ctrl Enter', 'Make a task, or tick it'], ['Tab / Shift Tab', 'Indent / outdent'], ['Esc, then Tab', 'Move focus out of the editor'],
       ['Paste a URL on a selection', 'Make a link'],
+      ['Delete', 'Delete the focused note in the list'], ['Ctrl Z', 'Undo the last delete (in the note list)'],
     ];
     if (platform.isDesktop) {
       rows.splice(rows.findIndex(([k]) => k === 'Ctrl S'), 1,
@@ -2713,18 +2757,23 @@
       if (active() !== note || !isEditable(note)) { toast('The note was locked. Unlock it and try again.', 'error'); return; }
     }
     prepareForPrint();
+    printing = true;
     try {
       document.title = titleOf(note);
       toast('In the print dialog, choose Save as PDF.');
       window.print();
-    } catch {
+    } catch (e) {
+      console.error('print failed', errName(e));
       afterPrint();
       toast('The print dialog could not be opened.', 'error');
       return;
     }
     // Fallback for an engine that fires no afterprint: restore when the window next regains focus.
-    window.addEventListener('focus', afterPrint, { once: true });
-    printFocusCleanup = () => window.removeEventListener('focus', afterPrint);
+    // Only added when afterprint has not already run.
+    if (printing) {
+      window.addEventListener('focus', afterPrint, { once: true });
+      printFocusCleanup = () => window.removeEventListener('focus', afterPrint);
+    }
   }
 
   // beforeprint/afterprint also cover Ctrl+P in a browser. In Write layout the preview is
@@ -2732,6 +2781,7 @@
   // note is never rendered.
   let printForced = false;
   let printFocusCleanup = null;
+  let printing = false;
   function prepareForPrint() {
     const note = active();
     if (!isEditable(note)) return;
@@ -2739,6 +2789,7 @@
     renderPreview(true);
   }
   function afterPrint() {
+    printing = false;
     if (printFocusCleanup) { printFocusCleanup(); printFocusCleanup = null; }
     const note = active();
     document.title = note ? `${titleOf(note)} | CyberPad` : 'CyberPad';
@@ -3892,7 +3943,7 @@
     els.noteList.addEventListener('keydown', (e) => {
       if ((e.key === 'z' || e.key === 'Z') && (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && S.pendingDelete) {
         e.preventDefault();
-        undoDelete();
+        undoDelete(undefined, { fromList: true });
         return;
       }
       if (e.key !== 'Delete' || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;

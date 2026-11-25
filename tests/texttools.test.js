@@ -184,3 +184,9 @@ test('credentialsTemplate is the agreed table with today as the review date', ()
   const out = T.credentialsTemplate(new Date(2026, 10, 25));
   assert.equal(out, '# Credentials\n\n| System | Username | Password | URL | Notes |\n| --- | --- | --- | --- | --- |\n|  |  |  |  |  |\n\nLast reviewed: 2026-11-25\n');
 });
+
+test('inCodeAt: a four-backtick fence opens code and any later fence line of three or more backticks closes it', () => {
+  assert.equal(T.inCodeAt('````\nx', 6), true);
+  assert.equal(T.inCodeAt('````\nx\n````\ny', 13), false);
+  assert.equal(T.inCodeAt('````\nx\n```\nz', 12), false); // current behaviour: the fence length is not matched
+});

@@ -56,7 +56,8 @@
   const BAD_FILE_NAME_RE = /[\u0000-\u001f\u007f/\\]/;
 
   // eslint-disable-next-line no-control-regex
-  const BAD_FOLDER_RE = /[\u0000-\u001f\u007f/\\]/;
+  const BAD_FOLDER_RE = /[\p{Cc}/\\]/u; // every control character, C0 and C1
+  const BLANK_LOOKING_RE = /[ㅤᅟᅠﾠ⠀]/g; // draw nothing, but are letters or symbols
 
   class StoreError extends Error {}
 
@@ -106,7 +107,7 @@
     const name = value.trim().replace(/\s+/g, ' ');
     if (name.length > LIMITS.folderName) return '';
     if (/\p{Cf}/u.test(name)) return ''; // zero-width and direction-control characters can disguise a name
-    return /[\p{L}\p{N}\p{P}\p{S}]/u.test(name) ? name : ''; // a name of invisible characters is no name
+    return /[\p{L}\p{N}\p{P}\p{S}]/u.test(name.replace(BLANK_LOOKING_RE, '')) ? name : ''; // a name of invisible characters is no name
   }
 
   function validateNote(n, now = Date.now()) {

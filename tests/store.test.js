@@ -322,3 +322,34 @@ test('collapsedFolders and arrows settings are validated', () => {
   assert.deepEqual(store.validateSettings({ arrows: 'no', collapsedFolders: 'A' }).collapsedFolders, []);
   assert.equal(store.validateSettings({ arrows: 'no' }).arrows, true);
 });
+
+test('cleanFolder rejects C1 controls and names made only of blank-looking letters', () => {
+  for (const bad of ['a\u0085b', 'ㅤ', '⠀ ㅤ', ' ᅟᅠﾠ ']) assert.equal(store.cleanFolder(bad), '');
+  assert.equal(store.cleanFolder('AㅤB'), 'AㅤB');
+  assert.equal(store.cleanFolder('⠀x'), '⠀x');
+});
+
+test('cleanFolder collapses a no-break space like other whitespace', () => {
+  assert.equal(store.cleanFolder('a  b'), 'a b');
+  assert.equal(store.cleanFolder(' a '), 'a');
+  assert.equal(store.cleanFolder(' '), '');
+});
+
+test('collapsedFolders is capped at 100 valid names', () => {
+  const names = Array.from({ length: 150 }, (_, i) => `F${i}`);
+  const s = store.validateSettings({ collapsedFolders: names });
+  assert.equal(s.collapsedFolders.length, 100);
+  assert.deepEqual(s.collapsedFolders, names.slice(0, 100));
+});
+
+test('the folder of an encrypted note survives save, load and backup', () => {
+  const n = { ...store.validateNote({ id: ID, cipher: ENV }), folder: 'Vault' };
+  assert.ok(n.cipher);
+  const state = store.validateState(JSON.parse(store.serialize({ notes: [n], settings: store.DEFAULT_SETTINGS, activeId: ID })));
+  assert.equal(state.notes[0].folder, 'Vault');
+  assert.ok(state.notes[0].cipher);
+  assert.equal(state.notes[0].body, '');
+  const back = store.parseBackup(store.makeBackup([n]));
+  assert.equal(back[0].folder, 'Vault');
+  assert.ok(back[0].cipher);
+});
