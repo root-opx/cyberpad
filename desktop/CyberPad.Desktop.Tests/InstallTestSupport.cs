@@ -216,18 +216,21 @@ internal static class TestEnvironments
     public const string TypicalStartup = @"C:\Users\u\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup";
 
     /// <summary>A typical machine layout, for rules tested against the fake probe.</summary>
-    public static InstallEnvironment Typical() => new(
-        localApplicationData: @"C:\Users\u\AppData\Local",
-        notesFolder: @"C:\Users\u\AppData\Local\CyberPad",
-        userProfile: @"C:\Users\u",
-        desktop: @"C:\Users\u\Desktop",
-        documents: @"C:\Users\u\Documents",
-        downloads: @"C:\Users\u\Downloads",
-        startup: TypicalStartup,
+    public static InstallEnvironment Typical() => ForProfile(@"C:\Users\u");
+
+    /// <summary>The typical layout for another profile folder name.</summary>
+    public static InstallEnvironment ForProfile(string profile) => new(
+        localApplicationData: profile + @"\AppData\Local",
+        notesFolder: profile + @"\AppData\Local\CyberPad",
+        userProfile: profile,
+        desktop: profile + @"\Desktop",
+        documents: profile + @"\Documents",
+        downloads: profile + @"\Downloads",
+        startup: profile + @"\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup",
         windows: @"C:\Windows",
         programFiles: @"C:\Program Files",
         programFilesX86: @"C:\Program Files (x86)",
-        temp: @"C:\Users\u\AppData\Local\Temp");
+        temp: profile + @"\AppData\Local\Temp");
 }
 
 /// <summary>The real probe, with the write check replaceable per test.</summary>
@@ -324,7 +327,7 @@ internal sealed class FakeRegistry : IRegistry
 
     public void DeleteTree(RegistryKeyId root)
     {
-        Assert.True(RegistryKeys.IsRoot(root));
+        Assert.True(RegistryKeys.IsDeletable(root));
         if (FailDeletes) throw new UnauthorizedAccessException("injected");
         Keys.Remove(root);
         if (root == RegistryKeyId.OpenWithApplication)
@@ -332,6 +335,12 @@ internal sealed class FakeRegistry : IRegistry
             Keys.Remove(RegistryKeyId.OpenWithCommand);
             Keys.Remove(RegistryKeyId.OpenWithSupportedTypes);
         }
+    }
+
+    public void DeleteValue(RegistryKeyId key, string name)
+    {
+        if (FailDeletes) throw new UnauthorizedAccessException("injected");
+        if (Keys.TryGetValue(key, out var values)) values.Remove(name);
     }
 
     public string Dump() => string.Join("\n", Keys.OrderBy(k => k.Key)
@@ -358,7 +367,11 @@ internal sealed class FakeShortcuts : IShortcuts
     /// <summary>Simulates a corrupt .lnk: reading throws, as StartMenuShortcuts does for a COM failure.</summary>
     public bool Unreadable { get; set; }
 
-    public ShortcutInfo? TryRead() => Unreadable ? throw new IOException("injected: corrupt shortcut") : Current;
+    /// <summary>When set, TryRead throws this instead (any exception type a shell component might raise).</summary>
+    public Exception? ReadThrows { get; set; }
+
+    public ShortcutInfo? TryRead() =>
+        ReadThrows != null ? throw ReadThrows : Unreadable ? throw new IOException("injected: corrupt shortcut") : Current;
 
     public void Create(ShortcutInfo shortcut)
     {

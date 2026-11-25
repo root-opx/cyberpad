@@ -146,12 +146,18 @@ public sealed class UninstallerTests : IDisposable
 
     // --- a missing or invalid file list: only the entry and the shortcut go ------------------------
 
-    private void AssertEntryOnlyRemoval(UninstallResult result, string before, string folder)
+    private static string ListMissing(string folder, bool shortcut) =>
+        "CyberPad's entry was removed. The files in " + folder + " were left because setup's file list is missing or damaged."
+        + (shortcut ? " The Start menu shortcut was removed too." : "");
+
+    private static string NotChecked(bool shortcut) =>
+        "CyberPad's entry was removed. No files were deleted because the install folder could not be checked."
+        + (shortcut ? " The Start menu shortcut was removed too." : "");
+
+    private void AssertEntryOnlyRemoval(UninstallResult result, string before, string message)
     {
         Assert.True(result.FilesLeftInPlace);
-        Assert.Equal(
-            "CyberPad's entry and shortcut were removed. The files in " + folder + " were left because setup's file list is missing.",
-            result.Message);
+        Assert.Equal(message, result.Message);
         Assert.Equal(before, _temp.Dump());
         Assert.Empty(_registry.Keys);
     }
@@ -173,7 +179,7 @@ public sealed class UninstallerTests : IDisposable
 
         UninstallResult result = NewUninstaller().Uninstall();
 
-        AssertEntryOnlyRemoval(result, before, _dir);
+        AssertEntryOnlyRemoval(result, before, ListMissing(_dir, shortcut: true));
         Assert.Equal("inside", File.ReadAllText(Path.Combine(_dir, "victim.txt")));
         Assert.Null(_shortcuts.Current);
     }
@@ -187,7 +193,7 @@ public sealed class UninstallerTests : IDisposable
 
         UninstallResult result = NewUninstaller().Uninstall();
 
-        AssertEntryOnlyRemoval(result, before, _dir);
+        AssertEntryOnlyRemoval(result, before, ListMissing(_dir, shortcut: true));
         Assert.True(File.Exists(Path.Combine(_dir, "CyberPad.exe")));
         Assert.Null(_shortcuts.Current);
         Assert.Equal(2, _notify.Calls);
@@ -204,7 +210,7 @@ public sealed class UninstallerTests : IDisposable
 
         UninstallResult result = NewUninstaller().Uninstall();
 
-        AssertEntryOnlyRemoval(result, before, _dir);
+        AssertEntryOnlyRemoval(result, before, ListMissing(_dir, shortcut: false));
         Assert.Same(other, _shortcuts.Current);
     }
 
@@ -218,7 +224,7 @@ public sealed class UninstallerTests : IDisposable
 
         UninstallResult result = NewUninstaller().Uninstall();
 
-        AssertEntryOnlyRemoval(result, before, "the install folder");
+        AssertEntryOnlyRemoval(result, before, NotChecked(shortcut: false));
         Assert.Same(other, _shortcuts.Current);
     }
 
@@ -234,7 +240,7 @@ public sealed class UninstallerTests : IDisposable
 
         UninstallResult result = NewUninstaller().Uninstall();
 
-        AssertEntryOnlyRemoval(result, before, other);
+        AssertEntryOnlyRemoval(result, before, NotChecked(shortcut: false));
     }
 
     [Fact]
@@ -275,7 +281,7 @@ public sealed class UninstallerTests : IDisposable
 
         UninstallResult result = NewUninstaller().Uninstall();
 
-        AssertEntryOnlyRemoval(result, before, _dir);
+        AssertEntryOnlyRemoval(result, before, NotChecked(shortcut: true));
         Assert.True(File.Exists(Path.Combine(moved, "CyberPad.exe")));
     }
 
@@ -290,7 +296,7 @@ public sealed class UninstallerTests : IDisposable
 
         UninstallResult result = NewUninstaller().Uninstall();
 
-        AssertEntryOnlyRemoval(result, before, _env.NotesFolder);
+        AssertEntryOnlyRemoval(result, before, NotChecked(shortcut: false));
         Assert.Equal("my note", File.ReadAllText(Path.Combine(_env.NotesFolder, "note.md")));
     }
 
@@ -421,7 +427,86 @@ public sealed class UninstallerTests : IDisposable
         Assert.True(Directory.Exists(emptyTarget));
     }
 
+    [Fact]
+    public void BackupFilesOfAnInterruptedSetup_AreDeleted_ButNothingElseInThatFolder()
+    {
+        InstallV1();
+        string backup = Path.Combine(_dir, ".cyberpad-setup-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(backup);
+        File.WriteAllText(Path.Combine(backup, "1.bak"), "old app");
+        File.WriteAllText(Path.Combine(backup, "12.bak"), "old index");
+        File.SetAttributes(Path.Combine(backup, "12.bak"), FileAttributes.ReadOnly);
+
+        UninstallResult result = NewUninstaller().Uninstall();
+
+        Assert.Equal("CyberPad was removed.", result.Message);
+        Assert.False(Directory.Exists(_dir));
+    }
+
+    [Fact]
+    public void BackupFolderWithOtherContents_KeepsThem_AndIsReported()
+    {
+        InstallV1();
+        string backup = Path.Combine(_dir, ".cyberpad-setup-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(backup);
+        File.WriteAllText(Path.Combine(backup, "1.bak"), "old app");
+        File.WriteAllText(Path.Combine(backup, "notes.txt"), "not setup's");
+        File.WriteAllText(Path.Combine(backup, "1.bak.txt"), "not setup's");
+
+        UninstallResult result = NewUninstaller().Uninstall();
+
+        Assert.False(File.Exists(Path.Combine(backup, "1.bak")));
+        Assert.Equal("not setup's", File.ReadAllText(Path.Combine(backup, "notes.txt")));
+        Assert.True(File.Exists(Path.Combine(backup, "1.bak.txt")));
+        Assert.Contains(backup, result.NotDeleted);
+        Assert.Equal("CyberPad was removed. Some files could not be deleted: " + _dir, result.Message);
+    }
+
+    [Fact]
+    public void ShortcutCodeThrowingAnyException_DoesNotStrandUninstall()
+    {
+        InstallV1();
+        _shortcuts.ReadThrows = new ArgumentException("injected: odd shortcut");
+
+        UninstallResult result = NewUninstaller().Uninstall();
+
+        Assert.Contains("Start menu shortcut CyberPad.lnk", result.NotDeleted);
+        Assert.Empty(_registry.Keys);
+        Assert.False(Directory.Exists(_dir));
+        Assert.Equal("CyberPad was removed, but its Start menu shortcut or its entry under Installed apps could not be deleted.", result.Message);
+    }
+
+    [Fact]
+    public void EntryOnlyRemoval_WithAShortcutThatThrows_StillRemovesTheEntry()
+    {
+        InstallV1();
+        File.Delete(Path.Combine(_dir, "install.manifest"));
+        _shortcuts.ReadThrows = new InvalidCastException("injected");
+
+        UninstallResult result = NewUninstaller().Uninstall();
+
+        Assert.Contains("Start menu shortcut CyberPad.lnk", result.NotDeleted);
+        Assert.Empty(_registry.Keys);
+        Assert.Equal(ListMissing(_dir, shortcut: false), result.Message);
+    }
+
     // --- the notes folder ----------------------------------------------------------------------
+
+    [Fact]
+    public void DeleteNotesFolder_ClearsReadOnlyFolders()
+    {
+        string notes = _env.NotesFolder;
+        string sub = Path.Combine(notes, "sub");
+        Directory.CreateDirectory(sub);
+        File.WriteAllText(Path.Combine(sub, "n.md"), "n");
+        new DirectoryInfo(sub).Attributes |= FileAttributes.ReadOnly;
+        new DirectoryInfo(notes).Attributes |= FileAttributes.ReadOnly;
+
+        NotesDeletionResult result = NewUninstaller().DeleteNotesFolder();
+
+        Assert.Empty(result.NotDeleted);
+        Assert.False(Directory.Exists(notes));
+    }
 
     [Fact]
     public void DeleteNotesFolder_RemovesItsContents_ButDeletesLinksAsLinks()

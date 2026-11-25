@@ -7,13 +7,34 @@ using System.Security;
 
 namespace CyberPad.Install
 {
+    /// <summary>Why uninstall removed only the entry and deleted no file.</summary>
+    public enum EntryOnlyReason
+    {
+        /// <summary>A full uninstall: files were deleted.</summary>
+        None,
+
+        /// <summary>The folder passes the rules, but its file list is missing or damaged.</summary>
+        FileListMissing,
+
+        /// <summary>The folder is unknown, gone, or refused by the folder rules.</summary>
+        FolderNotChecked,
+    }
+
     public sealed class UninstallResult
     {
-        internal UninstallResult(string installDir, IReadOnlyList<string> notDeleted, bool filesLeftInPlace, bool associationsNotRefreshed)
+        internal UninstallResult(
+            string installDir,
+            IReadOnlyList<string> notDeleted,
+            EntryOnlyReason entryOnly,
+            bool shortcutRemoved,
+            bool installFolderRemains,
+            bool associationsNotRefreshed)
         {
             InstallDir = installDir;
             NotDeleted = notDeleted;
-            FilesLeftInPlace = filesLeftInPlace;
+            EntryOnly = entryOnly;
+            ShortcutRemoved = shortcutRemoved;
+            InstallFolderRemains = installFolderRemains;
             AssociationsNotRefreshed = associationsNotRefreshed;
         }
 
@@ -23,11 +44,17 @@ namespace CyberPad.Install
         /// <summary>Files, folders, the shortcut and registry keys that should have been removed but could not be.</summary>
         public IReadOnlyList<string> NotDeleted { get; }
 
-        /// <summary>
-        /// True when the install's file list was missing or invalid: only the entry and the shortcut were
-        /// removed and no file was deleted.
-        /// </summary>
-        public bool FilesLeftInPlace { get; }
+        /// <summary>Not <see cref="EntryOnlyReason.None"/> when no file was deleted: only the entry (and our shortcut) went.</summary>
+        public EntryOnlyReason EntryOnly { get; }
+
+        /// <summary>True when the install's file list was missing or the folder could not be checked.</summary>
+        public bool FilesLeftInPlace => EntryOnly != EntryOnlyReason.None;
+
+        /// <summary>True when the Start menu shortcut was deleted.</summary>
+        public bool ShortcutRemoved { get; }
+
+        /// <summary>True when the install folder still exists afterwards.</summary>
+        public bool InstallFolderRemains { get; }
 
         /// <summary>True when Explorer could not be told that the "Open with" entry is gone (harmless; it notices later).</summary>
         public bool AssociationsNotRefreshed { get; }
@@ -36,12 +63,20 @@ namespace CyberPad.Install
         {
             get
             {
-                if (FilesLeftInPlace)
+                switch (EntryOnly)
                 {
-                    return InstallMessages.EntryRemovedFilesLeft(InstallDir.Length > 0 ? InstallDir : "the install folder");
+                    case EntryOnlyReason.FileListMissing:
+                        return InstallMessages.FileListMissing(InstallDir) + (ShortcutRemoved ? InstallMessages.ShortcutRemovedToo : string.Empty);
+                    case EntryOnlyReason.FolderNotChecked:
+                        return InstallMessages.FolderNotChecked + (ShortcutRemoved ? InstallMessages.ShortcutRemovedToo : string.Empty);
                 }
 
-                return NotDeleted.Count == 0 ? InstallMessages.Removed : InstallMessages.RemovedWithLeftoversPrefix + InstallDir;
+                if (NotDeleted.Count == 0)
+                {
+                    return InstallMessages.Removed;
+                }
+
+                return InstallFolderRemains ? InstallMessages.RemovedWithLeftoversPrefix + InstallDir : InstallMessages.RemovedButShortcutOrEntryLeft;
             }
         }
     }
@@ -66,6 +101,10 @@ namespace CyberPad.Install
         public const int MaxNotesEntries = 200000;
 
         private const string ExtendedPrefix = @"\\?\";
+        private const string ShortcutLabel = "Start menu shortcut " + InstallLayout.DisplayName + ".lnk";
+        private const int BackupHexDigits = 32;
+        private const int MaxBackupFolders = 100;
+        private const int MaxBackupFiles = 10000;
 
         private readonly IRegistry _registry;
         private readonly IShortcuts _shortcuts;
@@ -89,9 +128,10 @@ namespace CyberPad.Install
 
         /// <summary>
         /// Uninstalls the install named by the uninstall entry. Deletes exactly the manifest's files, the
-        /// manifest and <c>Uninstall.exe</c>, folders left empty, the shortcut and the two registry keys.
-        /// When the entry exists but its folder or file list is not valid, no file is deleted: only the
-        /// entry and the shortcut are removed.
+        /// manifest and <c>Uninstall.exe</c>, setup's own backup leftovers, folders left empty, the shortcut and
+        /// the registry keys (an "Open with" entry that existed before setup is put back instead). When the
+        /// entry exists but its folder or file list is not valid, no file is deleted: only the entry and the
+        /// shortcut are removed.
         /// </summary>
         public UninstallResult Uninstall()
         {
@@ -140,13 +180,14 @@ namespace CyberPad.Install
                 RemoveIfEmpty(folder, notDeleted);
             }
 
-            RemoveEmptyBackupFolders(dir, notDeleted);
+            List<string> backupLeftovers = RemoveBackupFolders(dir, notDeleted);
             RemoveIfEmpty(dir, notDeleted);
+            ReportSetupLeftovers(dir, backupLeftovers, notDeleted);
 
-            RemoveShortcutIfOurs(exe, notDeleted);
-            DeleteRegistryKeys(notDeleted);
+            bool shortcutRemoved = RemoveShortcutIfOurs(exe, notDeleted);
+            DeleteRegistryKeys(OpenCommandOf(dir), notDeleted);
             bool notified = TryNotify();
-            return new UninstallResult(dir, notDeleted, filesLeftInPlace: false, associationsNotRefreshed: !notified);
+            return new UninstallResult(dir, notDeleted, EntryOnlyReason.None, shortcutRemoved, _probe.DirectoryExists(dir), !notified);
         }
 
         /// <summary>
@@ -193,29 +234,48 @@ namespace CyberPad.Install
             {
                 location = _registry.GetValue(RegistryKeyId.UninstallEntry, "InstallLocation");
             }
-            catch (IOException)
-            {
-                location = null;
-            }
-            catch (UnauthorizedAccessException)
-            {
-                location = null;
-            }
-            catch (SecurityException)
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException || ex is SecurityException)
             {
                 location = null;
             }
 
             string? folder = location is string text ? PathText.NormaliseFolder(text) : null;
-            var notDeleted = new List<string>();
-            if (folder != null)
+
+            // The folder passes the rules (it exists, is not refused, and holds no valid install): only its file
+            // list is missing or damaged. Anything else means the folder itself could not be checked.
+            EntryOnlyReason reason = EntryOnlyReason.FolderNotChecked;
+            if (folder != null && _probe.DirectoryExists(folder))
             {
-                RemoveShortcutIfOurs(folder + "\\" + InstallLayout.AppFileName, notDeleted);
+                // A refusal that names the CyberPad subfolder still means the folder itself passed the rules.
+                InstallPathResult result = InstallPathPolicy.Evaluate(folder, _probe, _env, probeWrite: false);
+                bool folderPassed = result.IsUsable
+                    ? result.Kind != InstallPathKind.WillCreate
+                    : result.FullPath != null && PathText.IsStrictlyInside(result.FullPath, folder);
+                if (folderPassed)
+                {
+                    reason = EntryOnlyReason.FileListMissing;
+                }
             }
 
-            DeleteRegistryKeys(notDeleted);
+            var notDeleted = new List<string>();
+            bool shortcutRemoved = folder != null && RemoveShortcutIfOurs(folder + "\\" + InstallLayout.AppFileName, notDeleted);
+            DeleteRegistryKeys(folder == null ? null : OpenCommandOf(folder), notDeleted);
             bool notified = TryNotify();
-            return new UninstallResult(folder ?? string.Empty, notDeleted, filesLeftInPlace: true, associationsNotRefreshed: !notified);
+            return new UninstallResult(
+                folder ?? string.Empty, notDeleted, reason, shortcutRemoved, folder != null && _probe.DirectoryExists(folder), !notified);
+        }
+
+        /// <summary>The open command setup registered for <paramref name="dir"/>, or null if it cannot be built.</summary>
+        private static string? OpenCommandOf(string dir)
+        {
+            try
+            {
+                return CommandLine.OpenCommand(dir);
+            }
+            catch (ArgumentException)
+            {
+                return null;
+            }
         }
 
         /// <summary>Deletes one listed file. Returns false when it is still there afterwards.</summary>
@@ -284,6 +344,12 @@ namespace CyberPad.Install
             return TryDelete(() => File.Delete(full), full, notDeleted);
         }
 
+        /// <summary>
+        /// Writes the shorter manifest to a new file with a random name, then swaps it in with
+        /// <see cref="File.Replace(string, string, string)"/>. The old manifest is replaced as a name (never
+        /// written through), and at no point is there no manifest: if the swap fails, the old one stays, or
+        /// the new one is kept under its temporary name.
+        /// </summary>
         private static void RewriteManifest(string dir, InstallManifest manifest, List<string> notDeleted)
         {
             string path = dir + "\\" + InstallManifest.FileName;
@@ -291,21 +357,32 @@ namespace CyberPad.Install
             bool written = TryDelete(
                 () =>
                 {
-                    // CreateNew on a fresh random name, then swap: the old manifest is deleted as a name
-                    // (never written through), so a link or hard link in its place cannot redirect the write.
                     using (var stream = new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None))
                     {
                         manifest.Write(stream);
                     }
-
-                    File.Delete(path);
-                    File.Move(temp, path);
                 },
                 path,
                 notDeleted);
             if (!written)
             {
                 TryDelete(() => File.Delete(temp), temp, new List<string>());
+                return;
+            }
+
+            bool replaced = TryDelete(() => File.Replace(temp, path, null), path, notDeleted);
+            if (replaced)
+            {
+                return;
+            }
+
+            if (File.Exists(path))
+            {
+                TryDelete(() => File.Delete(temp), temp, new List<string>()); // the old manifest is still there
+            }
+            else if (!TryDelete(() => File.Move(temp, path), path, new List<string>()))
+            {
+                notDeleted.Add(temp); // the new list is kept under its temporary name
             }
         }
 
@@ -317,64 +394,179 @@ namespace CyberPad.Install
             }
         }
 
-        /// <summary>Removes empty backup folders an interrupted setup left behind (never their contents).</summary>
-        private void RemoveEmptyBackupFolders(string dir, List<string> notDeleted)
+        /// <summary>
+        /// Removes what an interrupted setup left in the install folder: inside each real (not link) folder
+        /// named exactly <c>.cyberpad-setup-&lt;32 hex digits&gt;</c>, the files named exactly
+        /// <c>&lt;digits&gt;.bak</c> (setup's backups), then the folder if that left it empty. Nothing else
+        /// inside is touched. Returns the backup folders still there.
+        /// </summary>
+        private List<string> RemoveBackupFolders(string dir, List<string> notDeleted)
         {
-            string[] candidates;
-            try
+            var left = new List<string>();
+            foreach (string name in TopLevelNames(dir, MaxBackupFolders * 10).Where(IsBackupFolderName).Take(MaxBackupFolders))
             {
-                candidates = Directory.GetDirectories(dir, FileJournal.BackupFolderPrefix + "*", SearchOption.TopDirectoryOnly);
+                string folder = dir + "\\" + name;
+                if (!_probe.DirectoryExists(folder) || _probe.IsReparsePoint(folder))
+                {
+                    continue; // not setup's: a link or a file with that name is left alone
+                }
+
+                foreach (string file in TopLevelNames(folder, MaxBackupFiles).Where(IsBackupFileName))
+                {
+                    string full = folder + "\\" + file;
+                    FileAttributes? attributes = ReadAttributes(full);
+                    if (attributes == null || (attributes.Value & (FileAttributes.ReparsePoint | FileAttributes.Directory)) != 0)
+                    {
+                        continue;
+                    }
+
+                    TryDelete(
+                        () =>
+                        {
+                            if ((attributes.Value & FileAttributes.ReadOnly) != 0)
+                            {
+                                File.SetAttributes(full, attributes.Value & ~FileAttributes.ReadOnly);
+                            }
+
+                            File.Delete(full);
+                        },
+                        full,
+                        notDeleted);
+                }
+
+                RemoveIfEmpty(folder, notDeleted);
+                if (_probe.DirectoryExists(folder))
+                {
+                    left.Add(folder);
+                }
             }
-            catch (IOException)
-            {
-                return;
-            }
-            catch (UnauthorizedAccessException)
+
+            return left;
+        }
+
+        /// <summary>
+        /// When the install folder is still there only because of setup's own leftovers (backup folders, or
+        /// files already reported), the leftover backup folders are reported too, so the message says that
+        /// some files could not be deleted rather than that everything went.
+        /// </summary>
+        private void ReportSetupLeftovers(string dir, List<string> backupLeftovers, List<string> notDeleted)
+        {
+            if (backupLeftovers.Count == 0 || !_probe.DirectoryExists(dir))
             {
                 return;
             }
 
-            foreach (string candidate in candidates.Take(100))
+            var setupNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (string path in backupLeftovers.Concat(notDeleted))
             {
-                string name = Path.GetFileName(candidate);
-                if (name.Length == FileJournal.BackupFolderPrefix.Length + 32 && PathText.IsValidSegment(name))
+                if (PathText.IsStrictlyInside(path, dir))
                 {
-                    RemoveIfEmpty(dir + "\\" + name, notDeleted);
+                    string relative = path.Substring(dir.Length + 1);
+                    int slash = relative.IndexOf('\\');
+                    setupNames.Add(slash < 0 ? relative : relative.Substring(0, slash));
+                }
+            }
+
+            if (TopLevelNames(dir, 1000).All(setupNames.Contains))
+            {
+                foreach (string folder in backupLeftovers.Where(f => !notDeleted.Contains(f, StringComparer.OrdinalIgnoreCase)))
+                {
+                    notDeleted.Add(folder);
                 }
             }
         }
 
-        private void RemoveShortcutIfOurs(string exe, List<string> notDeleted)
+        private static bool IsBackupFolderName(string name) =>
+            PathText.IsPrefixHexSuffix(name, FileJournal.BackupFolderPrefix, BackupHexDigits, string.Empty);
+
+        private static bool IsBackupFileName(string name)
         {
-            const string label = "Start menu shortcut " + InstallLayout.DisplayName + ".lnk";
+            const string suffix = ".bak";
+            if (name.Length <= suffix.Length || name.Length > suffix.Length + 10 || !name.EndsWith(suffix, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            for (int i = 0; i < name.Length - suffix.Length; i++)
+            {
+                if (name[i] < '0' || name[i] > '9')
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        /// <summary>The names directly inside <paramref name="folder"/>, at most <paramref name="limit"/>; empty when it cannot be read.</summary>
+        private static List<string> TopLevelNames(string folder, int limit)
+        {
+            var names = new List<string>();
+            try
+            {
+                foreach (string entry in Directory.EnumerateFileSystemEntries(folder))
+                {
+                    if (names.Count >= limit)
+                    {
+                        break;
+                    }
+
+                    names.Add(Path.GetFileName(entry));
+                }
+            }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException || ex is SecurityException)
+            {
+                names.Clear();
+            }
+
+            return names;
+        }
+
+        /// <summary>Deletes the shortcut when it points at this install. Never throws: a failure is reported.</summary>
+        private bool RemoveShortcutIfOurs(string exe, List<string> notDeleted)
+        {
             ShortcutInfo? shortcut;
             try
             {
                 shortcut = _shortcuts.TryRead();
             }
-            catch (IOException)
+            catch (Exception ex) when (!CriticalExceptions.IsCritical(ex))
             {
-                notDeleted.Add(label); // unreadable: left alone, since it cannot be shown to be ours
-                return;
-            }
-            catch (UnauthorizedAccessException)
-            {
-                notDeleted.Add(label);
-                return;
+                notDeleted.Add(ShortcutLabel); // unreadable: left alone, since it cannot be shown to be ours
+                return false;
             }
 
-            if (shortcut != null && PathText.AreSame(shortcut.TargetPath, exe))
+            if (shortcut == null || !PathText.AreSame(shortcut.TargetPath, exe))
             {
-                TryDelete(_shortcuts.Delete, label, notDeleted);
+                return false;
+            }
+
+            try
+            {
+                _shortcuts.Delete();
+                return true;
+            }
+            catch (Exception ex) when (!CriticalExceptions.IsCritical(ex))
+            {
+                notDeleted.Add(ShortcutLabel);
+                return false;
             }
         }
 
-        private void DeleteRegistryKeys(List<string> notDeleted)
+        /// <summary>
+        /// Puts back (or removes) the "Open with" registration, then deletes the uninstall entry, which holds
+        /// the record of what the registration was before setup.
+        /// </summary>
+        private void DeleteRegistryKeys(string? ourOpenCommand, List<string> notDeleted)
         {
-            foreach (RegistryKeyId root in RegistryKeys.Roots)
-            {
-                TryDelete(() => _registry.DeleteTree(root), @"HKEY_CURRENT_USER\" + RegistryKeys.PathOf(root), notDeleted);
-            }
+            TryDelete(
+                () => OpenWithRegistration.Remove(_registry, ourOpenCommand),
+                @"HKEY_CURRENT_USER\" + RegistryKeys.OpenWithApplicationPath,
+                notDeleted);
+            TryDelete(
+                () => _registry.DeleteTree(RegistryKeyId.UninstallEntry),
+                @"HKEY_CURRENT_USER\" + RegistryKeys.UninstallEntryPath,
+                notDeleted);
         }
 
         private bool TryNotify()
@@ -483,7 +675,19 @@ namespace CyberPad.Install
                 }
             }
 
-            TryDelete(() => Directory.Delete(extendedDir, false), Display(extendedDir), notDeleted);
+            TryDelete(
+                () =>
+                {
+                    // A real folder (checked above, not a link) that is read-only cannot be deleted until cleared.
+                    if ((attributes.Value & FileAttributes.ReadOnly) != 0)
+                    {
+                        File.SetAttributes(extendedDir, attributes.Value & ~FileAttributes.ReadOnly);
+                    }
+
+                    Directory.Delete(extendedDir, false);
+                },
+                Display(extendedDir),
+                notDeleted);
         }
 
         private static void DeleteEntry(string extendedPath, bool isDirectory)

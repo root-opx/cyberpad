@@ -5,14 +5,18 @@ namespace CyberPad.Install
     /// <summary>What the setup window shows for a fresh install or an update. Pure, so it can be tested.</summary>
     public sealed class SetupPlan
     {
-        private SetupPlan(string heading, string button, string folder, bool isUpdate, string? fixedStatus)
+        private SetupPlan(string heading, string button, string folder, bool isUpdate, string? fixedStatus, bool isBlocked = false)
         {
             Heading = heading;
             ButtonText = button;
             Folder = folder;
             IsUpdate = isUpdate;
             FixedStatus = fixedStatus;
+            IsBlocked = isBlocked;
         }
+
+        /// <summary>True when a newer version is installed: the button stays disabled and the status says why.</summary>
+        public bool IsBlocked { get; }
 
         public string Heading { get; }
 
@@ -30,7 +34,8 @@ namespace CyberPad.Install
         /// <param name="version">The version this setup installs, e.g. <c>1.0.0</c>.</param>
         /// <param name="existingInstallDir">The folder of the install found through the uninstall entry, or null.</param>
         /// <param name="defaultFolder">The default install folder.</param>
-        public static SetupPlan Create(string version, string? existingInstallDir, string defaultFolder)
+        /// <param name="existingVersion">The version of that install (from its manifest), or null.</param>
+        public static SetupPlan Create(string version, string? existingInstallDir, string defaultFolder, string? existingVersion = null)
         {
             if (version == null)
             {
@@ -39,7 +44,14 @@ namespace CyberPad.Install
 
             if (existingInstallDir != null)
             {
-                return new SetupPlan("Update CyberPad to " + version, "Update", existingInstallDir, true, SetupTexts.UpdateStatus);
+                string heading = "Update CyberPad to " + version;
+                if (existingVersion != null && InstallManifest.IsValidVersion(existingVersion) && InstallManifest.IsValidVersion(version) &&
+                    InstallManifest.CompareVersions(version, existingVersion) < 0)
+                {
+                    return new SetupPlan(heading, "Update", existingInstallDir, true, InstallMessages.NewerInstalled(existingVersion), isBlocked: true);
+                }
+
+                return new SetupPlan(heading, "Update", existingInstallDir, true, SetupTexts.UpdateStatus);
             }
 
             return new SetupPlan("Install CyberPad " + version, "Install", defaultFolder ?? throw new ArgumentNullException(nameof(defaultFolder)), false, null);
@@ -58,7 +70,11 @@ namespace CyberPad.Install
         public const string UpdatedDone = "CyberPad was updated.";
         public const string NotStarted = "CyberPad is installed, but it could not be started. Start it from the Start menu.";
         public const string NotInstalledForAccount = "CyberPad is not installed for this account.";
-        public const string NotesLeftPrefix = "Some of your notes and settings could not be deleted: ";
+        public const string AlreadyRunning = "CyberPad setup is already running.";
+        public const string SetupElevated = "Run setup without administrator rights. CyberPad is installed for your own account.";
+        public const string UninstallElevated = "Run uninstall without administrator rights.";
+        public const string TempCopyFailed = "Uninstall could not prepare its temporary copy. Try again.";
+        public const string ProgressName = "Installation progress";
 
         public static string DeleteNotesQuestion(string notesFolder) =>
             "Delete all CyberPad notes and settings in " + notesFolder + "? This cannot be undone.";

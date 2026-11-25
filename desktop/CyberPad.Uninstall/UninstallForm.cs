@@ -93,6 +93,9 @@ namespace CyberPad.Uninstall
             _cancel.TabIndex = 2;
             AcceptButton = _uninstall;
             CancelButton = _cancel;
+
+            // Started from Settings, the window may open behind it.
+            Shown += (s, e) => Activate();
         }
 
         protected override void OnFormClosing(FormClosingEventArgs e)
@@ -181,7 +184,7 @@ namespace CyberPad.Uninstall
                 }
                 else if (notes != null && notes.NotDeleted.Count > 0)
                 {
-                    notesMessage = "\r\n\r\n" + SetupTexts.NotesLeftPrefix + notes.NotesFolder;
+                    notesMessage = "\r\n\r\n" + InstallMessages.NotesLeft(notes.NotesFolder);
                 }
             }
 

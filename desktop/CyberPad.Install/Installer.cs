@@ -143,6 +143,13 @@ namespace CyberPad.Install
                 throw new InstallException(path.Message);
             }
 
+            // Setup installs exactly where the window said. The window puts the CyberPad subfolder in the field
+            // before Install; if the rules now pick a subfolder, the folder changed after it was checked.
+            if (path.Kind == InstallPathKind.UsesSubfolder)
+            {
+                throw new InstallException(InstallMessages.FolderChanged);
+            }
+
             string dir = path.FullPath;
             bool isUpdate = path.FolderKind == InstallPathKind.ExistingInstall;
             string exe = dir + "\\" + InstallLayout.AppFileName;
@@ -157,12 +164,18 @@ namespace CyberPad.Install
             if (isUpdate)
             {
                 old = InstallManifest.TryReadFrom(dir, _probe) ?? throw new InstallException(InstallMessages.FilesInTheWay);
+
+                // Never replace a newer install with an older version; the same version reinstalls.
+                if (InstallManifest.CompareVersions(request.Version, old.Version) < 0)
+                {
+                    throw new InstallException(InstallMessages.NewerInstalled(old.Version));
+                }
             }
 
             // 1. CyberPad must not be running from the target folder.
             Step(InstallStep.CheckRunning);
             bool appIsOurs = old != null && old.Files.Any(f => PathText.AreSame(f, InstallLayout.AppFileName));
-            CheckAppReplaceable(_probe, exe, appIsOurs, InstallMessages.CloseToInstall, InstallMessages.CannotReplaceApp);
+            CheckAppReplaceable(_probe, exe, appIsOurs, isUpdate ? InstallMessages.CloseToUpdate : InstallMessages.CloseToInstall, InstallMessages.CannotReplaceApp);
 
             var replaceable = new List<string>();
             if (old != null)
@@ -229,10 +242,17 @@ namespace CyberPad.Install
                 // 7. The registry.
                 Step(InstallStep.Registry);
                 run.RegistryBefore = Guard(InstallMessages.RegistryFailed, () => RegistrySnapshot.Take(_registry));
+
+                // An "Open with" entry that existed before the first install is remembered so uninstall can put
+                // it back; an update (the entry exists) keeps the record the first install saved.
+                OpenWithRegistration openWithBefore = Guard(
+                    InstallMessages.RegistryFailed,
+                    () => _registry.KeyExists(RegistryKeyId.UninstallEntry) ? OpenWithRegistration.ReadSaved(_registry) : OpenWithRegistration.Capture(_registry));
                 long totalBytes = extraction.TotalBytes + uninstallerBytes + manifestBytes.Length;
                 Guard(InstallMessages.RegistryFailed, () =>
                 {
                     WriteRegistry(request.Version, dir, exe, uninstallCommand, openCommand, totalBytes);
+                    openWithBefore.Save(_registry);
                     return true;
                 });
 
@@ -253,6 +273,12 @@ namespace CyberPad.Install
             catch (InstallException ex)
             {
                 run.Undone = true;
+                if (run.Committed)
+                {
+                    // Nothing is undone once the commit has started, so never say it was.
+                    throw new InstallException(InstallMessages.InstalledCleanupIncomplete, ex);
+                }
+
                 if (!Undo(run))
                 {
                     throw new InstallException(InstallMessages.UndoIncomplete, ex);
@@ -260,11 +286,15 @@ namespace CyberPad.Install
 
                 throw;
             }
-#pragma warning disable CA1031 // Any other failure is undone and reported with a safe message; it is not swallowed.
-            catch (Exception ex)
-#pragma warning restore CA1031
+            catch (Exception ex) when (!CriticalExceptions.IsCritical(ex))
             {
+                // Any other failure is undone and reported with a safe message; it is not swallowed.
                 run.Undone = true;
+                if (run.Committed)
+                {
+                    throw new InstallException(InstallMessages.InstalledCleanupIncomplete, ex);
+                }
+
                 throw new InstallException(Undo(run) ? InstallMessages.UnexpectedFailure : InstallMessages.UndoIncomplete, ex);
             }
             finally
@@ -276,7 +306,15 @@ namespace CyberPad.Install
             }
 
             // Outside the try: the install is complete, so a throwing progress callback cannot undo it.
-            progress?.Report(100);
+            try
+            {
+                progress?.Report(100);
+            }
+            catch (Exception ex) when (!CriticalExceptions.IsCritical(ex))
+            {
+                throw new InstallException(InstallMessages.InstalledCleanupIncomplete, ex);
+            }
+
             return result!;
         }
 
@@ -346,17 +384,14 @@ namespace CyberPad.Install
             }
         }
 
+        /// <summary>The current shortcut; one that cannot be read, whatever the reason, is treated as absent and overwritten.</summary>
         private static ShortcutInfo? TryReadShortcut(IShortcuts shortcuts)
         {
             try
             {
                 return shortcuts.TryRead();
             }
-            catch (IOException)
-            {
-                return null;
-            }
-            catch (UnauthorizedAccessException)
+            catch (Exception ex) when (!CriticalExceptions.IsCritical(ex))
             {
                 return null;
             }

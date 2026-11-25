@@ -58,6 +58,19 @@ namespace CyberPad.Install
 
         public static bool IsRoot(RegistryKeyId key) =>
             key == RegistryKeyId.UninstallEntry || key == RegistryKeyId.OpenWithApplication;
+
+        /// <summary>
+        /// The keys that may be deleted with their subtrees: the two roots, and SupportedTypes (inside a
+        /// root, for putting back an "Open with" entry that existed before setup).
+        /// </summary>
+        public static bool IsDeletable(RegistryKeyId key) => IsRoot(key) || key == RegistryKeyId.OpenWithSupportedTypes;
+
+        /// <summary>Value names setup writes in the uninstall entry to remember an earlier "Open with" entry.</summary>
+        public const string PreviousOpenCommandValue = "PreviousOpenCommand";
+
+        public const string OpenWithExistedValue = "OpenWithExisted";
+
+        public const string OpenWithAddedValue = "OpenWithAdded";
     }
 
     /// <summary>
@@ -83,8 +96,14 @@ namespace CyberPad.Install
         /// <summary>Sets a DWORD value, creating the key (and its parents) as needed.</summary>
         void SetDword(RegistryKeyId key, string name, int value);
 
-        /// <summary>Deletes one of the two root keys and its subtree; does nothing when it is missing.</summary>
+        /// <summary>
+        /// Deletes a key allowed by <see cref="RegistryKeys.IsDeletable"/> and its subtree; does nothing when
+        /// it is missing.
+        /// </summary>
         void DeleteTree(RegistryKeyId root);
+
+        /// <summary>Deletes one value; does nothing when the key or the value is missing.</summary>
+        void DeleteValue(RegistryKeyId key, string name);
     }
 
     public sealed class ShortcutInfo

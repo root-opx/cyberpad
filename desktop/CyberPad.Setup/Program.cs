@@ -1,6 +1,5 @@
 using System;
 using System.Reflection;
-using System.Runtime.CompilerServices;
 using System.Windows.Forms;
 using CyberPad.Install;
 using CyberPad.Install.UI;
@@ -13,23 +12,39 @@ namespace CyberPad.Setup
         internal const string PayloadResource = "payload.zip";
         internal const string UninstallerResource = "Uninstall.exe";
 
+        private const string Caption = "CyberPad Setup";
+
         [STAThread]
         private static int Main()
         {
-            // The library is embedded; its loader must be in place before any library type is touched.
-            EmbeddedLibrary.Register();
-            return Run();
-        }
-
-        [MethodImpl(MethodImplOptions.NoInlining)]
-        private static int Run()
-        {
+            // The library's code is compiled into this exe; no DLL is loaded from beside it.
             UiCommon.InstallExceptionHandlers(SetupTexts.SetupProblem);
 
+            // CyberPad is installed for the signed-in account; an elevated setup is refused before anything else.
+            if (ProcessGuard.IsElevated())
+            {
+                UiCommon.Error(null, Caption, SetupTexts.SetupElevated);
+                return 1;
+            }
+
+            using (SingleInstance? instance = SingleInstance.TryTake(0))
+            {
+                if (instance == null)
+                {
+                    UiCommon.Info(null, Caption, SetupTexts.AlreadyRunning);
+                    return 1;
+                }
+
+                return Run();
+            }
+        }
+
+        private static int Run()
+        {
             Assembly self = Assembly.GetExecutingAssembly();
             if (self.GetManifestResourceInfo(PayloadResource) == null || self.GetManifestResourceInfo(UninstallerResource) == null)
             {
-                UiCommon.Error(null, "CyberPad Setup", SetupTexts.Incomplete);
+                UiCommon.Error(null, Caption, SetupTexts.Incomplete);
                 return 1;
             }
 
@@ -44,13 +59,13 @@ namespace CyberPad.Setup
             }
             catch (InstallException ex)
             {
-                UiCommon.Error(null, "CyberPad Setup", ex.Message);
+                UiCommon.Error(null, Caption, ex.Message);
                 return 1;
             }
 
             Version? assemblyVersion = self.GetName().Version;
             string version = SetupTexts.FormatVersion(assemblyVersion ?? new Version(1, 0, 0, 0));
-            SetupPlan plan = SetupPlan.Create(version, existing?.InstallDir, env.DefaultInstallFolder);
+            SetupPlan plan = SetupPlan.Create(version, existing?.InstallDir, env.DefaultInstallFolder, existing?.Version);
 
             Application.Run(new SetupForm(plan, version, env, registry, probe, self));
             return 0;

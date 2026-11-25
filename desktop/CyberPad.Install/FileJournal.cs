@@ -183,6 +183,15 @@ namespace CyberPad.Install
                 if (!CleanUp(() =>
                     {
                         CommitStep?.Invoke(entry.Backup!);
+
+                        // A replaced file that was read-only keeps the attribute in its backup; the backup is
+                        // inside setup's own new, random folder, so clearing it touches nothing else.
+                        FileAttributes attributes = File.GetAttributes(entry.Backup!);
+                        if ((attributes & FileAttributes.ReadOnly) != 0)
+                        {
+                            File.SetAttributes(entry.Backup!, attributes & ~FileAttributes.ReadOnly);
+                        }
+
                         File.Delete(entry.Backup!);
                     }))
                 {

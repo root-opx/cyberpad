@@ -11,6 +11,12 @@ $project = Join-Path $desktop 'CyberPad.Desktop'
 $csproj = Join-Path $project 'CyberPad.Desktop.csproj'
 $dist = Join-Path $root 'dist'
 $publishDir = Join-Path $dist 'CyberPad'
+$setupObj = Join-Path $dist 'obj-setup'
+
+# Paths are passed to MSBuild as -p:Name=value, where ';' separates values and '%' starts an escape.
+if ($root.Contains(';') -or $root.Contains('%')) {
+    throw "The repository path contains ';' or '%', which MSBuild properties cannot carry: $root. Move the repository to a folder without them."
+}
 
 function Assert-ExitCode([string]$step) {
     # Native commands do not trip $ErrorActionPreference in PowerShell 5.1.
@@ -125,14 +131,13 @@ try {
     }
     Write-Host "Created $zip"
 
-    $setupObj = Join-Path $dist 'obj-setup'
     if (Test-Path -LiteralPath $setupObj) {
         Remove-Item -LiteralPath $setupObj -Recurse -Force
     }
 
     Write-Host '== 6/8 build Uninstall.exe'
-    # DebugType=none: no .pdb (its embedded path names the build machine's user folder). The library goes
-    # into the exe, so it is built without a .pdb too.
+    # DebugType=none: no .pdb (its embedded path names the build machine's user folder). The library's
+    # source files are compiled into each program, so no DLL is built or shipped alongside.
     $uninstallOut = Join-Path $setupObj 'uninstall'
     & dotnet build (Join-Path $desktop 'CyberPad.Uninstall\CyberPad.Uninstall.csproj') -c Release --no-incremental `
         -p:DebugType=none -p:Version=$version -o $uninstallOut
@@ -161,15 +166,34 @@ try {
     if ($setupSize -gt 150MB) {
         throw "CyberPad-Setup.exe is larger than 150 MB ($setupSize bytes)."
     }
+    # Read the built programs' metadata without running them: the setup file must carry exactly its two
+    # resources, and neither program may reference anything but .NET Framework assemblies (in particular no
+    # CyberPad.Install.dll, which Windows would look for beside the exe).
+    $frameworkAssemblies = @('mscorlib', 'System', 'System.Core', 'System.Drawing', 'System.Windows.Forms', 'System.IO.Compression', 'System.IO.Compression.FileSystem')
+    foreach ($program in @($setupExe, $uninstallExe)) {
+        $metadata = [Reflection.Assembly]::ReflectionOnlyLoad([IO.File]::ReadAllBytes($program))
+        $foreign = @($metadata.GetReferencedAssemblies() | Where-Object { $frameworkAssemblies -notcontains $_.Name } | ForEach-Object { $_.Name })
+        if ($foreign.Count -gt 0) {
+            throw ("$(Split-Path -Leaf $program) references non-framework assemblies:`n" + ($foreign -join "`n"))
+        }
+        if ($program -eq $setupExe) { $setupMetadata = $metadata }
+    }
+    $resources = @($setupMetadata.GetManifestResourceNames() | Sort-Object)
+    if ($resources.Count -ne 2 -or $resources -cnotcontains 'payload.zip' -or $resources -cnotcontains 'Uninstall.exe') {
+        throw ("CyberPad-Setup.exe must contain exactly payload.zip and Uninstall.exe; it has: " + ($resources -join ', '))
+    }
     $setupFinal = Join-Path $dist "CyberPad-Setup-$version.exe"
     Copy-Item -LiteralPath $setupExe -Destination $setupFinal -Force
     $strayPdb = @(Get-ChildItem -LiteralPath $dist -Filter '*.pdb' -File)
     if ($strayPdb.Count -gt 0) {
         throw ("A .pdb file is shipped in dist:`n" + (($strayPdb | ForEach-Object { $_.Name }) -join "`n"))
     }
-    Remove-Item -LiteralPath $setupObj -Recurse -Force
     Write-Host "Created $setupFinal"
 }
 finally {
+    # Cleaned on failure too.
+    if (Test-Path -LiteralPath $setupObj) {
+        Remove-Item -LiteralPath $setupObj -Recurse -Force -ErrorAction SilentlyContinue
+    }
     Pop-Location
 }

@@ -102,9 +102,9 @@ namespace CyberPad.Setup
 
             _startAfter = new CheckBox { Text = "&Start CyberPad when setup finishes", Checked = true, AutoSize = true, Margin = new Padding(0, 0, 0, font.Height) };
 
-            _progress = new ProgressBar { Minimum = 0, Maximum = 100, Style = ProgressBarStyle.Continuous, Dock = DockStyle.Fill, Visible = false, Margin = new Padding(0, 0, 0, font.Height), MinimumSize = new Size(0, font.Height) };
+            _progress = new ProgressBar { AccessibleName = SetupTexts.ProgressName, Minimum = 0, Maximum = 100, Style = ProgressBarStyle.Continuous, Dock = DockStyle.Fill, Visible = false, Margin = new Padding(0, 0, 0, font.Height), MinimumSize = new Size(0, font.Height) };
 
-            _install = new Button { Text = plan.ButtonText, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, MinimumSize = new Size(font.Height * 6, 0), Margin = new Padding(0, 0, gap, 0), Enabled = plan.IsUpdate };
+            _install = new Button { Text = plan.ButtonText, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, MinimumSize = new Size(font.Height * 6, 0), Margin = new Padding(0, 0, gap, 0), Enabled = plan.IsUpdate && !plan.IsBlocked };
             _cancel = new Button { Text = "Cancel", AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, MinimumSize = new Size(font.Height * 6, 0), Margin = new Padding(0) };
 
             var buttons = new FlowLayoutPanel { FlowDirection = FlowDirection.LeftToRight, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Anchor = AnchorStyles.Right, Margin = new Padding(0), WrapContents = false };
@@ -133,11 +133,18 @@ namespace CyberPad.Setup
             _debounce = new Timer { Interval = DebounceMilliseconds };
             _debounce.Tick += (s, e) => EvaluateNow();
 
+            // A screen reader hears the status line (where files go, or why the folder cannot be used) with the field.
+            _folder.AccessibleDescription = _status.Text;
+            _status.TextChanged += (s, e) => _folder.AccessibleDescription = _status.Text;
+
             _folder.TextChanged += OnFolderTextChanged;
             _folder.Leave += (s, e) => UseSubfolderText();
             _browse.Click += OnBrowse;
             _install.Click += OnInstallClicked;
             _cancel.Click += (s, e) => Close();
+
+            // Started from a browser or Explorer, the window may open behind it.
+            Shown += (s, e) => Activate();
 
             if (!plan.IsUpdate)
             {
@@ -272,7 +279,7 @@ namespace CyberPad.Setup
 
         private void OnInstallClicked(object? sender, EventArgs e)
         {
-            if (_busy)
+            if (_busy || _plan.IsBlocked)
             {
                 return;
             }
@@ -431,7 +438,7 @@ namespace CyberPad.Setup
             _folder.Enabled = !busy;
             _browse.Enabled = !busy && !_plan.IsUpdate;
             _startAfter.Enabled = !busy;
-            _install.Enabled = !busy;
+            _install.Enabled = !busy && !_plan.IsBlocked;
             _cancel.Enabled = !busy;
             _progress.Visible = busy;
             if (busy)

@@ -89,6 +89,14 @@ namespace CyberPad.Install
                 return Refuse(null, failure!);
             }
 
+            // Checked on the text as typed too: resolving can expand an 8.3 name (.NET does when it exists).
+            string typed = PathText.TrimTrailingSeparators(input!.Replace('/', '\\'));
+            string? nameFailure = CheckNamesBelowProfile(typed, env.UserProfile) ?? CheckNamesBelowProfile(full, env.UserProfile);
+            if (nameFailure != null)
+            {
+                return Refuse(full, nameFailure);
+            }
+
             if (probe.GetDriveKind(full.Substring(0, 3)) != DriveKind.Fixed)
             {
                 return Refuse(full, InstallMessages.LocalDrive);
@@ -193,7 +201,7 @@ namespace CyberPad.Install
             {
                 InstallPathResult sub = Check(full + "\\" + InstallLayout.SubfolderName, probe, env, allowSubfolder: false, probeWrite);
                 return sub.IsUsable
-                    ? new InstallPathResult(true, sub.FullPath, InstallPathKind.UsesSubfolder, sub.FolderKind, sub.Message)
+                    ? new InstallPathResult(true, sub.FullPath, InstallPathKind.UsesSubfolder, sub.FolderKind, InstallMessages.WillInstallIn(sub.FullPath!))
                     : sub;
             }
             else
@@ -232,17 +240,28 @@ namespace CyberPad.Install
                 return null;
             }
 
-            // Any ":" after the drive is alternate-data-stream syntax. "%" would be expanded by Explorer
-            // inside the registered open command, so it is refused too.
-            if (PathText.HasControlCharacter(value) || value.IndexOf(':', 2) >= 0 || value.IndexOf('%') >= 0)
+            // Any ":" after the drive is alternate-data-stream syntax.
+            if (PathText.HasControlCharacter(value) || value.IndexOf(':', 2) >= 0)
             {
                 failure = InstallMessages.TooLongOrBadCharacters;
                 return null;
             }
 
-            foreach (string segment in value.Substring(3).Split('\\', '/'))
+            string[] segments = value.Substring(3).Split('\\', '/');
+            foreach (string segment in segments)
             {
-                if (segment.Length > 0 && !PathText.IsValidSegment(segment))
+                if (segment == "..")
+                {
+                    failure = InstallMessages.ParentReference;
+                    return null;
+                }
+            }
+
+            // The 8.3 look-alike and "%" rules depend on where the user's profile ends; they are applied by
+            // CheckNamesBelowProfile once the path is resolved.
+            foreach (string segment in segments)
+            {
+                if (segment.Length > 0 && !PathText.IsValidSegment(segment, allowShortNameLookAlike: true))
                 {
                     failure = InstallMessages.TooLongOrBadCharacters;
                     return null;
@@ -289,6 +308,47 @@ namespace CyberPad.Install
             }
 
             return full;
+        }
+
+        /// <summary>
+        /// Two name rules apply only to the part of the path setup chooses, below the user's profile folder
+        /// (a profile such as <c>C:\Users\bob~2</c> is Windows' choice, not a look-alike):
+        /// no 8.3 short-name look-alike ("~" and a digit), which could name a different folder than it appears
+        /// to, and no "%", which Explorer would expand inside the registered open command. A path outside the
+        /// profile is checked in full (it is refused later anyway). A profile whose own name has "%" cannot be
+        /// used at all, and says so.
+        /// </summary>
+        private static string? CheckNamesBelowProfile(string full, string profile)
+        {
+            string part;
+            if (PathText.IsSameOrInside(full, profile))
+            {
+                if (profile.IndexOf('%') >= 0)
+                {
+                    return InstallMessages.ProfileHasPercent;
+                }
+
+                part = full.Length > profile.Length ? full.Substring(profile.Length + 1) : string.Empty;
+            }
+            else
+            {
+                part = full.Substring(3);
+            }
+
+            if (part.IndexOf('%') >= 0)
+            {
+                return InstallMessages.TooLongOrBadCharacters;
+            }
+
+            foreach (string segment in part.Split('\\'))
+            {
+                if (segment.Length > 0 && !PathText.IsValidSegment(segment))
+                {
+                    return InstallMessages.TooLongOrBadCharacters;
+                }
+            }
+
+            return null;
         }
 
         private static InstallPathResult Refuse(string? full, string message) =>

@@ -120,21 +120,24 @@ public sealed class NoteStoreTests : IDisposable
     }
 
     [Fact]
-    public async Task Save_RetriesWhileNotesFileIsBrieflyLocked()
+    public void Save_RetriesWhileNotesFileIsBrieflyLocked()
     {
         var dir = NewDir();
         var store = new NoteStore(dir);
         store.Save("a");
         var main = Path.Combine(dir, NoteStore.MainFile);
         var held = new FileStream(main, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
-        var release = Task.Run(async () => { await Task.Delay(150); held.Dispose(); });
+        // A dedicated thread, not the thread pool: while the suite runs in parallel the pool can be busy for
+        // longer than the store's retry window, which made this test fail now and then.
+        var release = new Thread(() => { Thread.Sleep(150); held.Dispose(); }) { IsBackground = true };
+        release.Start();
         try
         {
             store.Save("b"); // blocks this thread; the first attempt hits the lock, a retry succeeds
         }
         finally
         {
-            await release.WaitAsync(TimeSpan.FromSeconds(5));
+            release.Join(TimeSpan.FromSeconds(5));
             held.Dispose();
         }
         Assert.Equal(("b", (string?)"a"), store.Load());

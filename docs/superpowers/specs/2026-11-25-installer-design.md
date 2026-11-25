@@ -47,7 +47,9 @@ The portable zip stays: unzip and run, nothing installed, no registry changes.
 ### How it is built *(my call)*
 
 - Two small Windows programs, **Setup** and **Uninstall**, written in C# against the .NET Framework that is part of Windows 10 and 11 (target `net471`). They need no runtime bundled, so the uninstaller is about 100 KB and the installer is about the size of the zip.
-- Their logic lives in a library, `CyberPad.Install`, built for both `net471` and `net8.0-windows` so the existing xUnit project can test it.
+- Their logic lives in the source files of `CyberPad.Install`. The library's source files are compiled into each program, so no separate DLL is loaded at run time (a DLL placed beside the setup file could otherwise be loaded in its place). The `CyberPad.Install` project itself is built for `net471` and `net8.0-windows` so the existing xUnit project can test the same code.
+- Both programs refuse to run with administrator rights (an elevated token), and only one instance of setup or uninstall runs at a time (a named mutex per Windows session).
+- A residual that a .NET Framework program cannot close: a `<exe>.config` file placed beside the exe is read before `Main` runs. The README tells users to run the setup file from a folder that holds only their own files.
 - No new package. The build uses the .NET Framework 4.7.1 developer pack that is installed with Visual Studio. The README says so under Development.
 - The main app, `CyberPad.exe`, is not changed and does not reference any of this.
 
@@ -71,6 +73,7 @@ This folder will be created.
 ```
 
 - Default folder: `%LOCALAPPDATA%\Programs\CyberPad`. If CyberPad is already installed (found through its uninstall entry), the field shows that folder and the heading reads `Update CyberPad to <version>`; the button reads `Update`.
+- Setup never installs a version lower than the installed one: the heading stays, Install is disabled, and the status line reads `A newer version of CyberPad (<installed>) is already installed.` An equal version reinstalls as an update.
 - The line under the field tells the user what will happen: `This folder will be created.`, `CyberPad will be installed in this folder.`, `CyberPad is already installed here and will be updated.`, or the reason the folder cannot be used.
 - While installing, the controls are disabled and a progress bar shows files copied. Closing the window during the copy is refused with `Setup is still copying files.`
 - On success: `CyberPad is installed.` with a `Finish` button; CyberPad starts if the box is ticked.
@@ -83,10 +86,12 @@ The path the user types or picks is untrusted input. Setup resolves it to a full
 | Rule | Message when it fails |
 |---|---|
 | It is an absolute path on a local fixed drive (not a network path, not removable, no `\\?\` or device paths). | `Choose a folder on a local drive.` |
+| It is inside the user's own profile folder (for example `C:\Users\you\…`). Folders elsewhere, such as `C:\Tools` or another drive, can usually be changed by other accounts on the PC, who could then replace the program. | `Choose a folder inside your own user folder.` |
+| It is not the Startup folder or the temp folder, or inside either. | `Choose a folder of its own for CyberPad, not a shared folder.` |
 | It is at most 180 characters and contains no control characters. | `That path is too long or contains characters that cannot be used.` |
 | It is not a drive root, and not the user's profile, Desktop, Documents or Downloads folder itself. | `Choose a folder of its own for CyberPad, not a shared folder.` |
 | It is not the notes folder (`%LOCALAPPDATA%\CyberPad`), inside it, or a parent of it. | `That folder holds your notes. Choose a different one.` |
-| It is not inside the Windows folder or Program Files. | `That folder needs administrator rights. Choose a folder in your own profile.` |
+| It is not inside the Windows folder or Program Files. | `That folder needs administrator rights. Choose a folder inside your own user folder.` |
 | No part of the path below the drive is a link or junction. | `That folder is a link to another location. Choose a real folder.` |
 | The folder does not exist, or is empty, or is an existing CyberPad install (it holds a valid install manifest). | *(see below)* |
 | Setup can create a file there. | `Setup cannot write to that folder.` |
@@ -95,7 +100,7 @@ If the chosen folder exists, is not empty and is not a CyberPad install, setup u
 
 ### What installing does, in order
 
-1. Checks that CyberPad is not running from the target folder (it tries to open the existing `CyberPad.exe` for writing). If it is: `Close CyberPad, then choose Install again.` Setup never closes it.
+1. Checks that CyberPad is not running from the target folder (it tries to open the existing `CyberPad.exe` for writing). If it is: `Close CyberPad, then choose Install again.` (`Update` on an update). Setup never closes it.
 2. Reads the old install manifest if this is an update, and remembers the old file list.
 3. Unpacks the payload into the folder. Every entry name is checked: relative, no `..`, no drive or root, no reserved device names, and the resolved path must stay inside the install folder. The entry count and total size are capped (2,000 files, 1 GB). A payload that breaks a rule stops the install.
 4. Writes `Uninstall.exe` and the install manifest: a text file listing the version and every file setup wrote, one relative path per line.
@@ -128,7 +133,10 @@ C:\Users\you\AppData\Local\CyberPad
 - The install folder comes from the uninstall registry entry and must contain a valid manifest; a path given on the command line is never used.
 - If CyberPad is running: `Close CyberPad, then choose Uninstall again.`
 - Because a program cannot delete itself while it runs, `Uninstall.exe` copies itself to the user's temp folder and continues from there. That copy (about 100 KB) is left in the temp folder. *(my call)*
-- It removes: every file named in the manifest (each checked to be inside the install folder), the manifest, `Uninstall.exe`, folders that are now empty, the Start menu shortcut, and the two registry keys. Files in the install folder that setup did not write are left alone, and then the folder stays too.
+- It removes: every file named in the manifest (each checked to be inside the install folder), the manifest, `Uninstall.exe`, folders that are now empty, the Start menu shortcut if it still points at this install, and the two registry keys. Files in the install folder that setup did not write are left alone, and then the folder stays too.
+- If a file cannot be deleted (for example because it is in use), the registry keys are still removed and the manifest is rewritten to list exactly the files that are left.
+- If the install's folder no longer passes the folder rules, or its manifest is missing or damaged, no file is deleted at all: only the entry (and the shortcut, if it points at that folder) is removed, and the user is told the files were left.
+- If `HKCU\Software\Classes\Applications\CyberPad.exe` already existed before the first install (Windows creates it when the portable `CyberPad.exe` is chosen through "Open with → Choose another app"), setup records its open command in the uninstall entry, and uninstall puts that command back instead of deleting the key, as long as the key still runs this install's command.
 - If the box is ticked, a second question follows: `Delete all CyberPad notes and settings in <folder>? This cannot be undone.` with `Delete notes` and `Keep notes`. Only then is `%LOCALAPPDATA%\CyberPad` removed. That path is fixed in the program, never read from input, and is checked not to be a link.
 - At the end: `CyberPad was removed.` or `CyberPad was removed. Some files could not be deleted: <folder>`.
 

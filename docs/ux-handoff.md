@@ -114,7 +114,7 @@ These come from the project and from the user's security rules in `~/.claude/rul
 - **Tests:**
   - `npm test` (Node built-in runner, 371 tests);
   - `node --check js/app.js`;
-  - `dotnet test desktop/CyberPad.sln` (413 tests). The .NET test run rewrites `desktop/**/packages.lock.json`; revert that with `git checkout -- "desktop/**/packages.lock.json"`.
+  - `dotnet test desktop/CyberPad.sln` (905 tests). The .NET test run rewrites `desktop/**/packages.lock.json`; revert that with `git checkout -- "desktop/**/packages.lock.json"`.
 - **Manual checks:** README, "Manual checks for the desktop app". Add a line there for any desktop-visible UI change.
 
 ## Git

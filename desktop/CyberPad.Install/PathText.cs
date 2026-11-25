@@ -42,9 +42,10 @@ namespace CyberPad.Install
         /// One file or folder name: not empty, not "." or "..", no trailing dot or space, no characters
         /// Windows forbids, no control characters, not a reserved device name (with or without an
         /// extension), and not an 8.3 short-name alias ("~" followed by a digit), which could name a
-        /// different folder than it appears to.
+        /// different folder than it appears to. <paramref name="allowShortNameLookAlike"/> skips only that last
+        /// rule (for the part of a path above the user's profile, which setup does not choose).
         /// </summary>
-        public static bool IsValidSegment(string segment)
+        public static bool IsValidSegment(string segment, bool allowShortNameLookAlike = false)
         {
             if (segment.Length == 0)
             {
@@ -65,7 +66,7 @@ namespace CyberPad.Install
                     return false;
                 }
 
-                if (c == '~' && i + 1 < segment.Length && char.IsDigit(segment[i + 1]))
+                if (!allowShortNameLookAlike && c == '~' && i + 1 < segment.Length && char.IsDigit(segment[i + 1]))
                 {
                     return false;
                 }
@@ -176,6 +177,30 @@ namespace CyberPad.Install
             {
                 yield return fullPath;
             }
+        }
+
+        /// <summary>
+        /// True when the name matches exactly <paramref name="prefix"/> followed by <paramref name="hexDigits"/>
+        /// lowercase hex digits and then <paramref name="suffix"/>.
+        /// </summary>
+        public static bool IsPrefixHexSuffix(string name, string prefix, int hexDigits, string suffix)
+        {
+            if (name == null || name.Length != prefix.Length + hexDigits + suffix.Length ||
+                !name.StartsWith(prefix, StringComparison.Ordinal) || !name.EndsWith(suffix, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            for (int i = prefix.Length; i < prefix.Length + hexDigits; i++)
+            {
+                char c = name[i];
+                if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')))
+                {
+                    return false;
+                }
+            }
+
+            return true;
         }
 
         /// <summary>The parent of a normalised path, or null for a drive root.</summary>

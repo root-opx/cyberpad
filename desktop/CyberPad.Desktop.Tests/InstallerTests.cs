@@ -385,7 +385,7 @@ public sealed class InstallerTests : IDisposable
         using (new FileStream(Path.Combine(_dir, "CyberPad.exe"), FileMode.Open, FileAccess.Read, FileShare.Read))
         {
             var ex = Assert.Throws<InstallException>(() => Install(V2, "2.0.0"));
-            Assert.Equal("Close CyberPad, then choose Install again.", ex.Message);
+            Assert.Equal("Close CyberPad, then choose Update again.", ex.Message);
         }
 
         Assert.Equal(before, State());
@@ -438,17 +438,178 @@ public sealed class InstallerTests : IDisposable
     }
 
     [Fact]
-    public void FolderWithOtherFiles_InstallsIntoTheCyberPadSubfolder()
+    public void FolderWithOtherFiles_IsNotSilentlySwappedForItsSubfolder()
     {
+        // The window shows the CyberPad subfolder before Install; a request for the parent means the folder
+        // changed after it was checked.
         string tools = Path.Combine(_env.UserProfile, "Tools");
         Directory.CreateDirectory(tools);
         File.WriteAllText(Path.Combine(tools, "other.txt"), "x");
+        string before = State();
 
-        InstallResult result = Install(V1, "1.0.0", tools);
+        var ex = Assert.Throws<InstallException>(() => Install(V1, "1.0.0", tools));
 
+        Assert.Equal("That folder changed since you chose it. Check the folder and choose Install again.", ex.Message);
+        Assert.Equal(before, State());
+
+        InstallResult result = Install(V1, "1.0.0", tools + @"\CyberPad");
         Assert.Equal(tools + @"\CyberPad", result.InstallDir);
         Assert.True(File.Exists(Path.Combine(tools, "CyberPad", "CyberPad.exe")));
-        Assert.False(File.Exists(Path.Combine(tools, "CyberPad.exe")));
+    }
+
+    [Fact]
+    public void OlderVersion_IsRefused_AndChangesNothing()
+    {
+        Install(V1, "2.0.0");
+        string before = State();
+
+        var ex = Assert.Throws<InstallException>(() => Install(V2, "1.9.9"));
+
+        Assert.Equal("A newer version of CyberPad (2.0.0) is already installed.", ex.Message);
+        Assert.Equal(before, State());
+    }
+
+    [Theory]
+    [InlineData("1.0.0")]
+    [InlineData("1.0")]
+    [InlineData("1.0.1")]
+    [InlineData("1.10.0")]
+    public void SameOrNewerVersion_Updates(string version)
+    {
+        Install(V1, "1.0.0");
+        InstallResult result = Install(V2, version);
+        Assert.True(result.WasUpdate);
+        Assert.Equal(version, _registry.GetValue(RegistryKeyId.UninstallEntry, "DisplayVersion"));
+    }
+
+    [Fact]
+    public void ThrowingProgressAfterTheCommit_NeverClaimsAnUndo()
+    {
+        var progress = new ThrowingAt100();
+
+        var ex = Assert.Throws<InstallException>(() => Install(V1, "1.0.0", progress: progress));
+
+        Assert.Equal("CyberPad was installed, but setup could not finish cleaning up.", ex.Message);
+        Assert.Equal("1.0.0", Installer.FindExisting(_registry, _probe, _env)!.Version);
+    }
+
+    [Fact]
+    public void ShortcutThatThrowsAnyException_IsTreatedAsAbsent()
+    {
+        _shortcuts.ReadThrows = new ArgumentException("injected: odd shortcut");
+
+        Install(V1, "1.0.0");
+
+        string exe = _dir + @"\CyberPad.exe";
+        Assert.Equal($"{exe}|{_dir}|{exe}", _shortcuts.Dump());
+    }
+
+    [Fact]
+    public void ReadOnlyFileReplacedByAnUpdate_LeavesNoBackupBehind()
+    {
+        Install(V1, "1.0.0");
+        File.SetAttributes(Path.Combine(_dir, "wwwroot", "index.html"), FileAttributes.ReadOnly);
+        File.SetAttributes(Path.Combine(_dir, "wwwroot", "js", "old.js"), FileAttributes.ReadOnly);
+
+        InstallResult result = Install(V2, "2.0.0");
+
+        Assert.Empty(result.Leftovers);
+        Assert.DoesNotContain(Directory.GetDirectories(_dir), d => Path.GetFileName(d).StartsWith(".cyberpad-setup-"));
+    }
+
+    // --- an "Open with" entry that existed before setup ------------------------------------------------
+
+    private const string PortableCommand = "\"C:\\Users\\u\\Downloads\\CyberPad\\CyberPad.exe\" \"%1\"";
+
+    private void PortableRegistration()
+    {
+        // What Windows writes when "Open with → Choose another app" is used with the portable CyberPad.exe.
+        _registry.SetString(RegistryKeyId.OpenWithCommand, "", PortableCommand);
+        _registry.SetString(RegistryKeyId.OpenWithApplication, "NoOpenWith", "");
+    }
+
+    private string OpenWithDump() => string.Join("\n", _registry.Keys
+        .Where(k => k.Key != RegistryKeyId.UninstallEntry)
+        .OrderBy(k => k.Key)
+        .SelectMany(k => new[] { k.Key + ":" }.Concat(k.Value.Select(v => $"  {v.Key}={v.Value}"))));
+
+    [Fact]
+    public void OpenWith_FreshMachine_IsCreatedAndThenRemoved()
+    {
+        Install(V1, "1.0.0");
+        Assert.Equal("\"" + _dir + "\\CyberPad.exe\" \"%1\"", _registry.GetValue(RegistryKeyId.OpenWithCommand, ""));
+        Assert.Null(_registry.GetValue(RegistryKeyId.UninstallEntry, RegistryKeys.OpenWithExistedValue));
+        Assert.Null(_registry.GetValue(RegistryKeyId.UninstallEntry, RegistryKeys.PreviousOpenCommandValue));
+
+        NewUninstaller().Uninstall();
+
+        Assert.Empty(_registry.Keys);
+    }
+
+    [Fact]
+    public void OpenWith_PortableRegistration_IsRepointed_AndRestoredExactlyByUninstall()
+    {
+        PortableRegistration();
+        string before = _registry.Dump();
+
+        Install(V1, "1.0.0");
+        Assert.Equal("\"" + _dir + "\\CyberPad.exe\" \"%1\"", _registry.GetValue(RegistryKeyId.OpenWithCommand, ""));
+        Assert.Equal(PortableCommand, _registry.GetValue(RegistryKeyId.UninstallEntry, RegistryKeys.PreviousOpenCommandValue));
+        Assert.Equal(1, _registry.GetValue(RegistryKeyId.UninstallEntry, RegistryKeys.OpenWithExistedValue));
+
+        NewUninstaller().Uninstall();
+
+        Assert.Equal(before, _registry.Dump());
+    }
+
+    [Fact]
+    public void OpenWith_PortableRegistration_SurvivesAnUpdate_AndUninstallRestoresTheOriginal()
+    {
+        PortableRegistration();
+        string before = _registry.Dump();
+
+        Install(V1, "1.0.0");
+        Install(V2, "2.0.0");
+        Assert.Equal(PortableCommand, _registry.GetValue(RegistryKeyId.UninstallEntry, RegistryKeys.PreviousOpenCommandValue));
+
+        NewUninstaller().Uninstall();
+
+        Assert.Equal(before, _registry.Dump());
+    }
+
+    [Fact]
+    public void OpenWith_ChangedBySomethingElseAfterInstall_IsLeftAlone()
+    {
+        Install(V1, "1.0.0");
+        _registry.SetString(RegistryKeyId.OpenWithCommand, "", "\"C:\\Other\\CyberPad.exe\" \"%1\"");
+        string openWith = OpenWithDump();
+
+        UninstallResult result = NewUninstaller().Uninstall();
+
+        Assert.Equal(openWith, OpenWithDump());
+        Assert.False(_registry.KeyExists(RegistryKeyId.UninstallEntry));
+        Assert.Equal("CyberPad was removed.", result.Message);
+    }
+
+    [Fact]
+    public void OpenWith_FailedInstall_PutsThePortableRegistrationBack()
+    {
+        PortableRegistration();
+        string before = _registry.Dump();
+
+        Assert.Throws<InstallException>(() => RunWithFailure("notify", V1, "1.0.0"));
+
+        Assert.Equal(before, _registry.Dump());
+    }
+
+    private Uninstaller NewUninstaller() => new(_registry, _shortcuts, _notify, _probe, _env);
+
+    private sealed class ThrowingAt100 : IProgress<int>
+    {
+        public void Report(int value)
+        {
+            if (value == 100) throw new InvalidOperationException("injected");
+        }
     }
 
     [Fact]

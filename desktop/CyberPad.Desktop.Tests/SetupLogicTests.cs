@@ -29,6 +29,42 @@ public class SetupPlanTests
         Assert.Equal("CyberPad is already installed here and will be updated. To move it, uninstall it first.", plan.FixedStatus);
     }
 
+    [Fact]
+    public void Newer_install_blocks_the_update_with_the_heading_kept()
+    {
+        SetupPlan plan = SetupPlan.Create("1.2.3", @"C:\Users\x\Apps\CyberPad", @"C:\default", "1.10.0");
+
+        Assert.Equal("Update CyberPad to 1.2.3", plan.Heading);
+        Assert.True(plan.IsBlocked);
+        Assert.Equal("A newer version of CyberPad (1.10.0) is already installed.", plan.FixedStatus);
+    }
+
+    [Theory]
+    [InlineData("1.2.3")]
+    [InlineData("1.2.2")]
+    [InlineData("0.9")]
+    public void Same_or_older_install_is_updated(string installed)
+    {
+        SetupPlan plan = SetupPlan.Create("1.2.3", @"C:\Users\x\Apps\CyberPad", @"C:\default", installed);
+
+        Assert.False(plan.IsBlocked);
+        Assert.Equal(SetupTexts.UpdateStatus, plan.FixedStatus);
+    }
+
+    [Theory]
+    [InlineData("1.0.0", "1.0.0", 0)]
+    [InlineData("1.0", "1.0.0", 0)]
+    [InlineData("01.0", "1", 0)]
+    [InlineData("1.9", "1.10", -1)]
+    [InlineData("2", "1.99.99", 1)]
+    [InlineData("1.0.1", "1.0", 1)]
+    [InlineData("99999999999999999999", "99999999999999999998", 1)]
+    public void Versions_compare_part_by_part_as_numbers(string a, string b, int expected)
+    {
+        Assert.Equal(expected, InstallManifest.CompareVersions(a, b));
+        Assert.Equal(-expected, InstallManifest.CompareVersions(b, a));
+    }
+
     [Theory]
     [InlineData("1.0.0.0", "1.0.0")]
     [InlineData("2.14.7.0", "2.14.7")]
@@ -118,6 +154,20 @@ public class UninstallStagesTests
     public void Temp_copy_name_needs_exactly_16_bytes(int length)
     {
         Assert.Throws<ArgumentException>(() => UninstallStages.TempCopyName(new byte[length]));
+    }
+
+    [Fact]
+    public void Only_exact_temp_copy_names_are_recognised()
+    {
+        Assert.True(UninstallStages.IsTempCopyName(UninstallStages.TempCopyName(Enumerable.Repeat((byte)0xab, 16).ToArray())));
+        Assert.False(UninstallStages.IsTempCopyName(null));
+        Assert.False(UninstallStages.IsTempCopyName("CyberPad-Uninstall-" + new string('A', 32) + ".exe"));
+        Assert.False(UninstallStages.IsTempCopyName("CyberPad-Uninstall-" + new string('a', 31) + ".exe"));
+        Assert.False(UninstallStages.IsTempCopyName("CyberPad-Uninstall-" + new string('a', 33) + ".exe"));
+        Assert.False(UninstallStages.IsTempCopyName("CyberPad-Uninstall-" + new string('g', 32) + ".exe"));
+        Assert.False(UninstallStages.IsTempCopyName("cyberpad-uninstall-" + new string('a', 32) + ".exe"));
+        Assert.False(UninstallStages.IsTempCopyName("CyberPad-Uninstall-" + new string('a', 32) + ".exe.txt"));
+        Assert.False(UninstallStages.IsTempCopyName("Uninstall.exe"));
     }
 
     [Fact]

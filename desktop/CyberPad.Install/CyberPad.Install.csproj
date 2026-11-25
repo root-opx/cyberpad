@@ -1,8 +1,10 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <!--
-    Installer and uninstaller logic. Built for net471 (the Setup and Uninstall programs, which run on the
-    .NET Framework that ships with Windows) and net8.0-windows (so the xUnit project can test it).
+    Installer and uninstaller logic. The Setup and Uninstall programs compile these source files into
+    themselves (no DLL is loaded at run time); this project builds them for net471 (the .NET Framework the
+    programs run on, so the sources are checked against it) and net8.0-windows (so the xUnit project can
+    test them).
     No package of any kind: net471 builds against the .NET Framework 4.7.1 developer pack installed with
     Visual Studio, not the Microsoft.NETFramework.ReferenceAssemblies package.
   -->

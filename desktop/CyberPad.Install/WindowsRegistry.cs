@@ -61,14 +61,28 @@ namespace CyberPad.Install
 
         public void DeleteTree(RegistryKeyId root)
         {
-            if (!RegistryKeys.IsRoot(root))
+            if (!RegistryKeys.IsDeletable(root))
             {
-                throw new ArgumentOutOfRangeException(nameof(root), "Only the two root keys can be deleted.");
+                throw new ArgumentOutOfRangeException(nameof(root), "Only the root keys and SupportedTypes can be deleted.");
             }
 
             using (RegistryKey hive = OpenHive())
             {
                 hive.DeleteSubKeyTree(RegistryKeys.PathOf(root), false);
+            }
+        }
+
+        public void DeleteValue(RegistryKeyId key, string name)
+        {
+            if (name == null)
+            {
+                throw new ArgumentNullException(nameof(name));
+            }
+
+            using (RegistryKey hive = OpenHive())
+            using (RegistryKey? k = hive.OpenSubKey(RegistryKeys.PathOf(key), true))
+            {
+                k?.DeleteValue(name, false);
             }
         }
 

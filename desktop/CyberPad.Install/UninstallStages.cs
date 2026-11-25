@@ -24,6 +24,20 @@ namespace CyberPad.Install
         public const string TempExtension = ".exe";
         public const int RandomBytes = 16;
 
+        /// <summary>
+        /// One instance at a time of setup or uninstall, per Windows session. Setup and uninstall's first stage
+        /// try to take it without waiting. The first stage holds it until the second stage has started, then
+        /// releases it and exits; the second stage waits up to <see cref="SecondStageWaitMilliseconds"/> for it.
+        /// Nothing ever waits while holding it, so the hand-over cannot deadlock.
+        /// </summary>
+        public const string MutexName = @"Local\CyberPad-Setup";
+
+        public const int SecondStageWaitMilliseconds = 15000;
+
+        /// <summary>True for exactly <c>CyberPad-Uninstall-&lt;32 lowercase hex digits&gt;.exe</c>.</summary>
+        public static bool IsTempCopyName(string? name) =>
+            name != null && PathText.IsPrefixHexSuffix(name, TempPrefix, RandomBytes * 2, TempExtension);
+
         public static UninstallStage Parse(string[]? args)
         {
             if (args == null || args.Length == 0)

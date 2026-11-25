@@ -85,7 +85,7 @@ public sealed class InstallPathPolicyTests
         Assert.Equal(InstallPathKind.UsesSubfolder, result.Kind);
         Assert.Equal(InstallPathKind.WillCreate, result.FolderKind);
         Assert.Equal(@"C:\Users\u\Tools\CyberPad", result.FullPath);
-        Assert.Equal("This folder will be created.", result.Message);
+        Assert.Equal(@"CyberPad will be installed in C:\Users\u\Tools\CyberPad.", result.Message);
     }
 
     [Fact]
@@ -95,7 +95,7 @@ public sealed class InstallPathPolicyTests
         InstallPathResult result = Evaluate(@"C:\Users\u\Tools\");
         Assert.Equal(InstallPathKind.UsesSubfolder, result.Kind);
         Assert.Equal(InstallPathKind.ExistingInstall, result.FolderKind);
-        Assert.Equal("CyberPad is already installed here and will be updated.", result.Message);
+        Assert.Equal(@"CyberPad will be installed in C:\Users\u\Tools\CyberPad.", result.Message);
     }
 
     [Fact]
@@ -209,8 +209,6 @@ public sealed class InstallPathPolicyTests
     [InlineData(@"C:\Users\u\Tools\CyberPad ")]
     [InlineData(@"C:\Users\u\Tools.\CyberPad")]
     [InlineData(@"C:\Users\u\Tools \CyberPad")]
-    [InlineData(@"C:\Users\u\Tools\..\Windows\CyberPad")]
-    [InlineData(@"C:\Users\u\..\..\Windows")]
     [InlineData(@"C:\Users\u\Tools\.\CyberPad")]
     [InlineData(@"C:\Users\u\Tools\...")]
     [InlineData(@"C:\Users\u\Tools\CON")]
@@ -238,6 +236,47 @@ public sealed class InstallPathPolicyTests
     [InlineData(@"C:\Users\u\Tools\CYBERP~1")]
     public void BadCharactersAndNames_AreRefused(string input) =>
         AssertRefused(input, "That path is too long or contains characters that cannot be used.");
+
+    [Theory]
+    [InlineData(@"C:\Users\u\Tools\..\Windows\CyberPad")]
+    [InlineData(@"C:\Users\u\..\..\Windows")]
+    [InlineData(@"C:\Users\u\Tools\..")]
+    [InlineData(@"C:/Users/u/../u/Tools")]
+    public void ParentReferences_GetTheirOwnSentence(string input) =>
+        AssertRefused(input, "Type the full path of the folder, without \"..\".");
+
+    [Theory]
+    [InlineData(@"C:\Users\bob~2\AppData\Local\Programs\CyberPad")]
+    [InlineData(@"C:\Users\bob~2\Tools\CyberPad")]
+    public void ShortNameLookAlikeInTheProfileItself_IsAllowed(string input)
+    {
+        InstallEnvironment env = TestEnvironments.ForProfile(@"C:\Users\bob~2");
+        var probe = new FakeProbe().Dir(@"C:\Users\bob~2\AppData\Local\Programs").Dir(@"C:\Users\bob~2\Tools");
+        Assert.True(InstallPathPolicy.Evaluate(input, probe, env).IsUsable, input);
+    }
+
+    [Theory]
+    [InlineData(@"C:\Users\bob~2\Tools\CYBERP~1")]
+    [InlineData(@"C:\Users\bob~2\Tools\50%\CyberPad")]
+    [InlineData(@"C:\Users\BOB~1\Tools\CyberPad")]
+    public void ShortNameLookAlikesAndPercent_BelowTheProfile_AreStillRefused(string input)
+    {
+        InstallEnvironment env = TestEnvironments.ForProfile(@"C:\Users\bob~2");
+        var probe = new FakeProbe().Dir(@"C:\Users\bob~2\Tools");
+        Assert.Equal(InstallMessages.TooLongOrBadCharacters, InstallPathPolicy.Evaluate(input, probe, env).Message);
+    }
+
+    [Fact]
+    public void ProfileWithAPercentSign_IsExplained()
+    {
+        InstallEnvironment env = TestEnvironments.ForProfile(@"C:\Users\50%off");
+        var probe = new FakeProbe().Dir(@"C:\Users\50%off\AppData\Local\Programs");
+        InstallPathResult result = InstallPathPolicy.Evaluate(env.DefaultInstallFolder, probe, env);
+        Assert.False(result.IsUsable);
+        Assert.Equal(
+            "Your user folder's name contains %, which Windows would misread. CyberPad cannot be installed for this account.",
+            result.Message);
+    }
 
     [Theory]
     [InlineData(@"C:\Users\u\Tools\CONSOLE")]
@@ -306,7 +345,7 @@ public sealed class InstallPathPolicyTests
     [InlineData(@"C:\Program Files (x86)\CyberPad")]
     [InlineData(@"C:/Program Files (x86)/CyberPad")]
     public void AdminFolders_AreRefused(string input) =>
-        AssertRefused(input, "That folder needs administrator rights. Choose a folder in your own profile.");
+        AssertRefused(input, "That folder needs administrator rights. Choose a folder inside your own user folder.");
 
     [Theory]
     [InlineData(@"C:\Windows2\CyberPad")]

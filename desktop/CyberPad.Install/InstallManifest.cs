@@ -89,6 +89,40 @@ namespace CyberPad.Install
             return !expectDigit;
         }
 
+        /// <summary>
+        /// Compares two valid versions part by part as numbers ("1.10" is newer than "1.9"; missing parts
+        /// count as 0, so "1.0" equals "1.0.0"). Negative when <paramref name="a"/> is older.
+        /// </summary>
+        public static int CompareVersions(string a, string b)
+        {
+            if (!IsValidVersion(a))
+            {
+                throw new ArgumentException("Not a valid version.", nameof(a));
+            }
+
+            if (!IsValidVersion(b))
+            {
+                throw new ArgumentException("Not a valid version.", nameof(b));
+            }
+
+            string[] left = a.Split('.');
+            string[] right = b.Split('.');
+            for (int i = 0; i < Math.Max(left.Length, right.Length); i++)
+            {
+                string x = i < left.Length ? left[i].TrimStart('0') : string.Empty;
+                string y = i < right.Length ? right[i].TrimStart('0') : string.Empty;
+
+                // Digits only and no leading zeros: the longer number is larger, then compare digit by digit.
+                int order = x.Length != y.Length ? x.Length.CompareTo(y.Length) : string.CompareOrdinal(x, y);
+                if (order != 0)
+                {
+                    return order < 0 ? -1 : 1;
+                }
+            }
+
+            return 0;
+        }
+
         public byte[] ToBytes()
         {
             var text = new StringBuilder();

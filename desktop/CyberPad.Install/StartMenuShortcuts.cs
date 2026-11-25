@@ -62,13 +62,24 @@ namespace CyberPad.Install
         public void Delete()
         {
             string path = ShortcutPath;
-            if (File.Exists(path))
+            try
             {
-                File.Delete(path); // deletes the .lnk file (or a link in its place) itself, never a target
+                if (File.Exists(path))
+                {
+                    File.Delete(path); // deletes the .lnk file (or a link in its place) itself, never a target
+                }
+            }
+            catch (Exception ex) when (ex is ArgumentException || ex is NotSupportedException)
+            {
+                throw new IOException("The Start menu shortcut could not be deleted.", ex);
             }
         }
 
-        /// <summary>Runs <paramref name="use"/> on a new ShellLink object, turning COM failures into <see cref="IOException"/>.</summary>
+        /// <summary>
+        /// Runs <paramref name="use"/> on a new ShellLink object. Every failure except a critical one (COM
+        /// errors, a bad cast, an argument the shell rejects, anything a damaged .lnk file causes) becomes an
+        /// <see cref="IOException"/>, which setup and uninstall handle.
+        /// </summary>
         private static T WithShellLink<T>(Func<IShellLinkW, T> use)
         {
             object? instance = null;
@@ -77,11 +88,11 @@ namespace CyberPad.Install
                 instance = new ShellLink();
                 return use((IShellLinkW)instance);
             }
-            catch (COMException ex)
+            catch (IOException)
             {
-                throw new IOException("The Start menu shortcut could not be read or written.", ex);
+                throw;
             }
-            catch (InvalidCastException ex)
+            catch (Exception ex) when (!CriticalExceptions.IsCritical(ex))
             {
                 throw new IOException("The Start menu shortcut could not be read or written.", ex);
             }
