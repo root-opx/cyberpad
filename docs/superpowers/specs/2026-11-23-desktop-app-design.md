@@ -133,7 +133,7 @@ The host project copies `index.html`, `css/`, and `js/` into a `wwwroot` folder 
 | `openFile` | `{id}` | Open dialog (or the next queued command-line path), read the file, create or reuse a link | `{type:"fileOpened", id, linkId, name, format, text, alreadyLinked}` or `fileCancelled` |
 | `writeFile` | `{id, linkId, text ≤ 4 Mi chars, force: boolean}` | atomic write to the linked file; without `force` it refuses if the file changed since last confirmed | `fileWritten`, `fileConflict` or `fileMissing` (each `{type, id}`) |
 | `readFile` | `{id, linkId}` | read the linked file | `{type:"fileRead", id, text}` or `fileMissing` |
-| `matchesLastWrite` | `{id, linkId, text ≤ 4 MB}` | encode `text` as a write to that link would (encoding, BOM, line endings, `.cpnote` form) and compare its SHA-256 with the record's; reads no file, writes nothing; an unencodable text is `false` | `{type:"lastWriteMatch", id, match: boolean}` (unknown link: `rejected` "unknown link") |
+| `matchesLastWrite` | `{id, linkId, text ≤ 4 Mi chars}` | encode `text` as a write to that link would (encoding, BOM, line endings, `.cpnote` form) and compare its SHA-256 with the record's; reads no file, writes nothing; an unencodable text is `false` | `{type:"lastWriteMatch", id, match: boolean}` (unknown link: `rejected` "unknown link") |
 | `checkFiles` | `{id, linkIds: string[] ≤ 2000}` | compare size, time and hash of each linked file (2 s limit per file) | `{type:"fileStatus", id, statuses: {<linkId>: "ok"\|"changed"\|"missing"\|"unknown"}}` |
 | `unlinkFile` | `{id, linkId}` | drop the link (never touches the file) | `{type:"fileUnlinked", id}` |
 | `revealFile` | `{id, linkId}` | open Explorer with the file selected | `{type:"fileRevealed", id}` |

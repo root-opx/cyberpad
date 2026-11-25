@@ -2779,7 +2779,9 @@
     if (text === null) return false;
     try {
       const match = await platform.matchesLastWrite(linkId, text);
-      return match === true && linkedTo(note.id, linkId) && fileTextOrNull(note) === text;
+      if (match !== true || !linkedTo(note.id, linkId) || fileTextOrNull(note) !== text) return false;
+      // An encrypted note unlocked and edited meanwhile has plaintext not yet sealed into its cipher.
+      return !(note.cipher && (S.sealTimers.has(note.id) || S.sealing.has(note.id) || S.sealFailed.has(note.id)));
     } catch (err) {
       console.error('last write check failed', errName(err));
       return false;
