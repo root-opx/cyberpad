@@ -31,6 +31,9 @@ public sealed class LinkedFiles
     /// <summary>Test seam: the swap step of a write over an existing file (File.Replace without a backup).</summary>
     internal Action<string, string> ReplaceFile { get; init; } = (tmp, path) => File.Replace(tmp, path, null);
 
+    /// <summary>Test seam: the existence check used when recovering from a failed swap.</summary>
+    internal Func<string, bool> FileExists { get; init; } = File.Exists;
+
     public (LinkRecord Record, string Text) ReadNew(string fullPath, LinkFormat format)
     {
         ArgumentException.ThrowIfNullOrEmpty(fullPath);
@@ -335,18 +338,25 @@ public sealed class LinkedFiles
         }
     }
 
+    private const int ErrorUnableToMoveReplacement = unchecked((int)0x80070498);  // ERROR_UNABLE_TO_MOVE_REPLACEMENT (1176)
     private const int ErrorUnableToMoveReplacement2 = unchecked((int)0x80070499); // ERROR_UNABLE_TO_MOVE_REPLACEMENT_2 (1177)
 
     /// <summary>
-    /// After File.Replace failed: if the file is gone from its path but the temp exists (ERROR_UNABLE_TO_MOVE_REPLACEMENT
-    /// deletes the original; ERROR_UNABLE_TO_MOVE_REPLACEMENT_2 renames it away), the temp is moved to the path, never
-    /// over anything, and true means the write happened after all. Otherwise <paramref name="keepTemp"/> says the temp
-    /// must not be deleted: the move back failed, or the error was 1177 (the temp may be the only copy at a known name).
+    /// After File.Replace failed. Only ERROR_UNABLE_TO_MOVE_REPLACEMENT (deletes the original) and
+    /// ERROR_UNABLE_TO_MOVE_REPLACEMENT_2 (renames it away) mean the swap itself took the file from its path: then, if the
+    /// path is absent and the temp exists, the temp is moved to the path, never over anything, and true means the write
+    /// happened after all. On those two errors the temp is the only copy of the content, so whenever the move back does
+    /// not happen or fails, <paramref name="keepTemp"/> says it must not be deleted. Any other error (for instance a file
+    /// that another program deleted or renamed just before the swap) never recreates the file: the temp is removed and the
+    /// write fails, so the next status check reports the file as missing.
     /// </summary>
     private bool RecoverFailedReplace(string tmp, string path, IOException failure, out bool keepTemp)
     {
         keepTemp = false;
-        if (!File.Exists(path) && File.Exists(tmp))
+        if (failure.HResult is not (ErrorUnableToMoveReplacement or ErrorUnableToMoveReplacement2)) return false;
+
+        keepTemp = true; // from here the temp may be the only copy
+        if (!FileExists(path) && FileExists(tmp))
         {
             try
             {
@@ -354,10 +364,10 @@ public sealed class LinkedFiles
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
-                keepTemp = true;
                 _log("linked write: replace failed, temp kept");
                 return false;
             }
+            keepTemp = false;
             try
             {
                 File.SetAttributes(path, FileAttributes.Normal); // the temp name was hidden, the file is not
@@ -369,8 +379,7 @@ public sealed class LinkedFiles
             _log("linked write: replace failed, content moved back");
             return true;
         }
-        keepTemp = failure.HResult == ErrorUnableToMoveReplacement2;
-        if (keepTemp) _log("linked write: replace failed, temp kept");
+        _log("linked write: replace failed, temp kept");
         return false;
     }
 

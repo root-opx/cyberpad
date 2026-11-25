@@ -369,6 +369,52 @@ public sealed class LinkedFilesTests : IDisposable
     }
 
     [Fact]
+    public void Write_ReplaceFailsNotFoundWithPathGone_NeverRecreatesTheFileAndRemovesTheTemp()
+    {
+        var path = P("n.md");
+        var rec = _files.WriteNew(path, LinkFormat.Md, "a");
+        var log = new List<string>();
+        // Another program deleted the file between the pre-swap check and File.Replace (ERROR_FILE_NOT_FOUND).
+        var files = new LinkedFiles(log.Add)
+        {
+            ReplaceFile = (_, target) =>
+            {
+                File.Delete(target);
+                throw new FileNotFoundException("replace") { HResult = unchecked((int)0x80070002) };
+            },
+        };
+
+        var ex = Assert.Throws<StoreException>(() => files.Write(rec, "b", false, out _));
+        Assert.Equal("The file could not be written.", ex.Message);
+        Assert.False(File.Exists(path));
+        Assert.Empty(Temps(_root));
+        Assert.Empty(log);
+    }
+
+    [Fact]
+    public void Write_ReplaceFails1176ButTheTempLooksAbsent_NeverDeletesTheTemp()
+    {
+        var path = P("n.md");
+        var rec = _files.WriteNew(path, LinkFormat.Md, "a");
+        var log = new List<string>();
+        var files = new LinkedFiles(log.Add)
+        {
+            ReplaceFile = (_, target) =>
+            {
+                File.Delete(target);
+                throw new IOException("replace") { HResult = UnableToMoveReplacement };
+            },
+            FileExists = _ => false, // a transient miss at the check
+        };
+
+        var ex = Assert.Throws<StoreException>(() => files.Write(rec, "new text", false, out _));
+        Assert.Equal("The file could not be written.", ex.Message);
+        var temp = Assert.Single(Temps(_root));
+        Assert.Equal("new text", File.ReadAllText(temp));
+        Assert.Equal(new[] { "linked write: replace failed, temp kept" }, log);
+    }
+
+    [Fact]
     public void Write_SharingViolationOnReplace_StillRemovesTheTemp()
     {
         var path = P("n.md");
