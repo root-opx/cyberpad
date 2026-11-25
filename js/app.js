@@ -3816,7 +3816,7 @@
         [['reading storage ......... '], ['ok', 'ok'], [`  ${S.notes.length} notes, ${kb} KB`]],
         [['cipher module ........... '], ['ok', 'ok'], [`  AES-256-GCM, ${encrypted} sealed`]],
         [['indexing tags ........... '], ['ok', 'ok'], [`  ${tagCount} tags`]],
-        [['screen .................. '], ['ok', 'ok'], [`  ${THEME_NAMES[S.settings.theme].toLowerCase()} display`]],
+        [['screen .................. '], ['ok', 'ok'], [`  ${THEME_NAMES[screenTheme()].toLowerCase()} display`]],
         [['ready ']],
       ];
       els.bootLog.replaceChildren();

@@ -79,7 +79,7 @@ These come from the project and from the user's security rules in `~/.claude/rul
 - **Accessibility must not regress.**
   - Everything must be reachable by keyboard, with a visible focus ring (`--cool`).
   - Keep the existing ARIA roles and labels, and respect `prefers-reduced-motion`.
-  - Check contrast in all three themes, with the CRT effect on and off.
+  - Check contrast in every theme, with the CRT effect on and off.
 - **Copy:**
   - Sentence case, plain verbs, no apologies.
   - Error messages say what happened and what to do.
