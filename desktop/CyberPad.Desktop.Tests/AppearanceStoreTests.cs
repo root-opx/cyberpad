@@ -65,6 +65,10 @@ public sealed class AppearanceStoreTests : IDisposable
     [InlineData("{\"theme\":\"\"}")]
     [InlineData("{\"Theme\":\"light\"}")]
     [InlineData("{\"theme\":\"__proto__\"}")]
+    [InlineData("{\"theme\":\"\\ud800\"}")]
+    [InlineData("{\"theme\":\"light\",\"\\ud800\":1}")]
+    [InlineData("{\"theme\":\"\\ud800light\"}")]
+    [InlineData("{\"theme\":\"\\udc00\"}")]
     public void Read_GarbageOrRejectedNames_AreNeon(string content)
     {
         var path = PathFor("appearance.json");
@@ -87,6 +91,39 @@ public sealed class AppearanceStoreTests : IDisposable
         var path = PathFor("appearance.json");
         File.WriteAllText(path, "{\"theme\":\"light\"," + new string(' ', 5000) + "}");
         Assert.True(new FileInfo(path).Length > 4096);
+        Assert.Equal(HostTheme.Neon, StoreAt(path).Read());
+    }
+
+    [Fact]
+    public void Read_FileJustOverTheCap_IsNotRead()
+    {
+        var path = PathFor("appearance.json");
+        var json = "{\"theme\":\"light\"}";
+        File.WriteAllText(path, json + new string(' ', 4097 - json.Length));
+        Assert.Equal(4097, new FileInfo(path).Length);
+        Assert.Equal(HostTheme.Neon, StoreAt(path).Read());
+
+        File.WriteAllText(path, json + new string(' ', 4096 - json.Length)); // exactly at the cap: read
+        Assert.Equal(4096, new FileInfo(path).Length);
+        Assert.Equal(HostTheme.Light, StoreAt(path).Read());
+    }
+
+    [Fact]
+    public void Read_InvalidUtf8Bytes_AreNeon()
+    {
+        var path = PathFor("appearance.json");
+        File.WriteAllBytes(path, new byte[] { 0x7B, 0x22, 0x74, 0x68, 0x65, 0x6D, 0x65, 0x22, 0x3A, 0x22, 0xFF, 0xFE, 0x22, 0x7D });
+        Assert.Equal(HostTheme.Neon, StoreAt(path).Read());
+        File.WriteAllBytes(path, new byte[] { 0xEF, 0xBB, 0xBF, 0x7B, 0x7D }); // BOM then {}
+        Assert.Equal(HostTheme.Neon, StoreAt(path).Read());
+    }
+
+    [Fact]
+    public void Read_AFileLockedByAnotherProcess_IsNeon()
+    {
+        var path = PathFor("appearance.json");
+        File.WriteAllText(path, "{\"theme\":\"light\"}");
+        using var held = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
         Assert.Equal(HostTheme.Neon, StoreAt(path).Read());
     }
 

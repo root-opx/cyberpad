@@ -53,28 +53,32 @@ public sealed class AppearanceStore
 
     private HostTheme ReadFile()
     {
-        string json;
         try
         {
-            var info = new FileInfo(_path);
-            if (!info.Exists || info.Length > MaxFileBytes) return HostTheme.Neon;
-            json = File.ReadAllText(_path);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
-        {
-            return HostTheme.Neon;
-        }
+            // One open, at most MaxFileBytes + 1 bytes read: the cap holds even if the file grows meanwhile.
+            byte[] bytes;
+            using (var stream = new FileStream(_path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+            {
+                var buffer = new byte[MaxFileBytes + 1];
+                var count = 0;
+                int read;
+                while (count < buffer.Length && (read = stream.Read(buffer, count, buffer.Length - count)) > 0) count += read;
+                if (count > MaxFileBytes) return HostTheme.Neon;
+                bytes = buffer.AsSpan(0, count).ToArray();
+            }
 
-        try
-        {
-            using var doc = JsonDocument.Parse(json, ParseOptions);
+            using var doc = JsonDocument.Parse(bytes, ParseOptions);
             if (doc.RootElement.ValueKind != JsonValueKind.Object) return HostTheme.Neon;
             if (!doc.RootElement.TryGetProperty("theme", out var value) || value.ValueKind != JsonValueKind.String)
                 return HostTheme.Neon;
             return HostThemes.TryParse(value.GetString(), out var theme) ? theme : HostTheme.Neon;
         }
-        catch (JsonException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException
+            or InvalidOperationException or ArgumentException or NotSupportedException)
         {
+            // Missing, locked, a directory, invalid UTF-8, malformed JSON, or an escaped lone surrogate (which makes
+            // GetString/TryGetProperty throw InvalidOperationException): all mean Neon. This runs in the window's
+            // constructor, so it must never throw.
             return HostTheme.Neon;
         }
     }
