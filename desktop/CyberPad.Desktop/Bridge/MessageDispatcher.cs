@@ -35,6 +35,7 @@ public sealed class MessageDispatcher
         ["openFile"] = new[] { "type", "id" },
         ["writeFile"] = new[] { "type", "id", "linkId", "text", "force" },
         ["readFile"] = new[] { "type", "id", "linkId" },
+        ["matchesLastWrite"] = new[] { "type", "id", "linkId", "text" },
         ["checkFiles"] = new[] { "type", "id", "linkIds" },
         ["unlinkFile"] = new[] { "type", "id", "linkId" },
         ["revealFile"] = new[] { "type", "id", "linkId" },
@@ -259,6 +260,20 @@ public sealed class MessageDispatcher
                         return text is null
                             ? Serialize(new { type = "fileMissing", id })
                             : Serialize(new { type = "fileRead", id, text });
+                    }).ConfigureAwait(false);
+                }
+
+                case "matchesLastWrite":
+                {
+                    if (!TryReadLinkId(root.GetProperty("linkId"), out var linkId)) return Reject(type, id, "invalid linkId");
+                    var textEl = root.GetProperty("text");
+                    if (textEl.ValueKind != JsonValueKind.String) return Reject(type, id, "text must be a string");
+                    var text = textEl.GetString()!;
+                    if (text.Length > MaxFileTextChars) return Reject(type, id, "text too large");
+                    return await RunFileAsync(type, id!, true, async () =>
+                    {
+                        var match = await _actions.MatchesLastWriteAsync(linkId!, text).ConfigureAwait(false);
+                        return Serialize(new { type = "lastWriteMatch", id, match });
                     }).ConfigureAwait(false);
                 }
 

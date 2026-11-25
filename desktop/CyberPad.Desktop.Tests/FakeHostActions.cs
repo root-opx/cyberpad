@@ -64,6 +64,8 @@ internal sealed class FakeHostActions : IHostActions
     public (string LinkId, string Text, bool Force)? Written;
     public WriteOutcome WriteResult = WriteOutcome.Written;
     public string? ReadResult = "file text";
+    public bool MatchResult = true;
+    public (string LinkId, string Text)? Matched;
     public IReadOnlyList<string>? Checked;
     public Dictionary<string, FileStatus> CheckResult = new();
     public string? Unlinked, Revealed;
@@ -112,6 +114,14 @@ internal sealed class FakeHostActions : IHostActions
         FileCalls++;
         if (FileThrows is not null) throw FileThrows;
         return Task.FromResult(ReadResult);
+    }
+
+    public Task<bool> MatchesLastWriteAsync(string linkId, string text)
+    {
+        FileCalls++;
+        if (FileThrows is not null) throw FileThrows;
+        Matched = (linkId, text);
+        return Task.FromResult(MatchResult);
     }
 
     public Task<IReadOnlyDictionary<string, FileStatus>> CheckFilesAsync(IReadOnlyList<string> linkIds)

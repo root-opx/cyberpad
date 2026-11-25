@@ -331,6 +331,35 @@ test('readFile, checkFiles, unlinkFile, revealFile, pruneLinks', async () => {
   await assert.rejects(p.unlinkFile('nope'), PlatformError);
 });
 
+test('matchesLastWrite posts exactly type,id,linkId,text and validates the reply', async () => {
+  const { fake, p } = desktop();
+  const a = p.matchesLastWrite(LK, 'note ' + String.fromCharCode(0xd800) + ' text');
+  const m = fake.posted.at(-1);
+  assert.deepEqual(Object.keys(m).sort(), ['id', 'linkId', 'text', 'type']);
+  assert.equal(m.type, 'matchesLastWrite');
+  assert.equal(m.linkId, LK);
+  assert.equal(m.text, 'note ' + String.fromCharCode(0xfffd) + ' text'); // through toWellFormed()
+  fake.reply({ type: 'lastWriteMatch', id: lastId(fake), match: true });
+  assert.equal(await a, true);
+  const b = p.matchesLastWrite(LK, 'x');
+  fake.reply({ type: 'lastWriteMatch', id: lastId(fake), match: false });
+  assert.equal(await b, false);
+  for (const bad of ['true', 1, null, undefined]) {
+    const c = p.matchesLastWrite(LK, 'x');
+    fake.reply({ type: 'lastWriteMatch', id: lastId(fake), match: bad });
+    await assert.rejects(c, /unexpected reply/);
+  }
+  const d = p.matchesLastWrite(LK, 'x');
+  fake.reply({ type: 'fileWritten', id: lastId(fake) });
+  await assert.rejects(d, /unexpected reply/);
+  const e = p.matchesLastWrite(LK, 'x');
+  fake.reply({ type: 'rejected', id: lastId(fake), reason: 'unknown link' });
+  await assert.rejects(e, (err) => err.message === 'unknown link');
+  await assert.rejects(p.matchesLastWrite('bad', 'x'), PlatformError);
+  await assert.rejects(p.matchesLastWrite(LK, 5), PlatformError);
+  await assert.rejects(p.matchesLastWrite(LK, 'x'.repeat(4 * 1024 * 1024 + 1)), PlatformError);
+});
+
 test('onOpenRequested fires on openRequested without an id; a later handler replaces the earlier', () => {
   const { fake, p } = desktop();
   let a = 0; let b = 0;
@@ -349,7 +378,7 @@ test('file methods reject in the browser', async () => {
   const p = createPlatform(env({ localStorage: fakeStorage() }));
   const calls = [
     () => p.saveAsFile({ format: 'md', suggestedName: 'n', text: 't' }), () => p.openFile(), () => p.writeFile(LK, 't', false),
-    () => p.readFile(LK), () => p.checkFiles([LK]), () => p.unlinkFile(LK), () => p.revealFile(LK), () => p.pruneLinks([LK]),
+    () => p.readFile(LK), () => p.matchesLastWrite(LK, 't'), () => p.checkFiles([LK]), () => p.unlinkFile(LK), () => p.revealFile(LK), () => p.pruneLinks([LK]),
   ];
   for (const c of calls) {
     await assert.rejects(c(), (e) => e instanceof PlatformError && e.reason === 'host' && e.message === 'Files are only available in the desktop app.');

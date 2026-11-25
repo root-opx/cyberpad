@@ -146,6 +146,28 @@ public sealed class LinkedFiles
         return WriteOutcome.Written;
     }
 
+    /// <summary>
+    /// True when <paramref name="text"/>, encoded exactly as <see cref="Write"/> would encode it for this record (encoding,
+    /// BOM, line endings, .cpnote form), hashes to the record's SHA-256: the note then holds what was last written or
+    /// adopted. Reads no file and writes nothing. Text that cannot be encoded (a lone surrogate, over the size cap) cannot
+    /// match.
+    /// </summary>
+    public bool MatchesLastWrite(LinkRecord r, string text)
+    {
+        ArgumentNullException.ThrowIfNull(r);
+        ArgumentNullException.ThrowIfNull(text);
+        byte[] bytes;
+        try
+        {
+            bytes = EncodeFor(r, text);
+        }
+        catch (StoreException)
+        {
+            return false;
+        }
+        return string.Equals(Hash(bytes), r.Sha256, StringComparison.Ordinal);
+    }
+
     /// <summary>Writes a new linked file: UTF-8, no BOM, LF. Replaces an existing file (the dialog confirmed it).</summary>
     public LinkRecord WriteNew(string fullPath, LinkFormat format, string text)
     {

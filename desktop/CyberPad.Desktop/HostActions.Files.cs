@@ -171,6 +171,9 @@ public sealed partial class HostActions
 
     public Task<string?> ReadFileAsync(string linkId) => TrackFileOperationAsync(() => ReadFileCoreAsync(linkId));
 
+    public Task<bool> MatchesLastWriteAsync(string linkId, string text) =>
+        TrackFileOperationAsync(() => MatchesLastWriteCoreAsync(linkId, text));
+
     public Task<IReadOnlyDictionary<string, FileStatus>> CheckFilesAsync(IReadOnlyList<string> linkIds) =>
         TrackFileOperationAsync(() => CheckFilesCoreAsync(linkIds));
 
@@ -198,6 +201,12 @@ public sealed partial class HostActions
         }).ConfigureAwait(false);
         if (outcome == WriteOutcome.Written) PersistRefreshed(linkId, record, updated);
         return outcome;
+    }
+
+    private async Task<bool> MatchesLastWriteCoreAsync(string linkId, string text)
+    {
+        var record = RequireLink(linkId);
+        return await Task.Run(() => _files.MatchesLastWrite(record, text)).ConfigureAwait(false);
     }
 
     private async Task<string?> ReadFileCoreAsync(string linkId)

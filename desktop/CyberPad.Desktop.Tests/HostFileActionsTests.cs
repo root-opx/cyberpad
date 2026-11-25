@@ -426,4 +426,56 @@ public sealed class HostFileActionsTests : IDisposable
         Assert.True(_links.TryGet(link.LinkId, out var inMemory));
         Assert.Equal(inMemory, onDisk);
     }
+
+    [Fact]
+    public async Task MatchesLastWrite_AfterAWrite_TheSameTextMatchesAndOtherTextDoesNot()
+    {
+        var link = await SaveAs(Doc("a.txt"), text: "one");
+        Assert.True(await _host.MatchesLastWriteAsync(link.LinkId, "one"));
+        Assert.Equal(WriteOutcome.Written, await _host.WriteFileAsync(link.LinkId, "two\nlines", false));
+        Assert.True(await _host.MatchesLastWriteAsync(link.LinkId, "two\nlines"));
+        Assert.False(await _host.MatchesLastWriteAsync(link.LinkId, "one"));
+        Assert.False(await _host.MatchesLastWriteAsync(link.LinkId, "two\nlines "));
+    }
+
+    [Fact]
+    public async Task MatchesLastWrite_CrlfBomRecord_MatchesTheLfNoteText()
+    {
+        var path = Doc("crlf.txt");
+        File.WriteAllBytes(path, new byte[] { 0xEF, 0xBB, 0xBF }.Concat(System.Text.Encoding.UTF8.GetBytes("a\r\nb\r\nc")).ToArray());
+        _host.AskOpenPath = () => path;
+        var opened = await _host.OpenFileAsync();
+        Assert.Equal("a\nb\nc", opened!.Text);
+        Assert.True(await _host.MatchesLastWriteAsync(opened.LinkId, "a\nb\nc"));
+        Assert.False(await _host.MatchesLastWriteAsync(opened.LinkId, "a\nb\nd"));
+    }
+
+    [Fact]
+    public async Task MatchesLastWrite_AfterAnExternalEdit_TheOldNoteTextStillMatches_AndNothingIsReadOrWritten()
+    {
+        var link = await SaveAs(Doc("a.txt"), text: "mine");
+        File.WriteAllText(Doc("a.txt"), "edited elsewhere");
+        var before = File.GetLastWriteTimeUtc(Doc("a.txt"));
+        Assert.True(await _host.MatchesLastWriteAsync(link.LinkId, "mine"));
+        Assert.False(await _host.MatchesLastWriteAsync(link.LinkId, "edited elsewhere"));
+        Assert.Equal("edited elsewhere", File.ReadAllText(Doc("a.txt")));
+        Assert.Equal(before, File.GetLastWriteTimeUtc(Doc("a.txt")));
+        Assert.Equal(FileStatus.Changed, (await _host.CheckFilesAsync(new[] { link.LinkId }))[link.LinkId]);
+    }
+
+    [Fact]
+    public async Task MatchesLastWrite_UnencodableText_IsFalse_AndUnknownLinkThrows()
+    {
+        var link = await SaveAs(Doc("a.txt"), text: "one");
+        Assert.False(await _host.MatchesLastWriteAsync(link.LinkId, "bad " + char.ConvertFromUtf32(0x1F600)[0] + " surrogate"));
+        await Assert.ThrowsAsync<UnknownLinkException>(() => _host.MatchesLastWriteAsync(new string('0', 32), "one"));
+    }
+
+    [Fact]
+    public async Task MatchesLastWrite_CpNote_MatchesTheEnvelopeText()
+    {
+        var link = await SaveAs(Doc("n.cpnote"), LinkFormat.CpNote, "{\"app\":\"cyberpad\"}");
+        Assert.True(await _host.MatchesLastWriteAsync(link.LinkId, "{\"app\":\"cyberpad\"}"));
+        Assert.False(await _host.MatchesLastWriteAsync(link.LinkId, "{}"));
+    }
 }

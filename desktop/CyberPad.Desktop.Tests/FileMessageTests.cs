@@ -130,6 +130,50 @@ public class FileMessageTests
             await d.HandleAsync(Src, $$"""{"type":"readFile","id":"a","linkId":"{{L1}}"}"""));
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task MatchesLastWrite_RepliesBoolean(bool match)
+    {
+        var (d, f, _) = Make();
+        f.MatchResult = match;
+        var r = Parse(await d.HandleAsync(Src, $$"""{"type":"matchesLastWrite","id":"a","linkId":"{{L1}}","text":"note"}"""));
+        Assert.Equal("lastWriteMatch", r.GetProperty("type").GetString());
+        Assert.Equal("a", r.GetProperty("id").GetString());
+        Assert.Equal(match ? JsonValueKind.True : JsonValueKind.False, r.GetProperty("match").ValueKind);
+        Assert.Equal((L1, "note"), f.Matched);
+    }
+
+    [Fact]
+    public async Task MatchesLastWrite_UnknownLink_IsRejected()
+    {
+        var (d, f, _) = Make();
+        f.FileThrows = new UnknownLinkException();
+        var r = Parse(await d.HandleAsync(Src, $$"""{"type":"matchesLastWrite","id":"a","linkId":"{{L1}}","text":"t"}"""));
+        Assert.Equal("rejected", r.GetProperty("type").GetString());
+        Assert.Equal("unknown link", r.GetProperty("reason").GetString());
+    }
+
+    [Fact]
+    public async Task MatchesLastWrite_StoreException_RepliesFileFailed()
+    {
+        var (d, f, _) = Make();
+        f.FileThrows = new StoreException("Nope.");
+        var r = Parse(await d.HandleAsync(Src, $$"""{"type":"matchesLastWrite","id":"a","linkId":"{{L1}}","text":"t"}"""));
+        Assert.Equal("fileFailed", r.GetProperty("type").GetString());
+        Assert.Equal("Nope.", r.GetProperty("reason").GetString());
+    }
+
+    [Fact]
+    public async Task MatchesLastWrite_TextOverTheLimit_IsRejected()
+    {
+        var (d, f, _) = Make();
+        var big = new string('a', 4 * 1024 * 1024 + 1);
+        var r = Parse(await d.HandleAsync(Src, $$"""{"type":"matchesLastWrite","id":"a","linkId":"{{L1}}","text":"{{big}}"}"""));
+        Assert.Equal("rejected", r.GetProperty("type").GetString());
+        Assert.Equal(0, f.FileCalls);
+    }
+
     [Fact]
     public async Task CheckFiles_RepliesStatusesLowercase()
     {
@@ -201,6 +245,10 @@ public class FileMessageTests
     [InlineData("""{"type":"pruneLinks","id":"a","linkIds":["nope"]}""")]
     [InlineData("""{"type":"relinkFile","id":"a","linkId":"zz","format":"txt","suggestedName":"x","text":"t"}""")]
     [InlineData("""{"type":"openFile","id":"a","extra":1}""")]
+    [InlineData("""{"type":"matchesLastWrite","id":"a","linkId":"0123456789abcdef0123456789abcdef","text":"t","force":false}""")]
+    [InlineData("""{"type":"matchesLastWrite","id":"a","linkId":"0123456789abcdef0123456789abcdef"}""")]
+    [InlineData("""{"type":"matchesLastWrite","id":"a","linkId":"0123456789ABCDEF0123456789abcdef","text":"t"}""")]
+    [InlineData("""{"type":"matchesLastWrite","id":"a","linkId":"0123456789abcdef0123456789abcdef","text":5}""")]
     public async Task InvalidFileMessages_AreRejected(string json)
     {
         var (d, f, _) = Make();

@@ -33,6 +33,12 @@ public interface IHostActions
     /// <returns>The file's text, or null if the file is missing.</returns>
     Task<string?> ReadFileAsync(string linkId);
 
+    /// <summary>
+    /// True when <paramref name="text"/>, encoded the way the link's record says, hashes to the record's SHA-256 (the last
+    /// content CyberPad wrote or the user adopted). Reads no file, writes nothing.
+    /// </summary>
+    Task<bool> MatchesLastWriteAsync(string linkId, string text);
+
     Task<IReadOnlyDictionary<string, FileStatus>> CheckFilesAsync(IReadOnlyList<string> linkIds);
 
     Task UnlinkFileAsync(string linkId);

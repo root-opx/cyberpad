@@ -2756,16 +2756,47 @@
       return;
     }
     if (!linkedTo(note.id, linkId)) return;
-    const action = FL.seedAction({
-      status: res.missing ? 'missing' : status,
-      equal: !res.missing && FL.matchesFile(note, res.text),
-      source,
-    });
+    const equal = !res.missing && FL.matchesFile(note, res.text);
+    let matchesLast;
+    if (!res.missing && status === 'changed' && !equal && source === 'main') matchesLast = await noteMatchesLastWrite(note, linkId);
+    if (!linkedTo(note.id, linkId)) return;
+    const action = FL.seedAction({ status: res.missing ? 'missing' : status, equal, source, matchesLast });
     if (action === 'missing') setFileStatus(note.id, 'missing');
     else if (action === 'confirm') confirmInSync(note); // the file still holds what CyberPad last wrote or adopted
     else if (action === 'adopt') adoptFile(note, res.text); // changed elsewhere to exactly the note's text: adopt it
     else if (action === 'write') { setFileStatus(note.id, 'unknown'); requestWrite(note.id); } // the note is newer, e.g. a close timed out
+    else if (action === 'reload') await reloadAtStartup(note, res.text);
     else if (action === 'conflict') setFileStatus(note.id, 'changed');
+  }
+
+  /**
+   * Asks the host whether the note's text is exactly what CyberPad last wrote to this file (or the user adopted). True
+   * means the note has nothing unwritten, so a file edited while CyberPad was closed can be taken silently. Any failure
+   * or a change to the note while asking is false (the conflict bar then asks).
+   */
+  async function noteMatchesLastWrite(note, linkId) {
+    const text = fileTextOrNull(note);
+    if (text === null) return false;
+    try {
+      const match = await platform.matchesLastWrite(linkId, text);
+      return match === true && linkedTo(note.id, linkId) && fileTextOrNull(note) === text;
+    } catch (err) {
+      console.error('last write check failed', errName(err));
+      return false;
+    }
+  }
+
+  /** The silent reload at startup: the file's text replaces the note's; adoption (a non-forced write) confirms it. */
+  async function reloadAtStartup(note, text) {
+    const { name } = note.file;
+    try {
+      await replaceWithFileText(note, text);
+    } catch (err) {
+      if (!(err instanceof FL.FileLinkError)) throw err;
+      damagedFile(note, err);
+      return;
+    }
+    toast(`Reloaded ${name} from disk.`);
   }
 
   // ---- commands

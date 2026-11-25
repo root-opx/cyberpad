@@ -314,6 +314,16 @@
       });
     }
 
+    /** True when the text, encoded the way the link's record says, is what CyberPad last wrote to the file or adopted. */
+    async function matchesLastWrite(linkId, text) {
+      if (!isDesktop) throw noFiles();
+      const fields = { linkId: linkIdOf(linkId), text: fileText(text) };
+      return request('matchesLastWrite', fields, (m, resolve, reject) => {
+        if (m.type === 'lastWriteMatch' && typeof m.match === 'boolean') resolve(m.match);
+        else reject(unexpected());
+      });
+    }
+
     async function checkFiles(linkIds) {
       if (!isDesktop) throw noFiles();
       const ids = linkIdsOf(linkIds);
@@ -353,7 +363,7 @@
     }
 
     return { isDesktop, maxStateChars, loadState, saveState, removeLegacy, quarantine, exportFile, onFlushRequest,
-      saveAsFile, openFile, writeFile, readFile, checkFiles, unlinkFile, revealFile, pruneLinks, onOpenRequested,
+      saveAsFile, openFile, writeFile, readFile, matchesLastWrite, checkFiles, unlinkFile, revealFile, pruneLinks, onOpenRequested,
     };
   }
 

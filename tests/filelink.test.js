@@ -208,6 +208,20 @@ test('seedAction: a changed, different file is a conflict whatever the source', 
   for (const source of ['main', 'backup']) assert.equal(F.seedAction({ status: 'changed', equal: false, source }), 'conflict');
 });
 
+test('seedAction: a changed, different file reloads only when the note matches the last write and the load was normal', () => {
+  assert.equal(F.seedAction({ status: 'changed', equal: false, source: 'main', matchesLast: true }), 'reload');
+  assert.equal(F.seedAction({ status: 'changed', equal: false, source: 'backup', matchesLast: true }), 'conflict');
+  for (const matchesLast of [false, undefined, 'yes', 1, null]) {
+    assert.equal(F.seedAction({ status: 'changed', equal: false, source: 'main', matchesLast }), 'conflict', String(matchesLast));
+  }
+  // Unchanged behaviour around it.
+  assert.equal(F.seedAction({ status: 'changed', equal: true, source: 'main', matchesLast: true }), 'adopt');
+  assert.equal(F.seedAction({ status: 'ok', equal: false, source: 'main', matchesLast: true }), 'write');
+  assert.equal(F.seedAction({ status: 'ok', equal: false, source: 'backup', matchesLast: true }), 'conflict');
+  assert.equal(F.seedAction({ status: 'missing', equal: false, source: 'main', matchesLast: true }), 'missing');
+  assert.equal(F.seedAction({ status: 'unknown', equal: false, source: 'main', matchesLast: true }), 'none');
+});
+
 test('seedAction: missing and unknown statuses', () => {
   for (const source of ['main', 'backup']) {
     assert.equal(F.seedAction({ status: 'missing', equal: false, source }), 'missing');

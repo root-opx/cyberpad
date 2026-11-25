@@ -124,11 +124,15 @@
    * `equal` is true when the file holds exactly the note's content. An unchanged file that differs from the note
    * is written over only after a normal load (source 'main'): notes restored from notes.json.bak may be older
    * than the file, so then the user chooses on the conflict bar.
+   * `matchesLast` is true when the host proved the note holds exactly what CyberPad last wrote to the file (or the user
+   * adopted): nothing in the note is unwritten, so a changed file's version can be taken silently ('reload'), after a
+   * normal load only.
    */
-  function seedAction({ status, equal, source }) {
+  function seedAction({ status, equal, source, matchesLast }) {
     if (status === 'missing') return 'missing';
     if (status !== 'ok' && status !== 'changed') return 'none';
     if (equal === true) return status === 'ok' ? 'confirm' : 'adopt';
+    if (status === 'changed' && source === 'main' && matchesLast === true) return 'reload';
     return status === 'ok' && source === 'main' ? 'write' : 'conflict';
   }
 
