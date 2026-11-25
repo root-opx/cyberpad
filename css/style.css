@@ -575,6 +575,53 @@ svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-width:
 
 #editor::placeholder { color: var(--dim); }
 
+/* Line numbers. The gutter shows only when the pane has .has-gutter; the editor then starts after it.
+   --gutter-w is set from script (it follows the number of digits). */
+.gutter {
+  display: none;
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: var(--gutter-w, 3.5rem);
+  box-sizing: border-box;
+  overflow: hidden;
+  border-right: 1px solid var(--line);
+  color: var(--dim);
+  font-size: var(--fs-editor);
+  line-height: 1.7;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+  pointer-events: none;
+}
+.pane-editor.has-gutter .gutter { display: block; }
+.gutter .ln { position: absolute; left: 0; right: 0.75rem; white-space: nowrap; }
+.gutter .ln.cur { color: var(--ink); }
+.pane-editor.has-gutter #editor {
+  margin-left: var(--gutter-w, 3.5rem);
+  width: calc(100% - var(--gutter-w, 3.5rem));
+  padding-inline: 0.5rem 1.5rem;
+}
+
+/* Off-screen copy of the note used to find where wrapped lines start. It holds note text, so script empties it
+   whenever the note locks, changes, or the gutter is off. Hidden from view, find-in-page and assistive technology. */
+.gutter-mirror {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 0;
+  overflow: hidden;
+  visibility: hidden;
+  pointer-events: none;
+  user-select: none;
+  padding: 0;
+  border: 0;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+.gutter-mirror > div { min-height: var(--mlh, 1.7em); }
+
 /* ---------- find bar ---------- */
 .findbar {
   display: flex;
@@ -1356,6 +1403,7 @@ body.crt::after {
   .workspace[data-view="split"] .pane-preview { border-left: 0; border-top: 1px solid var(--line); }
 
   #editor, .workspace[data-view="split"] #editor { padding: 1rem 1rem 30vh; }
+  .pane-editor.has-gutter #editor { padding-inline: 0.5rem 1rem; }
   .preview { padding: 1rem; }
   .history { grid-template-columns: 1fr; grid-template-rows: 8rem 1fr; }
   .history-list { border-right: 0; border-bottom: 1px solid var(--line); }
@@ -1472,7 +1520,7 @@ button.sev:hover { box-shadow: 0 0 0 1px currentColor; }
   }
 
   .titlebar, .sidebar, .scrim, .statusbar, .findbar, .alertbar, .pane-editor, .backlinks,
-  .copy-btn, .toasts, .boot, .dropzone, .slash, dialog { display: none !important; }
+  .copy-btn, .toasts, .boot, .dropzone, .slash, .gutter, .gutter-mirror, dialog { display: none !important; }
   body.crt::after { display: none; }
 
   .workspace[data-view] .pane-preview { display: block; border: 0; }

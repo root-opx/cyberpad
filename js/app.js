@@ -24,6 +24,7 @@
     modal: $('modal'), toasts: $('toasts'), boot: $('boot'), bootLog: $('boot-log'), dropzone: $('dropzone'),
     fileInput: $('file-input'), hashFileInput: $('hash-file-input'), wordmark: document.querySelector('.wordmark-text'),
     secretAlert: $('secret-alert'), secretAlertText: $('secret-alert-text'),
+    gutter: $('gutter'), gutterMirror: $('gutter-mirror'),
   };
 
   const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -713,6 +714,230 @@
     els.editorPane.classList.toggle('is-script', isScript(note));
     els.editor.placeholder = isScript(note) ? 'Start typing.' : EDITOR_PLACEHOLDER;
     document.title = note ? `${titleOf(note)} | CyberPad` : 'CyberPad';
+    g.hold = false;
+    updateGutter();
+  }
+
+  // ------------------------------------------------------ line-number gutter
+  //
+  // The gutter is a static element beside the textarea. Script notes never wrap, so row k is line k and the visible
+  // rows follow from scrollTop, line height and top padding. Wrapped notes (setting "every note") need to know where
+  // each line starts: an off-screen mirror with the editor's content width holds one block per line, and the block
+  // tops are read from it. The mirror holds note text, so it is emptied (clearMirror) whenever the note locks or
+  // changes, the gutter turns off or hides, the editor is not on screen, and before printing. It is bounded by the
+  // 3,000-line cap, reuses its per-line blocks (only changed lines are rewritten) and is remeasured at most ~5 times a second.
+  const GUTTER_OVERSCAN = 6;
+  const GUTTER_WRAP_MAX = 3000;
+  const GUTTER_MEASURE_GAP = 200; // ms between two measurements while typing
+  const g = { on: false, wrapped: false, tooLong: false, hold: false, noteId: null, lines: 1, digits: 0, caret: 1, tops: null, key: '', raf: 0, timer: 0, last: 0, blocks: [], text: [], pool: [], rowN: [] };
+
+  function countLines(v) {
+    let n = 1;
+    for (let i = v.indexOf('\n'); i !== -1; i = v.indexOf('\n', i + 1)) n++;
+    return n;
+  }
+
+  /** 1-based line number of a character offset. */
+  function lineAt(v, pos) {
+    let n = 1;
+    for (let i = v.indexOf('\n'); i !== -1 && i < pos; i = v.indexOf('\n', i + 1)) n++;
+    return n;
+  }
+
+  function gutterWanted(note) {
+    if (!isEditable(note)) return false;
+    const m = S.settings.lineNumbers;
+    return m === 'all' || (m === 'script' && isScript(note));
+  }
+
+  function clearMirror() {
+    clearTimeout(g.timer);
+    g.timer = 0;
+    els.gutterMirror.replaceChildren();
+    g.blocks = [];
+    g.text = [];
+    g.tops = null;
+    g.key = '';
+  }
+
+  function clearRows() {
+    els.gutter.replaceChildren();
+    g.pool = [];
+    g.rowN = [];
+  }
+
+  function gutterKey(cs, w) {
+    return [w, cs.fontSize, cs.fontFamily, cs.fontWeight, cs.letterSpacing, cs.wordSpacing, cs.tabSize, cs.lineHeight, cs.paddingLeft, cs.paddingRight].join('|');
+  }
+
+  /** Re-reads the note and the setting: decides whether the gutter shows, its width and what the mirror holds. */
+  function updateGutter() {
+    const note = active();
+    const id = note ? note.id : null;
+    if (id !== g.noteId) { clearMirror(); g.noteId = id; }
+    const want = gutterWanted(note);
+    g.wrapped = want && !isScript(note);
+    g.tooLong = false;
+    let on = want;
+    if (want) {
+      g.lines = countLines(els.editor.value);
+      if (g.wrapped && g.lines > GUTTER_WRAP_MAX) { g.tooLong = true; on = false; }
+    }
+    g.on = on;
+    if (on) {
+      const digits = Math.max(2, String(g.lines).length);
+      if (digits !== g.digits) {
+        g.digits = digits;
+        els.editorPane.style.setProperty('--gutter-w', `calc(${digits}ch + 1.5rem)`);
+      }
+      g.caret = lineAt(els.editor.value, els.editor.selectionStart);
+      if (!g.wrapped) clearMirror();
+    } else {
+      clearMirror();
+      clearRows();
+    }
+    els.editorPane.classList.toggle('has-gutter', on);
+    if (on) drawGutter();
+  }
+
+  /** Wrapped notes: one block per line in the mirror, then each block's top. */
+  function measureGutter() {
+    clearTimeout(g.timer);
+    g.timer = 0;
+    g.last = performance.now();
+    const ed = els.editor;
+    const mirror = els.gutterMirror;
+    if (g.hold || !g.on || !g.wrapped || !ed.clientWidth) { clearMirror(); return; }
+    const cs = getComputedStyle(ed);
+    const w = ed.clientWidth - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0);
+    const st = mirror.style;
+    for (const p of ['fontFamily', 'fontSize', 'fontStyle', 'fontWeight', 'fontVariant', 'fontStretch', 'letterSpacing', 'wordSpacing', 'tabSize', 'textIndent', 'textTransform', 'lineHeight', 'direction', 'whiteSpace', 'overflowWrap', 'wordBreak']) st[p] = cs[p];
+    st.width = `${Math.max(0, w)}px`;
+    st.setProperty('--mlh', cs.lineHeight);
+    const lines = ed.value.split('\n');
+    while (g.blocks.length > lines.length) g.blocks.pop().remove();
+    const fresh = [];
+    for (let i = 0; i < lines.length; i++) {
+      if (i >= g.blocks.length) {
+        const b = h('div');
+        b.textContent = lines[i]; // text only, never markup
+        g.blocks.push(b);
+        fresh.push(b);
+      } else if (g.text[i] !== lines[i]) {
+        g.blocks[i].textContent = lines[i];
+      }
+    }
+    if (fresh.length) mirror.append(...fresh);
+    g.text = lines;
+    const base = mirror.getBoundingClientRect().top;
+    const tops = new Float64Array(lines.length);
+    for (let i = 0; i < tops.length; i++) tops[i] = g.blocks[i].getBoundingClientRect().top - base;
+    g.tops = tops;
+    g.key = gutterKey(cs, ed.clientWidth);
+  }
+
+  /** At most about 5 measurements a second: the first one at once, the rest after the gap. */
+  function scheduleMeasure() {
+    if (!g.on || !g.wrapped || g.timer) return;
+    const wait = GUTTER_MEASURE_GAP - (performance.now() - g.last);
+    if (wait <= 0) { measureGutter(); return; }
+    g.timer = setTimeout(() => { g.timer = 0; measureGutter(); scheduleGutterDraw(); }, wait);
+  }
+
+  function scheduleGutterDraw() {
+    if (g.raf || !g.on) return;
+    g.raf = requestAnimationFrame(drawGutter);
+  }
+
+  /** Draws the numbers that can be seen, plus a little overscan. */
+  function drawGutter() {
+    g.raf = 0;
+    if (!g.on || g.hold) return;
+    const ed = els.editor;
+    if (!ed.clientHeight || !ed.clientWidth) { clearRows(); clearMirror(); return; } // editor not on screen
+    const cs = getComputedStyle(ed);
+    let lh = parseFloat(cs.lineHeight);
+    if (!(lh > 0)) lh = parseFloat(cs.fontSize) * 1.7;
+    const padTop = parseFloat(cs.paddingTop) || 0;
+    if (g.wrapped && (!g.tops || g.key !== gutterKey(cs, ed.clientWidth))) measureGutter();
+    const st = ed.scrollTop;
+    const view = ed.clientHeight;
+    const gut = els.gutter;
+    let used = 0;
+    const put = (n, y) => {
+      let row = g.pool[used];
+      if (!row) {
+        row = h('div', { class: 'ln' });
+        g.pool.push(row);
+        g.rowN.push(0);
+        gut.appendChild(row);
+      }
+      if (g.rowN[used] !== n) { row.textContent = String(n); g.rowN[used] = n; }
+      row.classList.toggle('cur', n === g.caret);
+      row.style.top = `${y}px`;
+      used++;
+    };
+    if (!g.wrapped) {
+      // The engine lays lines out on a 1/64 px grid, so its real pitch can differ from the computed line height
+      // by a few thousandths of a pixel: over 20,000 lines that is a whole row. When the text is taller than the
+      // box, the pitch is taken from the textarea's own height instead.
+      let pitch = lh;
+      const sh = ed.scrollHeight;
+      if (sh > view && g.lines > 1) {
+        const p = (sh - padTop - (parseFloat(cs.paddingBottom) || 0)) / g.lines;
+        if (p > lh * 0.95 && p < lh * 1.05) pitch = p;
+      }
+      const first = Math.max(0, Math.floor((st - padTop) / pitch) - GUTTER_OVERSCAN);
+      const last = Math.min(g.lines - 1, Math.ceil((st + view - padTop) / pitch) + GUTTER_OVERSCAN);
+      for (let k = first; k <= last; k++) put(k + 1, padTop + k * pitch - st);
+    } else if (g.tops) {
+      const tops = g.tops;
+      const n = Math.min(g.lines, tops.length);
+      const v0 = st - padTop;
+      let lo = 0;
+      let hi = n;
+      while (lo < hi) { const mid = (lo + hi) >> 1; if (tops[mid] > v0 - lh) hi = mid; else lo = mid + 1; }
+      for (let k = Math.max(0, lo - GUTTER_OVERSCAN); k < n && tops[k] <= v0 + view + lh * GUTTER_OVERSCAN; k++) put(k + 1, padTop + tops[k] - st);
+    }
+    while (g.pool.length > used) { g.pool.pop().remove(); g.rowN.pop(); }
+  }
+
+  function onGutterInput() {
+    g.hold = false;
+    const note = active();
+    if (!gutterWanted(note)) return;
+    const v = els.editor.value;
+    const lines = countLines(v);
+    const tooLong = !isScript(note) && lines > GUTTER_WRAP_MAX;
+    if (tooLong !== g.tooLong || Math.max(2, String(lines).length) !== g.digits) { updateGutter(); return; }
+    g.lines = lines;
+    g.caret = lineAt(v, els.editor.selectionStart);
+    scheduleMeasure();
+    scheduleGutterDraw();
+  }
+
+  function onGutterCaret() {
+    if (!g.on) return;
+    const c = lineAt(els.editor.value, els.editor.selectionStart);
+    if (c === g.caret) return;
+    g.caret = c;
+    scheduleGutterDraw();
+  }
+
+  function lineNumbersTitle() {
+    const m = S.settings.lineNumbers;
+    const name = m === 'all' ? 'every note' : m === 'off' ? 'off' : 'script notes only';
+    const hidden = g.tooLong ? ' (hidden in this note: more than 3,000 lines)' : '';
+    return `Line numbers: ${name}${hidden} (change)`;
+  }
+
+  function cycleLineNumbers() {
+    const a = store.LINE_NUMBERS;
+    S.settings.lineNumbers = a[(a.indexOf(S.settings.lineNumbers) + 1) % a.length];
+    saveSettings();
+    updateGutter();
+    const m = S.settings.lineNumbers;
+    toast(`Line numbers: ${m === 'all' ? 'every note' : m === 'off' ? 'off' : 'script notes only'}.`);
   }
 
   const LIST_CAP = 500;
@@ -1848,6 +2073,7 @@
       C('View', S.settings.crt ? 'Turn off CRT effect' : 'Turn on CRT effect', toggleCrt),
       C('View', S.settings.sound ? 'Turn off typing sounds' : 'Turn on typing sounds', toggleSound),
       C('View', S.settings.arrows ? 'Turn off arrow replacement' : 'Turn on arrow replacement', toggleArrows),
+      C('View', lineNumbersTitle(), cycleLineNumbers),
       C('View', S.settings.boot ? 'Skip the boot screen on start' : 'Show the boot screen on start', toggleBoot),
       C('View', 'Keyboard shortcuts', showShortcuts, 'F1'),
       C('View', 'About CyberPad', showAbout, null, platform.isDesktop),
@@ -2918,6 +3144,9 @@
   let printFocusCleanup = null;
   let printing = false;
   function prepareForPrint() {
+    g.hold = true; // the measuring copy of the note must not exist while printing
+    clearMirror();
+    clearRows();
     const note = active();
     if (!isEditable(note)) return;
     if (S.settings.view === 'edit') printForced = true;
@@ -2925,6 +3154,8 @@
   }
   function afterPrint() {
     printing = false;
+    g.hold = false;
+    updateGutter();
     if (printFocusCleanup) { printFocusCleanup(); printFocusCleanup = null; }
     const note = active();
     document.title = note ? `${titleOf(note)} | CyberPad` : 'CyberPad';
@@ -4033,7 +4264,12 @@
     ['keyup', 'mouseup', 'select', 'focus'].forEach((t) => ed.addEventListener(t, scheduleStatus));
     ed.addEventListener('blur', () => setTimeout(() => { if (document.activeElement !== ed) closeSlash(); }, 120));
     ed.addEventListener('mousedown', () => { arrowMemo = null; closeSlash(); });
+    ed.addEventListener('input', onGutterInput);
+    ['keyup', 'mouseup', 'select', 'focus'].forEach((t) => ed.addEventListener(t, onGutterCaret));
+    document.addEventListener('selectionchange', () => { if (document.activeElement === ed) onGutterCaret(); });
+    if (typeof ResizeObserver === 'function') new ResizeObserver(() => { if (g.on) drawGutter(); }).observe(ed);
     ed.addEventListener('scroll', () => {
+      scheduleGutterDraw();
       if (S.slash.open) renderSlash();
       if (S.settings.view !== 'split') return;
       const max = ed.scrollHeight - ed.clientHeight;
