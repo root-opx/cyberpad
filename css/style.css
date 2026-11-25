@@ -194,6 +194,13 @@ svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-width:
 
 .search input::placeholder { color: var(--dim); }
 
+/* Every titlebar control is at least 2rem tall (2.75rem on phones, below). */
+.titlebar .icon-btn,
+.search,
+.segmented button,
+.theme-picker select,
+.titlebar .chip { min-height: 2rem; }
+
 .titlebar-actions {
   margin-left: auto;
   display: flex;
@@ -1197,8 +1204,22 @@ body.crt::after {
 
   .wordmark { font-size: 1rem; }
   .chip-cmd kbd { display: none; }
-  .titlebar { flex-wrap: wrap; }
-  .search { order: 5; flex-basis: 100%; max-width: none; }
+  /* Top bar: row 1 = menu, wordmark, Commands; row 2 = search, layout switch.
+     The theme picker lives in the palette on phones. */
+  .titlebar { flex-wrap: wrap; row-gap: 0; }
+  /* Forces the line break so the search box never squeezes into row 1. */
+  .titlebar::after { content: ""; order: 1; flex: 0 0 100%; height: 0; }
+  .titlebar-actions { display: contents; }
+  .theme-picker { display: none; }
+  .titlebar .icon-btn,
+  .search,
+  .segmented button,
+  .theme-picker select,
+  .titlebar .chip { min-height: 2.75rem; }
+  .titlebar .icon-btn { width: 2.75rem; }
+  #btn-palette { order: 1; margin-left: auto; }
+  .search { order: 2; flex: 1 1 0; min-width: 6rem; max-width: none; margin-top: 0.4rem; }
+  .segmented { order: 3; margin-top: 0.4rem; }
 
   .workspace[data-view="split"] .panes { grid-template-columns: minmax(0, 1fr); grid-template-rows: 1fr 1fr; }
   .workspace[data-view="split"] .pane-preview { border-left: 0; border-top: 1px solid var(--line); }
