@@ -331,6 +331,8 @@ public class MessageDispatcherTests
     [InlineData("neon", HostTheme.Neon)]
     [InlineData("amber", HostTheme.Amber)]
     [InlineData("terminal", HostTheme.Terminal)]
+    [InlineData("light", HostTheme.Light)]
+    [InlineData("dark", HostTheme.Dark)]
     public async Task Theme_AppliesAndReplies(string name, HostTheme expected)
     {
         var (d, f, _) = Make();
@@ -343,7 +345,8 @@ public class MessageDispatcherTests
 
     [Theory]
     [InlineData("""{"type":"theme","id":"r1","theme":"Neon"}""")]
-    [InlineData("""{"type":"theme","id":"r1","theme":"dark"}""")]
+    [InlineData("""{"type":"theme","id":"r1","theme":"solarized"}""")]
+    [InlineData("""{"type":"theme","id":"r1","theme":"system"}""")]
     [InlineData("""{"type":"theme","id":"r1","theme":""}""")]
     [InlineData("""{"type":"theme","id":"r1","theme":"#191338"}""")]
     [InlineData("""{"type":"theme","id":"r1","theme":1}""")]

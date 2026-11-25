@@ -24,7 +24,7 @@ public static class TitleBar
         try
         {
             var colors = HostThemes.ColorsFor(theme);
-            Set(hwnd, UseImmersiveDarkMode, 1);
+            Set(hwnd, UseImmersiveDarkMode, HostThemes.UsesDarkCaption(theme) ? 1 : 0);
             Set(hwnd, CaptionColor, HostThemes.ToColorRef(colors.Caption));
             Set(hwnd, TextColor, HostThemes.ToColorRef(colors.Text));
             Set(hwnd, BorderColor, HostThemes.ToColorRef(colors.Border));
