@@ -116,22 +116,37 @@ namespace CyberPad.Install
             }
         }
 
-        public bool CanOpenForWriting(string file)
+        public FileWriteCheck CheckWritable(string file)
         {
             try
             {
                 using (new FileStream(file, FileMode.Open, FileAccess.Write, FileShare.None))
                 {
-                    return true;
+                    return FileWriteCheck.Writable;
                 }
+            }
+            catch (FileNotFoundException)
+            {
+                return FileWriteCheck.Missing;
+            }
+            catch (DirectoryNotFoundException)
+            {
+                return FileWriteCheck.Missing;
             }
             catch (IOException)
             {
-                return false;
+                // A sharing or lock violation (the app is running). Any other I/O error is treated the same
+                // way, which only ever stops setup; read-only and access denied arrive as
+                // UnauthorizedAccessException below.
+                return FileWriteCheck.InUse;
             }
             catch (UnauthorizedAccessException)
             {
-                return false;
+                return FileWriteCheck.Denied;
+            }
+            catch (SecurityException)
+            {
+                return FileWriteCheck.Denied;
             }
         }
 

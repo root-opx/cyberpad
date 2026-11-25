@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Text;
 
 namespace CyberPad.Install
 {
@@ -18,6 +19,7 @@ namespace CyberPad.Install
             string? desktop,
             string? documents,
             string? downloads,
+            string? startup,
             string? windows,
             string? programFiles,
             string? programFilesX86,
@@ -29,6 +31,7 @@ namespace CyberPad.Install
             Desktop = PathText.NormaliseFolder(desktop);
             Documents = PathText.NormaliseFolder(documents);
             Downloads = PathText.NormaliseFolder(downloads);
+            Startup = PathText.NormaliseFolder(startup);
             Windows = PathText.NormaliseFolder(windows);
             ProgramFiles = PathText.NormaliseFolder(programFiles);
             ProgramFilesX86 = PathText.NormaliseFolder(programFilesX86);
@@ -39,6 +42,10 @@ namespace CyberPad.Install
             AddIfSet(shared, Documents);
             AddIfSet(shared, Downloads);
             SharedFolders = shared;
+
+            var sharedTrees = new List<string> { Temp };
+            AddIfSet(sharedTrees, Startup);
+            SharedTrees = sharedTrees;
 
             var admin = new List<string>();
             AddIfSet(admin, Windows);
@@ -60,6 +67,9 @@ namespace CyberPad.Install
 
         public string? Downloads { get; }
 
+        /// <summary>The user's Startup folder (programs placed there run at sign-in).</summary>
+        public string? Startup { get; }
+
         public string? Windows { get; }
 
         public string? ProgramFiles { get; }
@@ -74,14 +84,17 @@ namespace CyberPad.Install
         /// <summary>The folders that may not be chosen themselves: profile, Desktop, Documents, Downloads.</summary>
         public IReadOnlyList<string> SharedFolders { get; }
 
+        /// <summary>Folders that may not be chosen, nor anything inside them: temp and Startup.</summary>
+        public IReadOnlyList<string> SharedTrees { get; }
+
         /// <summary>Folders that need administrator rights: Windows and Program Files.</summary>
         public IReadOnlyList<string> AdminFolders { get; }
 
-        /// <summary>Reads the real folders of the signed-in user.</summary>
+        /// <summary>Reads the real folders of the signed-in user, with any 8.3 short names expanded.</summary>
         public static InstallEnvironment FromSystem()
         {
-            string local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-            string profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            string local = Long(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData));
+            string profile = Long(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
             if (PathText.NormaliseFolder(local) == null || PathText.NormaliseFolder(profile) == null)
             {
                 throw new InstallException(InstallMessages.NoUserFolders);
@@ -98,13 +111,14 @@ namespace CyberPad.Install
                     local,
                     Path.Combine(local, InstallLayout.NotesFolderName),
                     profile,
-                    Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),
-                    Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
-                    KnownFolders.Downloads() ?? Path.Combine(profile, "Downloads"),
-                    Environment.GetFolderPath(Environment.SpecialFolder.Windows),
-                    string.IsNullOrEmpty(programFiles64) ? programFiles : programFiles64,
-                    programFilesX86,
-                    Path.GetTempPath());
+                    Long(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory)),
+                    Long(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments)),
+                    Long(KnownFolders.Downloads() ?? Path.Combine(profile, "Downloads")),
+                    Long(Environment.GetFolderPath(Environment.SpecialFolder.Startup)),
+                    Long(Environment.GetFolderPath(Environment.SpecialFolder.Windows)),
+                    Long(string.IsNullOrEmpty(programFiles64) ? programFiles : programFiles64!),
+                    Long(programFilesX86),
+                    Long(Path.GetTempPath())); // %TEMP% is often written with 8.3 names, e.g. C:\Users\JOHNSM~1\...
             }
             catch (ArgumentException ex)
             {
@@ -121,6 +135,19 @@ namespace CyberPad.Install
             {
                 list.Add(folder);
             }
+        }
+
+        /// <summary>The long form of an existing folder (so the rules compare like with like), or the input unchanged.</summary>
+        private static string Long(string path)
+        {
+            if (string.IsNullOrEmpty(path))
+            {
+                return path;
+            }
+
+            var buffer = new StringBuilder(1024);
+            uint length = KnownFolders.GetLongPathNameW(path, buffer, (uint)buffer.Capacity);
+            return length == 0 || length >= buffer.Capacity ? path : buffer.ToString();
         }
 
         private static class KnownFolders
@@ -148,6 +175,10 @@ namespace CyberPad.Install
             [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
             private static extern int SHGetKnownFolderPath(
                 [MarshalAs(UnmanagedType.LPStruct)] Guid rfid, uint dwFlags, IntPtr hToken, out IntPtr ppszPath);
+
+            [DllImport("kernel32.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
+            [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+            public static extern uint GetLongPathNameW(string lpszShortPath, StringBuilder lpszLongPath, uint cchBuffer);
         }
     }
 }

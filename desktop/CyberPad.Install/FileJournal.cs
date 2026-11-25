@@ -13,13 +13,15 @@ namespace CyberPad.Install
     /// </summary>
     internal sealed class FileJournal
     {
-        private const string BackupFolderPrefix = ".cyberpad-setup-";
+        /// <summary>Backup folders are named this followed by 32 hex digits.</summary>
+        internal const string BackupFolderPrefix = ".cyberpad-setup-";
 
         private readonly IFileSystemProbe _probe;
         private readonly HashSet<string> _replaceable;
         private readonly List<Entry> _entries = new List<Entry>();
         private string? _backupDir;
         private int _backupCount;
+        private bool _committed;
 
         public FileJournal(string installDir, IFileSystemProbe probe, IEnumerable<string> replaceable)
         {
@@ -108,6 +110,13 @@ namespace CyberPad.Install
         /// <summary>Undoes every recorded change in reverse order. Returns false if something could not be undone.</summary>
         public bool Rollback()
         {
+            if (_committed)
+            {
+                // Once Commit has started the backups may be gone: undoing now would delete the new files
+                // with nothing to put back. The new install stays.
+                return true;
+            }
+
             bool complete = true;
             for (int i = _entries.Count - 1; i >= 0; i--)
             {
@@ -156,10 +165,12 @@ namespace CyberPad.Install
 
         /// <summary>
         /// Keeps the changes: deletes the backups, then folders that removed old files leave empty.
-        /// Returns the paths that could not be cleaned up.
+        /// Never throws: every clean-up step that fails adds its path to the returned leftovers. After this
+        /// is called, <see cref="Rollback"/> does nothing.
         /// </summary>
         public IReadOnlyList<string> Commit()
         {
+            _committed = true;
             var leftovers = new List<string>();
             var emptiedFolders = new List<string>();
             foreach (Entry entry in _entries)
@@ -169,7 +180,11 @@ namespace CyberPad.Install
                     continue;
                 }
 
-                if (!TryIo(() => File.Delete(entry.Backup!)))
+                if (!CleanUp(() =>
+                    {
+                        CommitStep?.Invoke(entry.Backup!);
+                        File.Delete(entry.Backup!);
+                    }))
                 {
                     leftovers.Add(entry.Backup!);
                 }
@@ -192,8 +207,15 @@ namespace CyberPad.Install
 
             foreach (string dir in emptiedFolders.Distinct(StringComparer.OrdinalIgnoreCase).OrderByDescending(d => d.Length))
             {
-                if (Directory.Exists(dir) && !_probe.IsReparsePoint(dir) && IsEmpty(dir) &&
-                    !TryIo(() => Directory.Delete(dir, false)))
+                bool cleaned = CleanUp(() =>
+                {
+                    CommitStep?.Invoke(dir);
+                    if (Directory.Exists(dir) && !_probe.IsReparsePoint(dir) && IsEmpty(dir))
+                    {
+                        Directory.Delete(dir, false);
+                    }
+                });
+                if (!cleaned)
                 {
                     leftovers.Add(dir);
                 }
@@ -201,6 +223,28 @@ namespace CyberPad.Install
 
             _entries.Clear();
             return leftovers;
+        }
+
+        /// <summary>Called before each clean-up step of <see cref="Commit"/>; tests throw from it.</summary>
+        internal Action<string>? CommitStep { get; set; }
+
+        /// <summary>
+        /// Runs one clean-up step of a commit. The install is already complete at this point, so any failure,
+        /// whatever its type, is reported as a leftover (by the caller) rather than allowed to undo it.
+        /// </summary>
+        private static bool CleanUp(Action step)
+        {
+            try
+            {
+                step();
+                return true;
+            }
+#pragma warning disable CA1031 // Commit must never throw; the failure is returned as a leftover path, not swallowed.
+            catch (Exception)
+#pragma warning restore CA1031
+            {
+                return false;
+            }
         }
 
         private void EnsureParentDirectories(string fullFile)
@@ -258,7 +302,18 @@ namespace CyberPad.Install
             if (_backupDir == null)
             {
                 string dir = InstallDir + "\\" + BackupFolderPrefix + Guid.NewGuid().ToString("N");
+
+                // A fresh, random name: anything already there (a folder, a file, a planted link) stops the install.
+                if (_probe.DirectoryExists(dir) || _probe.FileExists(dir) || _probe.IsReparsePoint(dir))
+                {
+                    throw new InstallException(InstallMessages.WriteFailed);
+                }
+
                 Io(() => Directory.CreateDirectory(dir));
+                if (_probe.IsReparsePoint(dir))
+                {
+                    throw new InstallException(InstallMessages.WriteFailed);
+                }
                 _entries.Add(new Entry(EntryKind.CreatedDirectory, dir, null));
                 _backupDir = dir;
             }

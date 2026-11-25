@@ -258,6 +258,126 @@ public sealed class InstallerTests : IDisposable
     }
 
     [Fact]
+    public void FailureInsideTheFinalCommitOfAnUpdate_KeepsTheNewInstall()
+    {
+        Install(V1, "1.0.0");
+
+        InstallResult result = Install(V2, "2.0.0", setup: i => i.JournalCommitStep = _ => throw new IOException("injected"));
+
+        Assert.True(result.WasUpdate);
+        Assert.NotEmpty(result.Leftovers);
+        Assert.Equal("app v2", File.ReadAllText(Path.Combine(_dir, "CyberPad.exe")));
+        Assert.Equal("index v2", File.ReadAllText(Path.Combine(_dir, "wwwroot", "index.html")));
+        Assert.Equal("new", File.ReadAllText(Path.Combine(_dir, "wwwroot", "js", "new.js")));
+        Assert.Equal("uninstaller 2.0.0", File.ReadAllText(Path.Combine(_dir, "Uninstall.exe")));
+        Assert.False(File.Exists(Path.Combine(_dir, "wwwroot", "js", "old.js")));
+        Assert.Equal("2.0.0", _registry.GetValue(RegistryKeyId.UninstallEntry, "DisplayVersion"));
+        Assert.Equal("2.0.0", Installer.FindExisting(_registry, _probe, _env)!.Version);
+        string exe = _dir + @"\CyberPad.exe";
+        Assert.Equal($"{exe}|{_dir}|{exe}", _shortcuts.Dump());
+    }
+
+    [Fact]
+    public void UnexpectedExceptionDuringAnUpdate_IsUndone_AndReportedSafely()
+    {
+        Install(V1, "1.0.0");
+        string before = State();
+
+        var ex = Assert.Throws<InstallException>(() => Install(V2, "2.0.0", setup: i => i.StepStarting = s =>
+        {
+            if (s == InstallStep.Registry) throw new InvalidOperationException("injected");
+        }));
+
+        Assert.Equal(InstallMessages.UnexpectedFailure, ex.Message);
+        Assert.IsType<InvalidOperationException>(ex.InnerException);
+        Assert.Equal(before, State());
+        Assert.Equal("1.0.0", Installer.FindExisting(_registry, _probe, _env)!.Version);
+    }
+
+    [Fact]
+    public void UnexpectedExceptionWhenUndoAlsoFails_SaysSo()
+    {
+        _registry.FailDeletes = true; // the undo deletes the keys first, so it fails too
+
+        var ex = Assert.Throws<InstallException>(() => Install(V1, "1.0.0", setup: i => i.StepStarting = s =>
+        {
+            if (s == InstallStep.Notify) throw new InvalidOperationException("injected");
+        }));
+
+        Assert.Equal(InstallMessages.UndoIncomplete, ex.Message);
+    }
+
+    [Fact]
+    public void ReadOnlyApp_IsReplacedByTheUpdate()
+    {
+        Install(V1, "1.0.0");
+        File.SetAttributes(Path.Combine(_dir, "CyberPad.exe"), FileAttributes.ReadOnly);
+
+        InstallResult result = Install(V2, "2.0.0");
+
+        Assert.Empty(result.Leftovers);
+        Assert.Equal("app v2", File.ReadAllText(Path.Combine(_dir, "CyberPad.exe")));
+    }
+
+    [Fact]
+    public void AppThatStaysDenied_StopsTheUpdate_WithNothingChanged()
+    {
+        Install(V1, "1.0.0");
+        string before = State();
+        var probe = new OverridingProbe { WritableOverride = f => f.EndsWith(@"\CyberPad.exe", StringComparison.OrdinalIgnoreCase) ? FileWriteCheck.Denied : null };
+        var installer = new Installer(_registry, _shortcuts, _notify, probe, _env);
+        using MemoryStream zip = TestZips.Build(V2);
+        using var uninstaller = new MemoryStream(Encoding.UTF8.GetBytes("uninstaller 2.0.0"));
+
+        var ex = Assert.Throws<InstallException>(() => installer.Install(new InstallRequest(_dir, "2.0.0", zip, uninstaller), null));
+
+        Assert.Equal("Setup cannot replace CyberPad.exe. Check that the file is not read-only.", ex.Message);
+        Assert.Equal(before, State());
+    }
+
+    [Fact]
+    public void UnlistedReadOnlyApp_IsNotTouched()
+    {
+        // A CyberPad.exe the old install did not write is never made writable by setup.
+        Directory.CreateDirectory(_dir);
+        string exe = Path.Combine(_dir, "CyberPad.exe");
+        File.WriteAllText(exe, "someone else's");
+        File.SetAttributes(exe, FileAttributes.ReadOnly);
+        try
+        {
+            try
+            {
+                Install(V1, "1.0.0"); // refused, or redirected into a subfolder; either way exe is not touched
+            }
+            catch (InstallException)
+            {
+            }
+
+            Assert.True((File.GetAttributes(exe) & FileAttributes.ReadOnly) != 0);
+            Assert.Equal("someone else's", File.ReadAllText(exe));
+        }
+        finally
+        {
+            File.SetAttributes(exe, FileAttributes.Normal);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void UnreadableShortcut_IsOverwritten(bool update)
+    {
+        if (update) Install(V1, "1.0.0");
+        _shortcuts.Unreadable = true;
+
+        Install(V2, "2.0.0");
+
+        string exe = _dir + @"\CyberPad.exe";
+        Assert.Equal($"{exe}|{_dir}|{exe}", _shortcuts.Dump());
+        Assert.False(_shortcuts.Unreadable);
+    }
+
+    [Fact]
     public void RunningApp_StopsTheUpdate_WithNothingChanged()
     {
         Install(V1, "1.0.0");
@@ -294,6 +414,9 @@ public sealed class InstallerTests : IDisposable
     [InlineData("profile")]
     [InlineData("admin")]
     [InlineData("unc")]
+    [InlineData("outside-profile")]
+    [InlineData("startup")]
+    [InlineData("temp")]
     public void FolderBreakingARule_IsRefusedBeforeAnythingHappens(string which)
     {
         string dir = which switch
@@ -301,6 +424,9 @@ public sealed class InstallerTests : IDisposable
             "notes" => _env.NotesFolder,
             "profile" => _env.UserProfile,
             "admin" => _env.ProgramFiles + @"\CyberPad",
+            "outside-profile" => _temp.Path_("Tools", "CyberPad"),
+            "startup" => _env.Startup + @"\CyberPad",
+            "temp" => _env.Temp + @"\CyberPad",
             _ => @"\\server\share\CyberPad",
         };
         string before = State();
@@ -314,7 +440,7 @@ public sealed class InstallerTests : IDisposable
     [Fact]
     public void FolderWithOtherFiles_InstallsIntoTheCyberPadSubfolder()
     {
-        string tools = _temp.Path_("Tools");
+        string tools = Path.Combine(_env.UserProfile, "Tools");
         Directory.CreateDirectory(tools);
         File.WriteAllText(Path.Combine(tools, "other.txt"), "x");
 

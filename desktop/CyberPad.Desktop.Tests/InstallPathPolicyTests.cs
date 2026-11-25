@@ -10,7 +10,7 @@ public sealed class InstallPathPolicyTests
     private const string DefaultDir = Programs + @"\CyberPad";
 
     private readonly InstallEnvironment _env = TestEnvironments.Typical();
-    private readonly FakeProbe _probe = new FakeProbe().Dir(Programs).Dir(@"C:\Users\u\Documents").Dir(@"C:\Windows").Dir(@"C:\Tools");
+    private readonly FakeProbe _probe = new FakeProbe().Dir(Programs).Dir(@"C:\Users\u\Documents").Dir(@"C:\Windows").Dir(@"C:\Users\u\Tools");
 
     private InstallPathResult Evaluate(string? input) => InstallPathPolicy.Evaluate(input, _probe, _env);
 
@@ -37,7 +37,7 @@ public sealed class InstallPathPolicyTests
     [Fact]
     public void MissingParents_StillWillBeCreated_WhenTheNearestExistingFolderIsWritable()
     {
-        InstallPathResult result = Evaluate(@"C:\Tools\new\deeper\CyberPad");
+        InstallPathResult result = Evaluate(@"C:\Users\u\Tools\new\deeper\CyberPad");
         Assert.Equal(InstallPathKind.WillCreate, result.Kind);
     }
 
@@ -79,20 +79,20 @@ public sealed class InstallPathPolicyTests
     [Fact]
     public void FolderWithOtherFiles_UsesACyberPadSubfolder()
     {
-        _probe.File(@"C:\Tools\readme.txt");
-        InstallPathResult result = Evaluate(@"C:\Tools");
+        _probe.File(@"C:\Users\u\Tools\readme.txt");
+        InstallPathResult result = Evaluate(@"C:\Users\u\Tools");
         Assert.True(result.IsUsable);
         Assert.Equal(InstallPathKind.UsesSubfolder, result.Kind);
         Assert.Equal(InstallPathKind.WillCreate, result.FolderKind);
-        Assert.Equal(@"C:\Tools\CyberPad", result.FullPath);
+        Assert.Equal(@"C:\Users\u\Tools\CyberPad", result.FullPath);
         Assert.Equal("This folder will be created.", result.Message);
     }
 
     [Fact]
     public void Subfolder_ThatIsAnInstall_IsReportedAsAnUpdate()
     {
-        _probe.File(@"C:\Tools\readme.txt").Install(@"C:\Tools\CyberPad");
-        InstallPathResult result = Evaluate(@"C:\Tools\");
+        _probe.File(@"C:\Users\u\Tools\readme.txt").Install(@"C:\Users\u\Tools\CyberPad");
+        InstallPathResult result = Evaluate(@"C:\Users\u\Tools\");
         Assert.Equal(InstallPathKind.UsesSubfolder, result.Kind);
         Assert.Equal(InstallPathKind.ExistingInstall, result.FolderKind);
         Assert.Equal("CyberPad is already installed here and will be updated.", result.Message);
@@ -101,17 +101,17 @@ public sealed class InstallPathPolicyTests
     [Fact]
     public void Subfolder_WithOtherFiles_IsRefused()
     {
-        _probe.File(@"C:\Tools\readme.txt").File(@"C:\Tools\CyberPad\mine.txt");
-        InstallPathResult result = Evaluate(@"C:\Tools");
+        _probe.File(@"C:\Users\u\Tools\readme.txt").File(@"C:\Users\u\Tools\CyberPad\mine.txt");
+        InstallPathResult result = Evaluate(@"C:\Users\u\Tools");
         Assert.False(result.IsUsable);
-        Assert.Equal(@"C:\Tools\CyberPad", result.FullPath);
+        Assert.Equal(@"C:\Users\u\Tools\CyberPad", result.FullPath);
         Assert.Equal(InstallMessages.SubfolderOccupied, result.Message);
     }
 
     [Fact]
     public void Subfolder_BreakingARule_ShowsThatRulesReason()
     {
-        string dir = @"C:\" + new string('a', 172); // 175 characters; with "\CyberPad" 184
+        string dir = @"C:\Users\u\" + new string('a', 164); // 175 characters; with "\CyberPad" 184
         _probe.File(dir + @"\x.txt");
         InstallPathResult result = Evaluate(dir);
         Assert.False(result.IsUsable);
@@ -121,9 +121,9 @@ public sealed class InstallPathPolicyTests
     [Fact]
     public void Subfolder_ThatIsALink_IsRefused()
     {
-        _probe.File(@"C:\Tools\readme.txt").Dir(@"C:\Tools\CyberPad");
-        _probe.ReparsePoints.Add(@"C:\Tools\CyberPad");
-        Assert.Equal(InstallMessages.Link, Evaluate(@"C:\Tools").Message);
+        _probe.File(@"C:\Users\u\Tools\readme.txt").Dir(@"C:\Users\u\Tools\CyberPad");
+        _probe.ReparsePoints.Add(@"C:\Users\u\Tools\CyberPad");
+        Assert.Equal(InstallMessages.Link, Evaluate(@"C:\Users\u\Tools").Message);
     }
 
     [Theory]
@@ -159,7 +159,7 @@ public sealed class InstallPathPolicyTests
     [InlineData(@"..\..\CyberPad")]
     [InlineData(@"C:Programs\CyberPad")]
     [InlineData(@"C:")]
-    [InlineData(@" C:\Tools\CyberPad")]
+    [InlineData(@" C:\Users\u\Tools\CyberPad")]
     [InlineData(@"1:\Tools\CyberPad")]
     public void NotALocalAbsolutePath_IsRefused(string? input) => AssertRefused(input, "Choose a folder on a local drive.");
 
@@ -184,7 +184,7 @@ public sealed class InstallPathPolicyTests
     [Fact]
     public void PathOf180Characters_IsAllowed_And181_IsRefused()
     {
-        string at180 = @"C:\Tools\" + new string('b', 180 - 9);
+        string at180 = @"C:\Users\u\Tools\" + new string('b', 180 - 17);
         Assert.Equal(180, at180.Length);
         Assert.True(Evaluate(at180).IsUsable);
 
@@ -194,7 +194,7 @@ public sealed class InstallPathPolicyTests
 
     [Fact]
     public void LongInputThatResolvesShort_IsStillRefused_WhenOverTheInputCap() =>
-        AssertRefused(@"C:\Tools\" + string.Concat(Enumerable.Repeat(@"a\..\", 300)) + "CyberPad", InstallMessages.TooLongOrBadCharacters);
+        AssertRefused(@"C:\Users\u\Tools\" + string.Concat(Enumerable.Repeat(@"a\..\", 300)) + "CyberPad", InstallMessages.TooLongOrBadCharacters);
 
     [Theory]
     [InlineData("C:\\Tools\\Cyber\u0001Pad")]
@@ -202,52 +202,52 @@ public sealed class InstallPathPolicyTests
     [InlineData("C:\\Tools\\CyberPad\n")]
     [InlineData("C:\\Tools\\Cyber\u007FPad")]
     [InlineData("C:\\Tools\\Cyber\0Pad")]
-    [InlineData(@"C:\Tools\CyberPad:stream")]
-    [InlineData(@"C:\Tools\CyberPad::$DATA")]
-    [InlineData(@"C:\Tools:x\CyberPad")]
-    [InlineData(@"C:\Tools\CyberPad.")]
-    [InlineData(@"C:\Tools\CyberPad ")]
-    [InlineData(@"C:\Tools.\CyberPad")]
-    [InlineData(@"C:\Tools \CyberPad")]
-    [InlineData(@"C:\Tools\..\Windows\CyberPad")]
+    [InlineData(@"C:\Users\u\Tools\CyberPad:stream")]
+    [InlineData(@"C:\Users\u\Tools\CyberPad::$DATA")]
+    [InlineData(@"C:\Users\u\Tools:x\CyberPad")]
+    [InlineData(@"C:\Users\u\Tools\CyberPad.")]
+    [InlineData(@"C:\Users\u\Tools\CyberPad ")]
+    [InlineData(@"C:\Users\u\Tools.\CyberPad")]
+    [InlineData(@"C:\Users\u\Tools \CyberPad")]
+    [InlineData(@"C:\Users\u\Tools\..\Windows\CyberPad")]
     [InlineData(@"C:\Users\u\..\..\Windows")]
-    [InlineData(@"C:\Tools\.\CyberPad")]
-    [InlineData(@"C:\Tools\...")]
-    [InlineData(@"C:\Tools\CON")]
-    [InlineData(@"C:\Tools\con")]
-    [InlineData(@"C:\Tools\CON.txt")]
-    [InlineData(@"C:\Tools\NUL\CyberPad")]
-    [InlineData(@"C:\Tools\aux.cyberpad")]
-    [InlineData(@"C:\Tools\PRN")]
-    [InlineData(@"C:\Tools\COM1")]
-    [InlineData(@"C:\Tools\com9.log")]
-    [InlineData(@"C:\Tools\LPT1")]
-    [InlineData(@"C:\Tools\Lpt9\x")]
+    [InlineData(@"C:\Users\u\Tools\.\CyberPad")]
+    [InlineData(@"C:\Users\u\Tools\...")]
+    [InlineData(@"C:\Users\u\Tools\CON")]
+    [InlineData(@"C:\Users\u\Tools\con")]
+    [InlineData(@"C:\Users\u\Tools\CON.txt")]
+    [InlineData(@"C:\Users\u\Tools\NUL\CyberPad")]
+    [InlineData(@"C:\Users\u\Tools\aux.cyberpad")]
+    [InlineData(@"C:\Users\u\Tools\PRN")]
+    [InlineData(@"C:\Users\u\Tools\COM1")]
+    [InlineData(@"C:\Users\u\Tools\com9.log")]
+    [InlineData(@"C:\Users\u\Tools\LPT1")]
+    [InlineData(@"C:\Users\u\Tools\Lpt9\x")]
     [InlineData("C:\\Tools\\COM\u00B9")]
-    [InlineData(@"C:\Tools\CONIN$")]
-    [InlineData(@"C:\Tools\CON .txt")]
-    [InlineData(@"C:\Tools\Cyber?Pad")]
-    [InlineData(@"C:\Tools\Cyber*Pad")]
-    [InlineData(@"C:\Tools\<CyberPad>")]
-    [InlineData(@"C:\Tools\Cyber|Pad")]
+    [InlineData(@"C:\Users\u\Tools\CONIN$")]
+    [InlineData(@"C:\Users\u\Tools\CON .txt")]
+    [InlineData(@"C:\Users\u\Tools\Cyber?Pad")]
+    [InlineData(@"C:\Users\u\Tools\Cyber*Pad")]
+    [InlineData(@"C:\Users\u\Tools\<CyberPad>")]
+    [InlineData(@"C:\Users\u\Tools\Cyber|Pad")]
     [InlineData("C:\\Tools\\Cyber\"Pad")]
-    [InlineData(@"C:\Tools\%TEMP%")]
-    [InlineData(@"C:\Tools\50%off")]
+    [InlineData(@"C:\Users\u\Tools\%TEMP%")]
+    [InlineData(@"C:\Users\u\Tools\50%off")]
     [InlineData(@"C:\PROGRA~1\CyberPad")]
     [InlineData(@"C:\Users\U~1\AppData\Local\CyberPad")]
-    [InlineData(@"C:\Tools\CYBERP~1")]
+    [InlineData(@"C:\Users\u\Tools\CYBERP~1")]
     public void BadCharactersAndNames_AreRefused(string input) =>
         AssertRefused(input, "That path is too long or contains characters that cannot be used.");
 
     [Theory]
-    [InlineData(@"C:\Tools\CONSOLE")]
-    [InlineData(@"C:\Tools\COM10")]
-    [InlineData(@"C:\Tools\LPT")]
-    [InlineData(@"C:\Tools\my.CON")]
-    [InlineData(@"C:\Tools\Cyber Pad")]
-    [InlineData(@"C:\Tools\Cyber~Pad")]
-    [InlineData(@"C:\Tools\Cyber & Pad ^1")]
-    [InlineData(@"C:\Tools\.hidden")]
+    [InlineData(@"C:\Users\u\Tools\CONSOLE")]
+    [InlineData(@"C:\Users\u\Tools\COM10")]
+    [InlineData(@"C:\Users\u\Tools\LPT")]
+    [InlineData(@"C:\Users\u\Tools\my.CON")]
+    [InlineData(@"C:\Users\u\Tools\Cyber Pad")]
+    [InlineData(@"C:\Users\u\Tools\Cyber~Pad")]
+    [InlineData(@"C:\Users\u\Tools\Cyber & Pad ^1")]
+    [InlineData(@"C:\Users\u\Tools\.hidden")]
     public void LookAlikesOfReservedNames_AreAllowed(string input) => Assert.True(Evaluate(input).IsUsable, input);
 
     // --- rule: not a drive root or a shared folder -------------------------------------------------
@@ -311,7 +311,87 @@ public sealed class InstallPathPolicyTests
     [Theory]
     [InlineData(@"C:\Windows2\CyberPad")]
     [InlineData(@"C:\Program Files Extra\CyberPad")]
-    public void LookAlikesOfAdminFolders_AreAllowed(string input) => Assert.True(Evaluate(input).IsUsable, input);
+    public void LookAlikesOfAdminFolders_AreNotTakenForThem_ButAreOutsideTheProfile(string input) =>
+        AssertRefused(input, InstallMessages.OutsideProfile);
+
+    // --- rule: inside the user's own profile folder -----------------------------------------------
+
+    [Theory]
+    [InlineData(@"C:\Users\u\Tools\CyberPad")]
+    [InlineData(@"C:\Users\u\AppData\Local\Programs\CyberPad")]
+    [InlineData(@"c:\USERS\U\appdata\local\programs\cyberpad\")]
+    public void FoldersInsideTheProfile_AreAllowed(string input) => Assert.True(Evaluate(input).IsUsable, input);
+
+    [Theory]
+    [InlineData(@"C:\Tools\CyberPad")]
+    [InlineData(@"C:\CyberPad")]
+    [InlineData(@"C:\Users\Public\CyberPad")]
+    [InlineData(@"C:\Users\other\AppData\Local\Programs\CyberPad")]
+    [InlineData(@"C:\Users\uu\CyberPad")]
+    [InlineData(@"C:\Users\u2\CyberPad")]
+    [InlineData(@"C:\ProgramData\CyberPad")]
+    public void FoldersOutsideTheProfile_AreRefused(string input) =>
+        AssertRefused(input, "Choose a folder inside your own user folder.");
+
+    [Fact]
+    public void FolderOnAnotherFixedDrive_IsRefused()
+    {
+        _probe.Drives[@"D:\"] = DriveKind.Fixed;
+        _probe.Dir(@"D:\Apps");
+        AssertRefused(@"D:\Apps\CyberPad", InstallMessages.OutsideProfile);
+    }
+
+    [Theory]
+    [InlineData(@"N:\Programs")]
+    [InlineData(@"N:\Programs\CyberPad")]
+    [InlineData(@"N:\AppData\Local\CyberPad")]
+    public void SubstDrive_PointingIntoTheProfile_IsRefusedByTheProfileRule(string input)
+    {
+        // "subst N: C:\Users\u" reports N: as a fixed drive; the textual notes/shared/admin rules cannot
+        // see through it, but nothing on another letter is inside the profile, so it is refused.
+        _probe.Drives[@"N:\"] = DriveKind.Fixed;
+        _probe.Dir(@"N:\Programs").Dir(@"N:\AppData\Local\CyberPad");
+        AssertRefused(input, InstallMessages.OutsideProfile);
+    }
+
+    [Theory]
+    [InlineData(TestEnvironments.TypicalStartup)]
+    [InlineData(TestEnvironments.TypicalStartup + @"\CyberPad")]
+    [InlineData(@"c:\users\u\appdata\roaming\microsoft\windows\start menu\programs\startup\x\")]
+    [InlineData(@"C:\Users\u\AppData\Local\Temp")]
+    [InlineData(@"C:\Users\u\AppData\Local\Temp\CyberPad")]
+    [InlineData(@"C:\Users\u\AppData\Local\TEMP\a\b")]
+    public void StartupAndTemp_AndAnythingInside_AreRefusedAsShared(string input) =>
+        AssertRefused(input, "Choose a folder of its own for CyberPad, not a shared folder.");
+
+    [Theory]
+    [InlineData(@"C:\Users\u\AppData\Local\Temporary\CyberPad")]
+    [InlineData(@"C:\Users\u\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\StartupX")]
+    public void LookAlikesOfStartupAndTemp_AreAllowed(string input) => Assert.True(Evaluate(input).IsUsable, input);
+
+    [Fact]
+    public void TheMostSpecificMessageWins()
+    {
+        AssertRefused(@"C:\Users\u", InstallMessages.SharedFolder);       // the profile itself, not "outside"
+        AssertRefused(@"C:\Users", InstallMessages.NotesFolder);          // a parent of the notes folder
+        AssertRefused(@"C:\Windows\CyberPad", InstallMessages.NeedsAdmin); // outside the profile too
+        AssertRefused(@"C:\", InstallMessages.SharedFolder);
+    }
+
+    // --- writing while typing --------------------------------------------------------------------
+
+    [Fact]
+    public void WithoutTheWriteProbe_NothingIsWritten_AndTheWriteRuleIsLeftToInstall()
+    {
+        _probe.ReadOnlyDirs.Add(Programs);
+        InstallPathResult typing = InstallPathPolicy.Evaluate(DefaultDir, _probe, _env, probeWrite: false);
+        Assert.True(typing.IsUsable);
+        Assert.Equal(0, _probe.WriteProbes);
+
+        InstallPathResult pressing = InstallPathPolicy.Evaluate(DefaultDir, _probe, _env, probeWrite: true);
+        Assert.Equal(InstallMessages.CannotWrite, pressing.Message);
+        Assert.Equal(1, _probe.WriteProbes);
+    }
 
     // --- rule: no link or junction below the drive -------------------------------------------------
 
@@ -337,16 +417,17 @@ public sealed class InstallPathPolicyTests
     public void RealJunctionInTheMiddleOfThePath_IsRefused()
     {
         using var temp = new InstallTempDir();
-        string real = temp.Path_("real");
+        string profile = TestEnvironments.ProfileOf(temp.Root);
+        string real = Path.Combine(profile, "real");
         Directory.CreateDirectory(real);
-        temp.CreateJunction(temp.Path_("link"), real);
+        temp.CreateJunction(Path.Combine(profile, "link"), real);
         InstallEnvironment env = TestEnvironments.Under(temp.Root);
 
-        InstallPathResult viaLink = InstallPathPolicy.Evaluate(temp.Path_("link", "CyberPad"), new FileSystemProbe(), env);
+        InstallPathResult viaLink = InstallPathPolicy.Evaluate(Path.Combine(profile, "link", "CyberPad"), new FileSystemProbe(), env);
         Assert.False(viaLink.IsUsable);
         Assert.Equal(InstallMessages.Link, viaLink.Message);
 
-        InstallPathResult direct = InstallPathPolicy.Evaluate(temp.Path_("real", "CyberPad"), new FileSystemProbe(), env);
+        InstallPathResult direct = InstallPathPolicy.Evaluate(Path.Combine(profile, "real", "CyberPad"), new FileSystemProbe(), env);
         Assert.Equal(InstallPathKind.WillCreate, direct.Kind);
         Assert.Empty(Directory.GetFileSystemEntries(real)); // the write test left nothing behind
     }
@@ -392,6 +473,10 @@ public sealed class InstallPathPolicyTests
         Assert.NotNull(env.Downloads);
         Assert.Contains(env.Windows!, env.AdminFolders);
         Assert.Contains(env.UserProfile, env.SharedFolders);
+        Assert.Contains(env.Temp, env.SharedTrees);
+        if (env.Startup != null) Assert.Contains(env.Startup, env.SharedTrees);
+        Assert.True(InstallPathPolicy.Evaluate(env.DefaultInstallFolder, new FakeProbe(), env, probeWrite: false).Message
+            != InstallMessages.OutsideProfile); // the real default folder is inside the real profile (text only, nothing touched)
     }
 
     [Fact]

@@ -81,6 +81,8 @@ public sealed class InstallManifestTests
     [InlineData("CyberPad-Install 1\nversion=1.0.0\na/b\na\\B\n")]
     [InlineData("CyberPad-Install 1\nversion=1.0.0\ninstall.manifest\n")]
     [InlineData("CyberPad-Install 1\nversion=1.0.0\nUninstall.exe\n")]
+    [InlineData("CyberPad-Install 1\nversion=1.0.0\ninstall.manifest\\x\n")]
+    [InlineData("CyberPad-Install 1\nversion=1.0.0\nUninstall.exe/x\n")]
     [InlineData("CyberPad-Install 1\nversion=1.0.0\na\u0007b\n")]
     [InlineData("CyberPad-Install 1\nversion=1.0.0\nPROGRA~1\\x\n")]
     [InlineData("version=1.0.0\nCyberPad-Install 1\nCyberPad.exe\n")]

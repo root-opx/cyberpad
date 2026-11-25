@@ -121,6 +121,39 @@ public sealed class UninstallerTests : IDisposable
         Assert.Equal("CyberPad was removed. Some files could not be deleted: " + _dir, result.Message);
         Assert.True(File.Exists(held));
         Assert.Empty(_registry.Keys);
+        Assert.Null(_shortcuts.Current);
+    }
+
+    [Fact]
+    public void FileThatCannotBeDeleted_StaysListed_InARewrittenManifest()
+    {
+        InstallV1();
+        string held = Path.Combine(_dir, "wwwroot", "index.html");
+        using (new FileStream(held, FileMode.Open, FileAccess.Read, FileShare.Read))
+        {
+            NewUninstaller().Uninstall();
+        }
+
+        InstallManifest? manifest = InstallManifest.TryReadFrom(_dir, _probe);
+        Assert.NotNull(manifest);
+        Assert.Equal("1.0.0", manifest!.Version);
+        Assert.Equal(new[] { @"wwwroot\index.html" }, manifest.Files.Select(f => f.Replace('/', '\\')));
+        Assert.False(File.Exists(Path.Combine(_dir, "CyberPad.exe")));
+        Assert.False(File.Exists(Path.Combine(_dir, "Uninstall.exe")));
+        Assert.Empty(Directory.GetFiles(_dir, "*.tmp"));
+        Assert.Empty(_registry.Keys);
+    }
+
+    // --- a missing or invalid file list: only the entry and the shortcut go ------------------------
+
+    private void AssertEntryOnlyRemoval(UninstallResult result, string before, string folder)
+    {
+        Assert.True(result.FilesLeftInPlace);
+        Assert.Equal(
+            "CyberPad's entry and shortcut were removed. The files in " + folder + " were left because setup's file list is missing.",
+            result.Message);
+        Assert.Equal(before, _temp.Dump());
+        Assert.Empty(_registry.Keys);
     }
 
     [Theory]
@@ -130,28 +163,78 @@ public sealed class UninstallerTests : IDisposable
     [InlineData(@"C:\Windows\win.ini")]
     [InlineData(@"\victim\victim.txt")]
     [InlineData("victim.txt:stream")]
-    public void TamperedManifest_RefusesTheWholeUninstall(string hostileLine)
+    [InlineData(@"install.manifest\x")]
+    public void TamperedManifest_DeletesNoFile_ButRemovesTheEntryAndOurShortcut(string hostileLine)
     {
         InstallV1();
-        WriteManifest("CyberPad.exe", hostileLine);
-        string before = State();
+        File.WriteAllText(Path.Combine(_dir, "victim.txt"), "inside");
+        WriteManifest("CyberPad.exe", "victim.txt", hostileLine);
+        string before = _temp.Dump();
 
-        var ex = Assert.Throws<InstallException>(() => NewUninstaller().Uninstall());
+        UninstallResult result = NewUninstaller().Uninstall();
 
-        Assert.Equal(InstallMessages.NotInstalled, ex.Message);
-        Assert.Equal(before, State());
+        AssertEntryOnlyRemoval(result, before, _dir);
+        Assert.Equal("inside", File.ReadAllText(Path.Combine(_dir, "victim.txt")));
+        Assert.Null(_shortcuts.Current);
     }
 
     [Fact]
-    public void MissingManifest_RefusesTheWholeUninstall()
+    public void MissingManifest_DeletesNoFile_ButRemovesTheEntryAndOurShortcut()
     {
         InstallV1();
         File.Delete(Path.Combine(_dir, "install.manifest"));
-        string before = State();
+        string before = _temp.Dump();
 
-        Assert.Throws<InstallException>(() => NewUninstaller().Uninstall());
+        UninstallResult result = NewUninstaller().Uninstall();
 
-        Assert.Equal(before, State());
+        AssertEntryOnlyRemoval(result, before, _dir);
+        Assert.True(File.Exists(Path.Combine(_dir, "CyberPad.exe")));
+        Assert.Null(_shortcuts.Current);
+        Assert.Equal(2, _notify.Calls);
+    }
+
+    [Fact]
+    public void MissingManifest_LeavesAShortcutThatIsNotOurs()
+    {
+        InstallV1();
+        File.Delete(Path.Combine(_dir, "install.manifest"));
+        var other = new ShortcutInfo(@"C:\Other\CyberPad.exe", @"C:\Other", @"C:\Other\CyberPad.exe");
+        _shortcuts.Current = other;
+        string before = _temp.Dump();
+
+        UninstallResult result = NewUninstaller().Uninstall();
+
+        AssertEntryOnlyRemoval(result, before, _dir);
+        Assert.Same(other, _shortcuts.Current);
+    }
+
+    [Fact]
+    public void EntryWithoutAnInstallLocation_RemovesOnlyTheEntry()
+    {
+        _registry.SetString(RegistryKeyId.UninstallEntry, "DisplayName", "CyberPad");
+        var other = new ShortcutInfo(@"C:\Other\CyberPad.exe", @"C:\Other", @"C:\Other\CyberPad.exe");
+        _shortcuts.Current = other;
+        string before = _temp.Dump();
+
+        UninstallResult result = NewUninstaller().Uninstall();
+
+        AssertEntryOnlyRemoval(result, before, "the install folder");
+        Assert.Same(other, _shortcuts.Current);
+    }
+
+    [Fact]
+    public void EntryPointingOutsideTheProfile_DeletesNoFileThere()
+    {
+        string other = _temp.Path_("other", "CyberPad");
+        Directory.CreateDirectory(other);
+        File.WriteAllText(Path.Combine(other, "listed.txt"), "x");
+        File.WriteAllText(Path.Combine(other, "install.manifest"), "CyberPad-Install 1\nversion=1\nlisted.txt\n");
+        _registry.SetString(RegistryKeyId.UninstallEntry, "InstallLocation", other);
+        string before = _temp.Dump();
+
+        UninstallResult result = NewUninstaller().Uninstall();
+
+        AssertEntryOnlyRemoval(result, before, other);
     }
 
     [Fact]
@@ -182,30 +265,32 @@ public sealed class UninstallerTests : IDisposable
     }
 
     [Fact]
-    public void InstallFolderReplacedByAJunction_IsNotFound()
+    public void InstallFolderReplacedByAJunction_DeletesNothingThroughIt()
     {
         InstallV1();
         string moved = _temp.Path_("moved");
         Directory.Move(_dir, moved);
         _temp.CreateJunction(_dir, moved);
-        string before = State();
+        string before = _temp.Dump();
 
-        Assert.Throws<InstallException>(() => NewUninstaller().Uninstall());
+        UninstallResult result = NewUninstaller().Uninstall();
 
-        Assert.Equal(before, State());
+        AssertEntryOnlyRemoval(result, before, _dir);
         Assert.True(File.Exists(Path.Combine(moved, "CyberPad.exe")));
     }
 
     [Fact]
-    public void RegistryPointingAtTheNotesFolder_IsRefused()
+    public void RegistryPointingAtTheNotesFolder_DeletesNoNote()
     {
         Directory.CreateDirectory(_env.NotesFolder);
         File.WriteAllText(Path.Combine(_env.NotesFolder, "note.md"), "my note");
         File.WriteAllText(Path.Combine(_env.NotesFolder, "install.manifest"), "CyberPad-Install 1\nversion=1\nnote.md\n");
         _registry.SetString(RegistryKeyId.UninstallEntry, "InstallLocation", _env.NotesFolder);
+        string before = _temp.Dump();
 
-        Assert.Throws<InstallException>(() => NewUninstaller().Uninstall());
+        UninstallResult result = NewUninstaller().Uninstall();
 
+        AssertEntryOnlyRemoval(result, before, _env.NotesFolder);
         Assert.Equal("my note", File.ReadAllText(Path.Combine(_env.NotesFolder, "note.md")));
     }
 
@@ -214,7 +299,7 @@ public sealed class UninstallerTests : IDisposable
     {
         // The uninstaller never takes a caller's path; it only follows the uninstall entry, and even then
         // deletes no more than the listed files inside that folder.
-        string other = _temp.Path_("other", "CyberPad");
+        string other = Path.Combine(TestEnvironments.ProfileOf(_temp.Root), "other", "CyberPad");
         Directory.CreateDirectory(other);
         File.WriteAllText(Path.Combine(other, "listed.txt"), "x");
         File.WriteAllText(Path.Combine(other, "unlisted.txt"), "x");
@@ -244,6 +329,96 @@ public sealed class UninstallerTests : IDisposable
 
         Assert.Contains(@"HKEY_CURRENT_USER\" + RegistryKeys.UninstallEntryPath, result.NotDeleted);
         Assert.False(Directory.Exists(_dir));
+    }
+
+    [Fact]
+    public void NotifyFailure_IsRecorded_NotThrown()
+    {
+        InstallV1();
+        _notify.FailNext = true;
+
+        UninstallResult result = NewUninstaller().Uninstall();
+
+        Assert.True(result.AssociationsNotRefreshed);
+        Assert.Equal("CyberPad was removed.", result.Message);
+        Assert.False(Directory.Exists(_dir));
+        Assert.Empty(_registry.Keys);
+    }
+
+    [Fact]
+    public void UnreadableShortcut_IsLeftAlone_AndReported()
+    {
+        InstallV1();
+        ShortcutInfo? ours = _shortcuts.Current;
+        _shortcuts.Unreadable = true;
+
+        UninstallResult result = NewUninstaller().Uninstall();
+
+        Assert.Contains("Start menu shortcut CyberPad.lnk", result.NotDeleted);
+        Assert.Same(ours, _shortcuts.Current);
+        Assert.False(Directory.Exists(_dir));
+        Assert.Empty(_registry.Keys);
+    }
+
+    [Fact]
+    public void ReadOnlyApp_IsUninstalled()
+    {
+        InstallV1();
+        File.SetAttributes(Path.Combine(_dir, "CyberPad.exe"), FileAttributes.ReadOnly);
+        File.SetAttributes(Path.Combine(_dir, "wwwroot", "index.html"), FileAttributes.ReadOnly);
+
+        UninstallResult result = NewUninstaller().Uninstall();
+
+        Assert.Equal("CyberPad was removed.", result.Message);
+        Assert.False(Directory.Exists(_dir));
+    }
+
+    [Fact]
+    public void AppThatStaysDenied_IsReported_AndNothingIsRemoved()
+    {
+        InstallV1();
+        string before = State();
+        var probe = new OverridingProbe { WritableOverride = f => f.EndsWith(@"\CyberPad.exe", StringComparison.OrdinalIgnoreCase) ? FileWriteCheck.Denied : null };
+
+        var ex = Assert.Throws<InstallException>(() => new Uninstaller(_registry, _shortcuts, _notify, probe, _env).Uninstall());
+
+        Assert.Equal("Uninstall cannot delete CyberPad.exe. Check that the file is not read-only.", ex.Message);
+        Assert.Equal(before, State());
+    }
+
+    [Fact]
+    public void EmptyBackupFoldersOfAnInterruptedSetup_AreRemoved_ButNeverTheirContents()
+    {
+        InstallV1();
+        string empty = Path.Combine(_dir, ".cyberpad-setup-" + Guid.NewGuid().ToString("N"));
+        string full = Path.Combine(_dir, ".cyberpad-setup-" + Guid.NewGuid().ToString("N"));
+        string otherName = Path.Combine(_dir, ".cyberpad-setup-mine");
+        Directory.CreateDirectory(empty);
+        Directory.CreateDirectory(full);
+        Directory.CreateDirectory(otherName);
+        File.WriteAllText(Path.Combine(full, "CyberPad.exe"), "backup");
+
+        UninstallResult result = NewUninstaller().Uninstall();
+
+        Assert.False(Directory.Exists(empty));
+        Assert.Equal("backup", File.ReadAllText(Path.Combine(full, "CyberPad.exe")));
+        Assert.True(Directory.Exists(otherName));
+        Assert.Equal("CyberPad was removed.", result.Message);
+    }
+
+    [Fact]
+    public void BackupFolderThatIsAJunction_IsNotEntered()
+    {
+        InstallV1();
+        string link = Path.Combine(_dir, ".cyberpad-setup-" + Guid.NewGuid().ToString("N"));
+        string emptyTarget = _temp.Path_("empty-target");
+        Directory.CreateDirectory(emptyTarget);
+        _temp.CreateJunction(link, emptyTarget);
+
+        NewUninstaller().Uninstall();
+
+        Assert.True(Directory.Exists(link));
+        Assert.True(Directory.Exists(emptyTarget));
     }
 
     // --- the notes folder ----------------------------------------------------------------------
@@ -278,18 +453,19 @@ public sealed class UninstallerTests : IDisposable
     }
 
     [Theory]
-    [InlineData(@"\Local")]
-    [InlineData(@"\Local\Other")]
-    [InlineData(@"\Local\CyberPad\sub")]
-    [InlineData(@"\Local\CyberPadX")]
-    [InlineData(@"\Local\cyberpad")]
+    [InlineData(@"\Profile\AppData\Local")]
+    [InlineData(@"\Profile\AppData\Local\Other")]
+    [InlineData(@"\Profile\AppData\Local\CyberPad\sub")]
+    [InlineData(@"\Profile\AppData\Local\CyberPadX")]
+    [InlineData(@"\Profile\AppData\Local\cyberpad")]
     [InlineData(@"\victim")]
     [InlineData(@"\Profile")]
     public void DeleteNotesFolder_RefusesAnythingButLocalAppDataCyberPad(string relative)
     {
         string notesPath = _temp.Root + relative;
-        Directory.CreateDirectory(_temp.Root + @"\Local\CyberPad");
-        File.WriteAllText(_temp.Root + @"\Local\CyberPad\keep.md", "keep");
+        string local = TestEnvironments.LocalOf(_temp.Root);
+        Directory.CreateDirectory(local + @"\CyberPad");
+        File.WriteAllText(local + @"\CyberPad\keep.md", "keep");
         Directory.CreateDirectory(notesPath);
         File.WriteAllText(Path.Combine(notesPath, "also-keep.md"), "keep");
         InstallEnvironment env = TestEnvironments.Under(_temp.Root, notesPath);
@@ -324,5 +500,84 @@ public sealed class UninstallerTests : IDisposable
         Assert.Throws<InstallException>(() => NewUninstaller().DeleteNotesFolder());
 
         Assert.True(File.Exists(Path.Combine(realLocal, "CyberPad", "n.md")));
+    }
+
+    // A folder named "x." (or "x ") can only be made with a \\?\ path; without one, Windows strips the
+    // dot or space and the name means "x". With "x" a junction to a folder outside, and the junction held
+    // open so it cannot be deleted, a walk that used normal paths would delete "x.\*" through the junction.
+    [Theory]
+    [InlineData("x.", true)]
+    [InlineData("x ", true)]
+    [InlineData("x.", false)]
+    [InlineData("x ", false)]
+    public void DeleteNotesFolder_NameThatNormalisesOntoAJunction_NeverReachesItsTarget(string lookAlike, bool holdTheJunction)
+    {
+        string notes = _env.NotesFolder;
+        Directory.CreateDirectory(Path.Combine(notes, "real"));
+        File.WriteAllText(Path.Combine(notes, "real", "n.md"), "n");
+        File.WriteAllText(Path.Combine(notes, "settings.json"), "{}");
+        string extendedLookAlike = InstallTempDir.Extended + notes + "\\" + lookAlike;
+        Directory.CreateDirectory(extendedLookAlike);
+        File.WriteAllText(extendedLookAlike + @"\victim.txt", "decoy");
+        Directory.CreateDirectory(Path.Combine(_victimDir, "sub"));
+        File.WriteAllText(Path.Combine(_victimDir, "sub", "deep.txt"), "keep me too");
+        string junction = Path.Combine(notes, "x");
+        _temp.CreateJunction(junction, _victimDir);
+
+        NotesDeletionResult result;
+        bool junctionSurvived;
+        using (holdTheJunction ? _temp.HoldWithoutDeleteSharing(junction) : null)
+        {
+            result = NewUninstaller().DeleteNotesFolder();
+            junctionSurvived = Directory.Exists(junction);
+        }
+
+        Assert.Equal(holdTheJunction, junctionSurvived); // the hold really blocked the junction's deletion
+        Assert.Equal("keep me", File.ReadAllText(_victim));
+        Assert.Equal("keep me too", File.ReadAllText(Path.Combine(_victimDir, "sub", "deep.txt")));
+        Assert.False(Directory.Exists(Path.Combine(notes, "real")));
+        Assert.False(File.Exists(Path.Combine(notes, "settings.json")));
+        Assert.Contains(notes + "\\" + lookAlike, result.NotDeleted);
+        Assert.Equal("decoy", File.ReadAllText(extendedLookAlike + @"\victim.txt"));
+        Assert.Contains(notes, result.NotDeleted);
+        Assert.Equal(holdTheJunction, result.NotDeleted.Contains(junction));
+    }
+
+    [Fact]
+    public void DeleteNotesFolder_StopsAtTheDepthLimit()
+    {
+        string notes = _env.NotesFolder;
+        string deep = Path.Combine(notes, "a", "b", "c", "d");
+        Directory.CreateDirectory(deep);
+        File.WriteAllText(Path.Combine(deep, "n.md"), "n");
+        File.WriteAllText(Path.Combine(notes, "a", "top.md"), "t");
+        Uninstaller uninstaller = NewUninstaller();
+        uninstaller.NotesDepthLimit = 2;
+
+        NotesDeletionResult result = uninstaller.DeleteNotesFolder();
+
+        Assert.Contains(Path.Combine(notes, "a", "b", "c"), result.NotDeleted);
+        Assert.True(File.Exists(Path.Combine(deep, "n.md")));
+        Assert.False(File.Exists(Path.Combine(notes, "a", "top.md")));
+        Assert.Contains(notes, result.NotDeleted);
+    }
+
+    [Fact]
+    public void DeleteNotesFolder_StopsAtTheEntryLimit()
+    {
+        string notes = _env.NotesFolder;
+        Directory.CreateDirectory(notes);
+        for (int i = 0; i < 10; i++)
+        {
+            File.WriteAllText(Path.Combine(notes, $"n{i}.md"), "n");
+        }
+
+        Uninstaller uninstaller = NewUninstaller();
+        uninstaller.NotesEntryLimit = 3;
+
+        NotesDeletionResult result = uninstaller.DeleteNotesFolder();
+
+        Assert.Equal(new[] { notes }, result.NotDeleted);
+        Assert.Equal(10, Directory.GetFiles(notes).Length);
     }
 }

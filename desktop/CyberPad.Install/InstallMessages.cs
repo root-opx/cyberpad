@@ -11,6 +11,7 @@ namespace CyberPad.Install
         public const string NeedsAdmin = "That folder needs administrator rights. Choose a folder in your own profile.";
         public const string Link = "That folder is a link to another location. Choose a real folder.";
         public const string CannotWrite = "Setup cannot write to that folder.";
+        public const string OutsideProfile = "Choose a folder inside your own user folder.";
 
         // Not in the spec: the CyberPad subfolder of a non-empty folder is itself non-empty and not an install.
         public const string SubfolderOccupied = "That folder already has a CyberPad folder with other files in it. Choose a different folder.";
@@ -22,6 +23,8 @@ namespace CyberPad.Install
 
         // Installing.
         public const string CloseToInstall = "Close CyberPad, then choose Install again.";
+        public const string CannotReplaceApp = "Setup cannot replace CyberPad.exe. Check that the file is not read-only.";
+        public const string UnexpectedFailure = "Setup stopped because of an unexpected problem and undid its changes. Try again.";
         public const string PayloadDamaged = "The setup file is damaged. Download CyberPad again.";
         public const string FilesInTheWay = "That folder has files that setup did not install. Choose a different folder.";
         public const string WriteFailed = "Setup could not write to the install folder. Check that no other program is using it, then try again.";
@@ -38,6 +41,11 @@ namespace CyberPad.Install
         public const string Removed = "CyberPad was removed.";
         public const string RemovedWithLeftoversPrefix = "CyberPad was removed. Some files could not be deleted: ";
         public const string NotesFolderRefused = "The notes folder could not be checked, so it was not deleted.";
+        public const string CannotDeleteApp = "Uninstall cannot delete CyberPad.exe. Check that the file is not read-only.";
+
+        /// <summary>Uninstall found the entry but no valid file list: only the entry and the shortcut were removed.</summary>
+        public static string EntryRemovedFilesLeft(string folder) =>
+            "CyberPad's entry and shortcut were removed. The files in " + folder + " were left because setup's file list is missing.";
 
         // Environment.
         public const string NoUserFolders = "Setup could not find your user folders.";

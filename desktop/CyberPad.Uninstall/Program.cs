@@ -47,7 +47,10 @@ namespace CyberPad.Uninstall
             try
             {
                 InstallEnvironment env = InstallEnvironment.FromSystem();
-                if (Installer.FindExisting(new WindowsRegistry(), new FileSystemProbe(), env) == null)
+
+                // The entry alone is enough: when its file list is missing, uninstall still removes the
+                // entry and the shortcut (and deletes no file).
+                if (!Installer.HasUninstallEntry(new WindowsRegistry()))
                 {
                     UiCommon.Info(null, "Uninstall CyberPad", SetupTexts.NotInstalledForAccount);
                     return 0;
@@ -93,22 +96,21 @@ namespace CyberPad.Uninstall
         private static int SecondStage()
         {
             InstallEnvironment env;
+            var registry = new WindowsRegistry();
+            var probe = new FileSystemProbe();
             try
             {
                 env = InstallEnvironment.FromSystem();
+                if (!Installer.HasUninstallEntry(registry))
+                {
+                    UiCommon.Info(null, "Uninstall CyberPad", SetupTexts.NotInstalledForAccount);
+                    return 0;
+                }
             }
             catch (InstallException ex)
             {
                 UiCommon.Error(null, "Uninstall CyberPad", ex.Message);
                 return 1;
-            }
-
-            var registry = new WindowsRegistry();
-            var probe = new FileSystemProbe();
-            if (Installer.FindExisting(registry, probe, env) == null)
-            {
-                UiCommon.Info(null, "Uninstall CyberPad", SetupTexts.NotInstalledForAccount);
-                return 0;
             }
 
             var uninstaller = new Install.Uninstaller(registry, new StartMenuShortcuts(), new ShellNotify(), probe, env);

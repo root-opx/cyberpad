@@ -58,7 +58,15 @@ namespace CyberPad.Install
         /// <summary>Raw input longer than this is refused before any parsing.</summary>
         public const int MaxInputLength = 1024;
 
-        public static InstallPathResult Evaluate(string? input, IFileSystemProbe probe, InstallEnvironment env)
+        /// <param name="input">The text the user typed or picked.</param>
+        /// <param name="probe">File-system questions.</param>
+        /// <param name="env">The user's folders.</param>
+        /// <param name="probeWrite">
+        /// True to check that a file can be created there (creates and deletes one temporary file). The setup
+        /// window passes false while the user types, so nothing is written; <see cref="Installer.Install"/>
+        /// always checks with true.
+        /// </param>
+        public static InstallPathResult Evaluate(string? input, IFileSystemProbe probe, InstallEnvironment env, bool probeWrite = true)
         {
             if (probe == null)
             {
@@ -70,10 +78,10 @@ namespace CyberPad.Install
                 throw new ArgumentNullException(nameof(env));
             }
 
-            return Check(input, probe, env, allowSubfolder: true);
+            return Check(input, probe, env, allowSubfolder: true, probeWrite);
         }
 
-        private static InstallPathResult Check(string? input, IFileSystemProbe probe, InstallEnvironment env, bool allowSubfolder)
+        private static InstallPathResult Check(string? input, IFileSystemProbe probe, InstallEnvironment env, bool allowSubfolder, bool probeWrite)
         {
             string? full = Resolve(input, out string? failure);
             if (full == null)
@@ -91,9 +99,20 @@ namespace CyberPad.Install
                 return Refuse(full, InstallMessages.SharedFolder);
             }
 
+            // The most specific reason wins: shared, notes and admin folders are named before the general
+            // "inside your own user folder" rule. Shared folders come first so the profile itself (a parent
+            // of the notes folder) gets the "folder of its own" message.
             foreach (string shared in env.SharedFolders)
             {
                 if (PathText.AreSame(full, shared))
+                {
+                    return Refuse(full, InstallMessages.SharedFolder);
+                }
+            }
+
+            foreach (string tree in env.SharedTrees)
+            {
+                if (PathText.IsSameOrInside(full, tree))
                 {
                     return Refuse(full, InstallMessages.SharedFolder);
                 }
@@ -110,6 +129,15 @@ namespace CyberPad.Install
                 {
                     return Refuse(full, InstallMessages.NeedsAdmin);
                 }
+            }
+
+            // Folders outside the profile (C:\Tools, another drive) usually inherit write access for other
+            // accounts, who could then replace CyberPad.exe or Uninstall.exe. This rule also closes the
+            // textual rules' blind spot for subst and mapped drive letters: a path on any letter other than
+            // the profile's is refused here, whatever folder that letter really points at.
+            if (!PathText.IsStrictlyInside(full, env.UserProfile))
+            {
+                return Refuse(full, InstallMessages.OutsideProfile);
             }
 
             // No existing part below the drive may be a link; remember the deepest existing part.
@@ -144,7 +172,7 @@ namespace CyberPad.Install
 
             if (!PathText.AreSame(deepestExisting, full))
             {
-                return probe.CanCreateFileIn(deepestExisting)
+                return !probeWrite || probe.CanCreateFileIn(deepestExisting)
                     ? Usable(full, InstallPathKind.WillCreate, InstallMessages.WillCreate)
                     : Refuse(full, InstallMessages.CannotWrite);
             }
@@ -163,7 +191,7 @@ namespace CyberPad.Install
             }
             else if (allowSubfolder)
             {
-                InstallPathResult sub = Check(full + "\\" + InstallLayout.SubfolderName, probe, env, allowSubfolder: false);
+                InstallPathResult sub = Check(full + "\\" + InstallLayout.SubfolderName, probe, env, allowSubfolder: false, probeWrite);
                 return sub.IsUsable
                     ? new InstallPathResult(true, sub.FullPath, InstallPathKind.UsesSubfolder, sub.FolderKind, sub.Message)
                     : sub;
@@ -173,7 +201,7 @@ namespace CyberPad.Install
                 return Refuse(full, InstallMessages.SubfolderOccupied);
             }
 
-            return probe.CanCreateFileIn(full) ? Usable(full, kind, message) : Refuse(full, InstallMessages.CannotWrite);
+            return !probeWrite || probe.CanCreateFileIn(full) ? Usable(full, kind, message) : Refuse(full, InstallMessages.CannotWrite);
         }
 
         /// <summary>

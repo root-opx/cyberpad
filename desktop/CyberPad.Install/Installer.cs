@@ -114,7 +114,8 @@ namespace CyberPad.Install
                 return null;
             }
 
-            InstallPathResult result = InstallPathPolicy.Evaluate(text, probe, env);
+            // Finding an install writes nothing; installing re-checks with the write probe on.
+            InstallPathResult result = InstallPathPolicy.Evaluate(text, probe, env, probeWrite: false);
             if (!result.IsUsable || result.Kind != InstallPathKind.ExistingInstall || result.FullPath == null)
             {
                 return null;
@@ -136,7 +137,7 @@ namespace CyberPad.Install
                 throw new ArgumentException("The version must be digits separated by dots.", nameof(request));
             }
 
-            InstallPathResult path = InstallPathPolicy.Evaluate(request.InstallDir, _probe, _env);
+            InstallPathResult path = InstallPathPolicy.Evaluate(request.InstallDir, _probe, _env, probeWrite: true);
             if (!path.IsUsable || path.FullPath == null)
             {
                 throw new InstallException(path.Message);
@@ -150,20 +151,18 @@ namespace CyberPad.Install
             string uninstallCommand = CommandLine.UninstallCommand(dir);
             string openCommand = CommandLine.OpenCommand(dir);
 
-            // 1. CyberPad must not be running from the target folder.
-            Step(InstallStep.CheckRunning);
-            if (_probe.FileExists(exe) && !_probe.CanOpenForWriting(exe))
-            {
-                throw new InstallException(InstallMessages.CloseToInstall);
-            }
-
-            // 2. The old file list, when updating.
+            // 2. The old file list, when updating (read first: step 1 needs to know whether CyberPad.exe is ours).
             Step(InstallStep.ReadOldManifest);
             InstallManifest? old = null;
             if (isUpdate)
             {
                 old = InstallManifest.TryReadFrom(dir, _probe) ?? throw new InstallException(InstallMessages.FilesInTheWay);
             }
+
+            // 1. CyberPad must not be running from the target folder.
+            Step(InstallStep.CheckRunning);
+            bool appIsOurs = old != null && old.Files.Any(f => PathText.AreSame(f, InstallLayout.AppFileName));
+            CheckAppReplaceable(_probe, exe, appIsOurs, InstallMessages.CloseToInstall, InstallMessages.CannotReplaceApp);
 
             var replaceable = new List<string>();
             if (old != null)
@@ -173,8 +172,9 @@ namespace CyberPad.Install
                 replaceable.Add(InstallLayout.UninstallerFileName);
             }
 
-            var run = new Run(new FileJournal(dir, _probe, replaceable));
+            var run = new Run(new FileJournal(dir, _probe, replaceable) { CommitStep = JournalCommitStep });
             bool finished = false;
+            InstallResult? result = null;
             try
             {
                 run.Journal.EnsureInstallDirectory();
@@ -218,7 +218,7 @@ namespace CyberPad.Install
 
                 // 6. The Start menu shortcut.
                 Step(InstallStep.Shortcut);
-                run.ShortcutBefore = Guard(InstallMessages.ShortcutFailed, () => _shortcuts.TryRead());
+                run.ShortcutBefore = TryReadShortcut(_shortcuts); // an unreadable shortcut is treated as absent and overwritten
                 run.ShortcutTouched = true;
                 Guard(InstallMessages.ShortcutFailed, () =>
                 {
@@ -244,10 +244,11 @@ namespace CyberPad.Install
                     return true;
                 });
 
+                // From here the new install is complete and stays: Commit never throws and nothing is undone.
+                run.Committed = true;
                 IReadOnlyList<string> leftovers = run.Journal.Commit();
                 finished = true;
-                progress?.Report(100);
-                return new InstallResult(dir, isUpdate, leftovers);
+                result = new InstallResult(dir, isUpdate, leftovers);
             }
             catch (InstallException ex)
             {
@@ -259,12 +260,105 @@ namespace CyberPad.Install
 
                 throw;
             }
+#pragma warning disable CA1031 // Any other failure is undone and reported with a safe message; it is not swallowed.
+            catch (Exception ex)
+#pragma warning restore CA1031
+            {
+                run.Undone = true;
+                throw new InstallException(Undo(run) ? InstallMessages.UnexpectedFailure : InstallMessages.UndoIncomplete, ex);
+            }
             finally
             {
                 if (!finished && !run.Undone)
                 {
                     Undo(run);
                 }
+            }
+
+            // Outside the try: the install is complete, so a throwing progress callback cannot undo it.
+            progress?.Report(100);
+            return result!;
+        }
+
+        /// <summary>Called before each clean-up step of the final commit; tests throw from it.</summary>
+        internal Action<string>? JournalCommitStep { get; set; }
+
+        /// <summary>
+        /// Whether CyberPad is registered for this user at all (the uninstall entry exists), even when its
+        /// folder or file list is no longer valid.
+        /// </summary>
+        public static bool HasUninstallEntry(IRegistry registry) =>
+            Guard(InstallMessages.RegistryReadFailed, () => registry.KeyExists(RegistryKeyId.UninstallEntry));
+
+        /// <summary>
+        /// Stops when CyberPad.exe is running (a sharing violation). When it is only read-only and is a file
+        /// the install wrote (listed in its manifest), the read-only attribute is cleared and the check repeated.
+        /// </summary>
+        internal static void CheckAppReplaceable(IFileSystemProbe probe, string exe, bool listedInManifest, string runningMessage, string deniedMessage)
+        {
+            if (!probe.FileExists(exe))
+            {
+                return;
+            }
+
+            FileWriteCheck check = probe.CheckWritable(exe);
+            if (check == FileWriteCheck.Denied && listedInManifest && !probe.IsReparsePoint(exe) && ClearReadOnly(exe))
+            {
+                check = probe.CheckWritable(exe);
+            }
+
+            if (check == FileWriteCheck.InUse)
+            {
+                throw new InstallException(runningMessage);
+            }
+
+            if (check == FileWriteCheck.Denied)
+            {
+                throw new InstallException(deniedMessage);
+            }
+        }
+
+        /// <summary>Clears the read-only attribute of a file inside a validated install folder. False if it could not.</summary>
+        internal static bool ClearReadOnly(string file)
+        {
+            try
+            {
+                FileAttributes attributes = File.GetAttributes(file);
+                if ((attributes & FileAttributes.ReadOnly) == 0)
+                {
+                    return false;
+                }
+
+                File.SetAttributes(file, attributes & ~FileAttributes.ReadOnly);
+                return true;
+            }
+            catch (IOException)
+            {
+                return false;
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return false;
+            }
+            catch (SecurityException)
+            {
+                return false;
+            }
+        }
+
+        private static ShortcutInfo? TryReadShortcut(IShortcuts shortcuts)
+        {
+            try
+            {
+                return shortcuts.TryRead();
+            }
+            catch (IOException)
+            {
+                return null;
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return null;
             }
         }
 
@@ -343,6 +437,11 @@ namespace CyberPad.Install
         /// <summary>Undoes the run in reverse order. Returns false when something could not be undone.</summary>
         private bool Undo(Run run)
         {
+            if (run.Committed)
+            {
+                return true; // the new install is complete; undoing it now would destroy it
+            }
+
             bool complete = true;
             if (run.RegistryBefore != null)
             {
@@ -430,6 +529,8 @@ namespace CyberPad.Install
             public RegistrySnapshot? RegistryBefore { get; set; }
 
             public bool Undone { get; set; }
+
+            public bool Committed { get; set; }
         }
 
         /// <summary>Maps 0–100 onto 0–<c>max</c>, reporting synchronously.</summary>

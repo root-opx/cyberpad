@@ -13,6 +13,19 @@ namespace CyberPad.Install
         NoRootDirectory,
     }
 
+    public enum FileWriteCheck
+    {
+        Writable,
+
+        /// <summary>Another process has the file open (for CyberPad.exe: the app is running).</summary>
+        InUse,
+
+        /// <summary>Read-only, or access denied.</summary>
+        Denied,
+
+        Missing,
+    }
+
     /// <summary>
     /// Read-only questions about the file system, so the rules can be tested with a fake. Every member
     /// takes a normalised full path and never throws for a missing path.
@@ -35,8 +48,12 @@ namespace CyberPad.Install
         /// <summary>True when a new file can be created in the existing folder.</summary>
         bool CanCreateFileIn(string directory);
 
-        /// <summary>True when the existing file can be opened for writing (false while a running program holds it).</summary>
-        bool CanOpenForWriting(string file);
+        /// <summary>
+        /// Whether the existing file can be opened for writing: <see cref="FileWriteCheck.InUse"/> while a
+        /// running program holds it (a sharing violation), <see cref="FileWriteCheck.Denied"/> when it is
+        /// read-only or access is denied.
+        /// </summary>
+        FileWriteCheck CheckWritable(string file);
 
         /// <summary>Opens an existing file for reading, or returns null when it cannot.</summary>
         Stream? TryOpenRead(string file);

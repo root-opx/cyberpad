@@ -41,11 +41,17 @@ namespace CyberPad.Install
         }
 
         /// <summary>
-        /// True for the two files setup writes itself; neither may appear in a payload or a manifest list.
+        /// True when the first segment names one of the two files setup writes itself
+        /// (<c>install.manifest</c>, <c>Uninstall.exe</c>); such a path may not appear in a payload or a
+        /// manifest list, neither as that file nor as a folder of that name.
         /// </summary>
-        public static bool IsReservedForSetup(string normalised) =>
-            PathText.AreSame(normalised, InstallManifest.FileName) ||
-            PathText.AreSame(normalised, InstallLayout.UninstallerFileName);
+        public static bool IsReservedForSetup(string normalised)
+        {
+            int slash = normalised.IndexOf('\\');
+            string first = slash >= 0 ? normalised.Substring(0, slash) : normalised;
+            return PathText.AreSame(first, InstallManifest.FileName) ||
+                   PathText.AreSame(first, InstallLayout.UninstallerFileName);
+        }
 
         /// <summary>
         /// Joins a normalised relative path to a normalised install folder and checks the result is

@@ -86,6 +86,9 @@ public sealed class PayloadExtractorTests : IDisposable
     [InlineData("install.manifest")]
     [InlineData("Uninstall.exe")]
     [InlineData("UNINSTALL.EXE")]
+    [InlineData("install.manifest/x")]
+    [InlineData("Uninstall.exe/x")]
+    [InlineData("uninstall.exe/")]
     [InlineData("../")]
     [InlineData("/")]
     public void HostileEntryName_StopsTheExtraction_AndWritesNothing(string name)

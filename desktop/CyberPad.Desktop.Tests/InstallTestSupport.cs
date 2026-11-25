@@ -48,6 +48,16 @@ internal sealed class InstallTempDir : IDisposable
         Assert.True((File.GetAttributes(link) & FileAttributes.ReparsePoint) != 0);
     }
 
+    /// <summary>
+    /// Opens <paramref name="path"/> itself (a link is not followed) for reading without delete sharing,
+    /// so nothing can delete it until the handle is disposed.
+    /// </summary>
+    public SafeFileHandle HoldWithoutDeleteSharing(string path)
+    {
+        Assert.StartsWith(Root + "\\", path, StringComparison.OrdinalIgnoreCase);
+        return Native.OpenWithoutDeleteSharing(path);
+    }
+
     public void Dispose()
     {
         foreach (string junction in _junctions.AsEnumerable().Reverse())
@@ -56,34 +66,39 @@ internal sealed class InstallTempDir : IDisposable
             catch (IOException) { /* best-effort temp cleanup */ }
         }
 
-        try { Directory.Delete(Root, recursive: true); }
+        // The extended form, so names such as "x." are removed exactly; .NET removes any remaining link
+        // as a link without entering it.
+        try { Directory.Delete(Extended + Root, recursive: true); }
         catch (IOException) { /* best-effort temp cleanup */ }
         catch (UnauthorizedAccessException) { /* best-effort temp cleanup */ }
     }
 
-    /// <summary>Every file and folder below the root with a hash of each file, to compare states.</summary>
+    public const string Extended = @"\\?\";
+
+    /// <summary>Every file and folder below the root with a hash of each file, to compare states. Links are listed, never entered.</summary>
     public string Dump()
     {
         var lines = new List<string>();
-        Walk(Root, lines);
+        Walk(Extended + Root, lines);
         lines.Sort(StringComparer.OrdinalIgnoreCase);
         return string.Join("\n", lines);
     }
 
-    private void Walk(string dir, List<string> lines)
+    private void Walk(string extendedDir, List<string> lines)
     {
-        foreach (var info in new DirectoryInfo(dir).GetFileSystemInfos())
+        foreach (var info in new DirectoryInfo(extendedDir).GetFileSystemInfos())
         {
-            string rel = info.FullName.Substring(Root.Length + 1);
+            string path = extendedDir + "\\" + info.Name;
+            string rel = path.Substring(Extended.Length + Root.Length + 1);
             bool isLink = (info.Attributes & FileAttributes.ReparsePoint) != 0;
             if (info is DirectoryInfo)
             {
                 lines.Add(rel + "\\" + (isLink ? " [link]" : string.Empty));
-                if (!isLink) Walk(info.FullName, lines);
+                if (!isLink) Walk(path, lines);
             }
             else
             {
-                lines.Add(rel + " " + Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(info.FullName))));
+                lines.Add(rel + " " + Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path))));
             }
         }
     }
@@ -125,6 +140,15 @@ internal sealed class InstallTempDir : IDisposable
             if (handle.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
             if (!DeviceIoControl(handle, FsctlSetReparsePoint, data, (uint)data.Length, IntPtr.Zero, 0, out _, IntPtr.Zero))
                 throw new Win32Exception(Marshal.GetLastWin32Error());
+        }
+
+        public static SafeFileHandle OpenWithoutDeleteSharing(string path)
+        {
+            // GENERIC_READ (an attribute-only handle would not take part in sharing checks), share read and
+            // write but not delete, opening a link itself rather than its target.
+            SafeFileHandle handle = CreateFileW(path, 0x80000000, 0x1 | 0x2, IntPtr.Zero, OpenExisting, FlagBackupSemantics | FlagOpenReparsePoint, IntPtr.Zero);
+            if (handle.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
+            return handle;
         }
 
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
@@ -170,17 +194,26 @@ internal static class TestZips
 /// <summary>An <see cref="InstallEnvironment"/> whose folders are all below a test root.</summary>
 internal static class TestEnvironments
 {
+    /// <summary>The fake profile below a test root.</summary>
+    public static string ProfileOf(string root) => root + @"\Profile";
+
+    /// <summary>The fake %LOCALAPPDATA% below a test root (inside the fake profile, as on a real machine).</summary>
+    public static string LocalOf(string root) => root + @"\Profile\AppData\Local";
+
     public static InstallEnvironment Under(string root, string? notesFolder = null) => new(
-        localApplicationData: root + @"\Local",
-        notesFolder: notesFolder ?? root + @"\Local\CyberPad",
-        userProfile: root + @"\Profile",
-        desktop: root + @"\Profile\Desktop",
-        documents: root + @"\Profile\Documents",
-        downloads: root + @"\Profile\Downloads",
+        localApplicationData: LocalOf(root),
+        notesFolder: notesFolder ?? LocalOf(root) + @"\CyberPad",
+        userProfile: ProfileOf(root),
+        desktop: ProfileOf(root) + @"\Desktop",
+        documents: ProfileOf(root) + @"\Documents",
+        downloads: ProfileOf(root) + @"\Downloads",
+        startup: ProfileOf(root) + @"\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup",
         windows: root + @"\Windows",
         programFiles: root + @"\Program Files",
         programFilesX86: root + @"\Program Files (x86)",
-        temp: root + @"\Temp");
+        temp: LocalOf(root) + @"\Temp");
+
+    public const string TypicalStartup = @"C:\Users\u\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup";
 
     /// <summary>A typical machine layout, for rules tested against the fake probe.</summary>
     public static InstallEnvironment Typical() => new(
@@ -190,10 +223,28 @@ internal static class TestEnvironments
         desktop: @"C:\Users\u\Desktop",
         documents: @"C:\Users\u\Documents",
         downloads: @"C:\Users\u\Downloads",
+        startup: TypicalStartup,
         windows: @"C:\Windows",
         programFiles: @"C:\Program Files",
         programFilesX86: @"C:\Program Files (x86)",
         temp: @"C:\Users\u\AppData\Local\Temp");
+}
+
+/// <summary>The real probe, with the write check replaceable per test.</summary>
+internal sealed class OverridingProbe : IFileSystemProbe
+{
+    private readonly FileSystemProbe _real = new();
+
+    public Func<string, FileWriteCheck?>? WritableOverride { get; set; }
+
+    public DriveKind GetDriveKind(string root) => _real.GetDriveKind(root);
+    public bool DirectoryExists(string path) => _real.DirectoryExists(path);
+    public bool FileExists(string path) => _real.FileExists(path);
+    public bool IsEmptyDirectory(string path) => _real.IsEmptyDirectory(path);
+    public bool IsReparsePoint(string path) => _real.IsReparsePoint(path);
+    public bool CanCreateFileIn(string directory) => _real.CanCreateFileIn(directory);
+    public FileWriteCheck CheckWritable(string file) => WritableOverride?.Invoke(file) ?? _real.CheckWritable(file);
+    public Stream? TryOpenRead(string file) => _real.TryOpenRead(file);
 }
 
 /// <summary>An in-memory file system for the folder rules.</summary>
@@ -230,8 +281,17 @@ internal sealed class FakeProbe : IFileSystemProbe
     public bool IsEmptyDirectory(string path) =>
         _dirs.Contains(path) && !_dirs.Concat(_files.Keys).Any(p => p.StartsWith(path + @"\", StringComparison.OrdinalIgnoreCase));
     public bool IsReparsePoint(string path) => ReparsePoints.Contains(path);
-    public bool CanCreateFileIn(string directory) => _dirs.Contains(directory) || directory.Length == 3 ? !ReadOnlyDirs.Contains(directory) : false;
-    public bool CanOpenForWriting(string file) => _files.ContainsKey(file) && !LockedFiles.Contains(file);
+    /// <summary>How many times the write test ran (it creates a file on a real disk).</summary>
+    public int WriteProbes { get; private set; }
+
+    public bool CanCreateFileIn(string directory)
+    {
+        WriteProbes++;
+        return (_dirs.Contains(directory) || directory.Length == 3) && !ReadOnlyDirs.Contains(directory);
+    }
+
+    public FileWriteCheck CheckWritable(string file) =>
+        !_files.ContainsKey(file) ? FileWriteCheck.Missing : LockedFiles.Contains(file) ? FileWriteCheck.InUse : FileWriteCheck.Writable;
     public Stream? TryOpenRead(string file) => _files.TryGetValue(file, out var bytes) ? new MemoryStream(bytes, writable: false) : null;
 }
 
@@ -295,7 +355,10 @@ internal sealed class FakeShortcuts : IShortcuts
     public ShortcutInfo? Current { get; set; }
     public bool FailNextCreate { get; set; }
 
-    public ShortcutInfo? TryRead() => Current;
+    /// <summary>Simulates a corrupt .lnk: reading throws, as StartMenuShortcuts does for a COM failure.</summary>
+    public bool Unreadable { get; set; }
+
+    public ShortcutInfo? TryRead() => Unreadable ? throw new IOException("injected: corrupt shortcut") : Current;
 
     public void Create(ShortcutInfo shortcut)
     {
@@ -306,6 +369,7 @@ internal sealed class FakeShortcuts : IShortcuts
         }
 
         Current = shortcut;
+        Unreadable = false; // saving a new shortcut replaces the corrupt file
     }
 
     public void Delete() => Current = null;

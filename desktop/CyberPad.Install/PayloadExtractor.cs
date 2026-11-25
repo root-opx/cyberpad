@@ -9,7 +9,7 @@ namespace CyberPad.Install
     /// Unpacks the program files carried in the setup file. Every entry name is checked before anything
     /// is written; the entry count and the real number of bytes written are capped.
     /// </summary>
-    public sealed class PayloadExtractor
+    internal sealed class PayloadExtractor
     {
         public const int DefaultMaxEntries = 2000;
         public const long DefaultMaxTotalBytes = 1L << 30;
@@ -35,9 +35,10 @@ namespace CyberPad.Install
         /// Unpacks <paramref name="zip"/> into <paramref name="installDir"/> (a full local path), which must
         /// not already hold any of the payload's files. Returns the relative paths written. On failure
         /// every file and folder this call created is removed again and an <see cref="InstallException"/>
-        /// is thrown.
+        /// is thrown. Internal: it applies no folder rules, so only the library and its tests may call it;
+        /// programs install through <see cref="Installer"/>.
         /// </summary>
-        public IReadOnlyList<string> Extract(Stream zip, string installDir, IProgress<int>? progress)
+        internal IReadOnlyList<string> Extract(Stream zip, string installDir, IProgress<int>? progress)
         {
             string dir = PathText.NormaliseFolder(installDir) ?? throw new ArgumentException("A full local folder path is required.", nameof(installDir));
             var journal = new FileJournal(dir, new FileSystemProbe(), Array.Empty<string>());
@@ -100,7 +101,7 @@ namespace CyberPad.Install
                 string name = entry.FullName;
                 bool isDirectory = name.Length > 0 && PathText.IsSeparator(name[name.Length - 1]);
                 string? normalised = RelativePath.Normalise(isDirectory ? name.Substring(0, name.Length - 1) : name);
-                if (normalised == null || !names.Add(normalised) || (!isDirectory && RelativePath.IsReservedForSetup(normalised)))
+                if (normalised == null || !names.Add(normalised) || RelativePath.IsReservedForSetup(normalised))
                 {
                     throw new InstallException(InstallMessages.PayloadDamaged);
                 }

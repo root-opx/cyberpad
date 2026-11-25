@@ -213,7 +213,9 @@ namespace CyberPad.Setup
 
             string text = _folder.Text;
             int sequence = ++_sequence;
-            Task<InstallPathResult> work = Task.Run(() => InstallPathPolicy.Evaluate(text, _probe, _env));
+            // While typing nothing is written (probeWrite: false); pressing Install runs Installer.Install,
+            // which checks the folder again with the write probe on.
+            Task<InstallPathResult> work = Task.Run(() => InstallPathPolicy.Evaluate(text, _probe, _env, probeWrite: false));
             work.ContinueWith(t => UiCommon.PostToUi(this, () =>
             {
                 if (sequence != _sequence || _busy || _finished)
