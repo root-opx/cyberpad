@@ -28,6 +28,10 @@ js/core/          pure logic with Node tests; usually no UI work here
 js/core/codeedit.js  script-mode languages, indent units and the Tab/Enter/Backspace rules
 js/platform.js    storage and file bridge (browser or desktop host)
 desktop/          Windows host, xUnit tests, build.ps1
+desktop/CyberPad.Install/    installer and uninstaller logic (folder rules, unpacking, manifest, registry, shortcut), tested by xUnit
+desktop/CyberPad.Setup/      the setup window (WinForms, .NET Framework 4.7.1), built into CyberPad-Setup-<version>.exe
+desktop/CyberPad.Uninstall/  the uninstall window, built into Uninstall.exe
+desktop/Shared/              code both windows share (UI helpers, embedded-library loader)
 ```
 
 **Themes.** These are set by `data-theme` on `<html>` and chosen in the titlebar:
@@ -64,7 +68,9 @@ The System setting resolves to Light or Dark and is never a `data-theme` value.
 - toasts;
 - boot screen;
 - drop zone;
-- desktop only: the linked-file status line, the conflict bar (**Keep mine** / **Use the file's version**) and toast actions.
+- desktop only: the linked-file status line, the conflict bar (**Keep mine** / **Use the file's version**) and toast actions;
+- the setup window (`desktop/CyberPad.Setup`): folder field with a status line, Browse, a start-after box, progress, Install or Update, Finish;
+- the uninstall window and its second "Delete notes / Keep notes" question (`desktop/CyberPad.Uninstall`). Both windows are WinForms, laid out from the Windows message font, and do not use the page's themes.
 
 ## Rules every change must keep
 
@@ -95,6 +101,7 @@ These come from the project and from the user's security rules in `~/.claude/rul
   - The desktop build copies `index.html`, `css/` and `js/` into `wwwroot`, so UI changes reach it automatically.
   - Desktop-only UI is behind `platform.isDesktop` and cannot be seen in a browser.
   - **Do not launch `CyberPad.exe`:** the user's real data lives in `%LOCALAPPDATA%\CyberPad` and the user runs desktop GUI checks themself. Ask them to.
+  - **Nobody but the user runs the setup file or the uninstaller.** They change the real registry and Start menu. Tests must never write to the real registry, Start menu or the user's folders; they use fakes and temp folders.
 
 ## How to see and test it
 

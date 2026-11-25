@@ -16,7 +16,7 @@ python -m http.server 8787 --bind 127.0.0.1
 
 Then open http://localhost:8787.
 
-**As a Windows app:** see [Desktop app](#desktop-app) below.
+**As a Windows app:** run the installer, or unzip the portable build. See [Desktop app](#desktop-app) below.
 
 ## What it does
 
@@ -141,9 +141,26 @@ Then open http://localhost:8787.
 The same notepad in its own window and process. If the page inside it crashes, the window stays open and your saved notes are not lost. It is a .NET 8 + WebView2 host around the unchanged web app, for 64-bit Windows.
 
 **Get it**
-- Build `CyberPad-win-x64-<version>.zip` with `desktop/build.ps1` (see Development); there is no hosted download yet. Unzip it anywhere and run `CyberPad.exe`. Nothing is installed.
-- The build is not code-signed, so Windows SmartScreen warns on first run. Click **More info**, then **Run anyway**.
+- Build with `desktop/build.ps1` (see Development); there is no hosted download yet. It writes two files to `dist/`:
+  - `CyberPad-Setup-<version>.exe`, the installer: run it and follow the setup window (see [Installing and uninstalling](#installing-and-uninstalling)).
+  - `CyberPad-win-x64-<version>.zip`, the portable build: unzip it anywhere and run `CyberPad.exe`. It installs nothing and makes no registry changes.
+- Neither file is code-signed, so Windows SmartScreen warns on first run of the setup file or of `CyberPad.exe`. Click **More info**, then **Run anyway**. A company-managed PC may block unsigned programs.
 - It needs the Microsoft Edge WebView2 Runtime, which is preinstalled on Windows 11. If it is missing, the app shows a message with Microsoft's download page; it never downloads anything itself.
+
+**Installing and uninstalling**
+
+Running the setup file shows a setup window, not the app. It installs CyberPad for your Windows account only, with no administrator prompt and no network access. You choose the folder; the default is `%LOCALAPPDATA%\Programs\CyberPad`. Your notes are stored separately, in `%LOCALAPPDATA%\CyberPad`, and setup does not touch them. A **Start CyberPad when setup finishes** box is ticked by default.
+
+- **Folder rules.** The folder must be one of its own on a local drive. Setup refuses a drive root, your profile, Desktop, Documents and Downloads folders themselves, anything under Windows or Program Files, network and removable drives, a path with a `%` in it, a folder reached through a link, and the notes folder or any folder that contains it or is inside it. If the folder already has other files in it, setup uses a `CyberPad` subfolder and shows that path before installing.
+- **What setup adds, and nothing else.**
+  - The program files in the chosen folder, plus `Uninstall.exe` and `install.manifest` (the list of files setup wrote).
+  - A Start menu shortcut, `%APPDATA%\Microsoft\Windows\Start Menu\Programs\CyberPad.lnk`.
+  - Two registry keys under the current user: `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\CyberPad` (the entry under Settings, Apps, Installed apps) and `HKCU\Software\Classes\Applications\CyberPad.exe` (so CyberPad appears in Explorer's **Open with** list for `.md`, `.txt` and `.cpnote`; it is not made the default for anything).
+- **Updating.** Running a setup file when CyberPad is already installed updates it in place, in the same folder. To move it, uninstall first.
+- **Running copy.** Setup never closes a running CyberPad. It asks you to close it and changes nothing.
+- **Uninstalling.** Use Settings, Apps, Installed apps, or run `Uninstall.exe` in the install folder. It removes exactly the files setup wrote (from `install.manifest`), the shortcut and the two registry keys. Files in the folder that setup did not write are left, and then so is the folder. Your notes are kept unless you tick **Also delete my notes and settings** and confirm a second question. A program cannot delete itself while it runs, so a copy of the uninstaller (about 100 KB) is left in your temp folder.
+
+The main app is unchanged: it makes no registry changes itself and has no code that installs or uninstalls.
 
 **How it behaves**
 - Only one copy runs at a time. Starting it again brings the open window forward, so two copies never write the same file.
@@ -162,7 +179,7 @@ A note can be linked to a `.txt`, `.md` or `.cpnote` file you choose. The note s
 - **Save as file** (Ctrl+Shift+S, or the palette) asks where to put a new file and links the note to it. Plain notes default to `.md`; new files are UTF-8 without BOM, with LF line endings.
 - **Save** (Ctrl+S) writes the note to its linked file now. Linked notes are also written as you type.
 - **Open file** (Ctrl+O) opens a file as a note, linked to it. Opening a file that is already linked jumps to its note.
-- **Open with:** right-click a `.txt`, `.md` or `.cpnote` file in Explorer, choose **Open with**, then **CyberPad**. To make it the default, choose **Open with**, **Choose another app**, pick `CyberPad.exe` and tick **Always**. CyberPad makes no registry changes of its own. You can also run `CyberPad.exe "C:\path\file.md"`. A relative path is resolved against the folder you ran it from. If CyberPad is already running, the file opens in that window; if it cannot be reached within 3 seconds you get "CyberPad is already running but not responding." Any other file type is refused with "CyberPad can only open .txt, .md and .cpnote files."
+- **Open with:** if you used the installer, CyberPad is already in the **Open with** list. Right-click a `.txt`, `.md` or `.cpnote` file in Explorer, choose **Open with**, then **CyberPad** (with the portable zip, pick `CyberPad.exe` through **Choose another app** the first time). To make it the default, choose **Open with**, **Choose another app**, pick `CyberPad.exe` and tick **Always**. The app never makes registry changes itself; the installer registers CyberPad in the **Open with** list (the two keys above), and with the portable zip you add it by hand as described here. You can also run `CyberPad.exe "C:\path\file.md"`. A relative path is resolved against the folder you ran it from. If CyberPad is already running, the file opens in that window; if it cannot be reached within 3 seconds you get "CyberPad is already running but not responding." Any other file type is refused with "CyberPad can only open .txt, .md and .cpnote files."
 - **Formats:** CyberPad reads UTF-8 (with or without BOM) and UTF-16 with a BOM, keeps a file's CRLF line endings when you save it, and refuses anything else, or text containing a NUL, with "This file isn't UTF-8 or UTF-16 text." Files can be up to 4 MB on disk and, for `.txt` and `.md`, at most 1,000,000 characters of text.
 - **Encrypted notes** save as `.cpnote`: a small JSON file holding the same encrypted envelope the note already uses, so it stays ciphertext on disk. Encrypting a note that is linked to a `.txt` or `.md` file removes that link (the plain file is left alone, and you are told). A `.cpnote` file opens as an encrypted note and asks for its passphrase.
 - **Changed elsewhere:** CyberPad checks linked files when the window regains focus. If you have no unsaved changes and have not typed in the note for two seconds, the new version loads quietly; otherwise a bar offers **Keep mine** or **Use the file's version**. A file edited while CyberPad was closed is reloaded on start if the note had no changes since it was last saved to that file; otherwise the bar asks.
@@ -175,7 +192,7 @@ The desktop app cannot read a browser's storage. In the browser version, export 
 
 **Your notes**
 
-They live in `%LOCALAPPDATA%\CyberPad` (paste it into Explorer's address bar). That is the local profile, so roaming profiles do not sync it.
+They live in `%LOCALAPPDATA%\CyberPad` (paste it into Explorer's address bar). That is the local profile, so roaming profiles do not sync it. Uninstalling keeps this folder unless you ask for it to be deleted.
 
 | File | What it is |
 | --- | --- |
@@ -232,6 +249,7 @@ They live in `%LOCALAPPDATA%\CyberPad` (paste it into Explorer's address bar). T
 - **Locked-down web view.** The app loads only from its own virtual host `cyberpad.example` (a reserved name that never resolves), keeping the strict CSP. Navigation anywhere else is cancelled, new windows are cancelled, and downloads are cancelled. Every permission request (camera, microphone, location, clipboard read, and so on) is denied. Dev tools and browser shortcut keys are off in release builds, password and form autofill are off, and SmartScreen reputation checks are off for the local page.
 - **External links.** A clicked link opens in the default browser only if it is a well-formed `http`, `https`, or `mailto` URL. `file:`, `javascript:`, `ms-settings:`, UNC paths, and every other scheme are ignored.
 - **Crash-safe storage.** Saves are atomic with a kept backup, and unreadable files are renamed, never deleted. The app and its host make no network requests and send no telemetry. The WebView2 runtime is Microsoft's own component and follows Microsoft's and Windows' settings for diagnostic data, which CyberPad does not control. The only runtime NuGet dependency is `Microsoft.Web.WebView2`; `Microsoft.NET.ILLink.Tasks` is a build-time package, and the published exe bundles the .NET runtime. Every build audits the NuGet packages in the lock files for known vulnerabilities, and fails if the audit finds any or cannot complete.
+- **Installer.** Setup and uninstall run per user, with no administrator rights, no network access and no command shell (CyberPad.exe and the uninstaller's temp copy are started directly by full path). The chosen folder is validated before anything is written (local drive, not a shared or system folder, not the notes folder, no link, no `%`). The payload is unpacked with every entry name checked to stay inside the install folder, and with limits of 2,000 files and 1 GB. Uninstall deletes only files listed in `install.manifest` (itself limited to 2,000 paths and 256 KB), each checked to be inside the install folder, and removes a folder only when it is empty; it never deletes an install folder recursively. The notes folder is a fixed path, checked not to be a link, and is deleted only after a second confirmation; links inside it are removed, not followed. Only the two registry keys named above are written, both under the current user. The setup file and the uninstaller are unsigned.
 - **Not covered:** the exe is unsigned, and the notes file is not encrypted as a whole (see above). WebView2 crash dumps under `%LOCALAPPDATA%\CyberPad\WebView2` can contain memory from the page, including the text of unlocked encrypted notes.
 
 ## Development
@@ -242,16 +260,35 @@ npm test
 
 The tests use Node's built-in test runner (Node 18+) and cover the calculator, Markdown parser, text tools, vault, store, security tools, CVSS scoring (checked against reference scores), the subnet calculator, the script-mode indentation rules, and the `index.html` checks (the early-theme script, the exact Content-Security-Policy, no inline script or style attribute), including negative cases such as injection payloads, tampered ciphertext, bad imports, and prototype pollution.
 
-**Desktop app.** You need the .NET 8 SDK and Node 18+.
+**Desktop app.** You need the .NET 8 SDK, Node 18+, and the .NET Framework 4.7.1 developer pack (installed with Visual Studio) for the two small setup and uninstall programs, which run on the .NET Framework that is part of Windows 10 and 11. No extra package is used.
 
 ```powershell
 dotnet test desktop/CyberPad.sln -c Release
 powershell -ExecutionPolicy Bypass -File desktop/build.ps1
 ```
 
-`desktop/build.ps1` runs `npm test` and the .NET tests, audits the .NET packages for known vulnerabilities (and fails if it finds any), publishes a self-contained single-file build, and zips it to `dist/CyberPad-win-x64-<version>.zip` (about 65 MB). It stops at the first failing step. The version is set once, in `desktop/CyberPad.Desktop/CyberPad.Desktop.csproj`. `dist/` is not committed.
+`desktop/build.ps1` stops at the first failing step. Its steps are:
+
+1. `npm test`
+2. `dotnet test`
+3. vulnerable package audit: audits the .NET packages for known vulnerabilities and fails if it finds any
+4. `dotnet publish`: a self-contained single-file build
+5. `zip`: checks the publish output and writes `dist/CyberPad-win-x64-<version>.zip` (about 65 MB)
+6. `build Uninstall.exe`
+7. `build CyberPad-Setup.exe`: embeds the zip and `Uninstall.exe`
+8. `check and copy the setup file`: fails if it is smaller than the zip or larger than 150 MB, then writes `dist/CyberPad-Setup-<version>.exe`
+
+The version is set once, in `desktop/CyberPad.Desktop/CyberPad.Desktop.csproj`. `dist/` is not committed. The .NET tests include the installer and uninstaller logic.
 
 Manual checks for the desktop app:
+- Installer (do these on a PC where losing the install does not matter):
+  - Run the setup file: the setup window appears, not the app.
+  - Install to the default folder: CyberPad starts, is in the Start menu and under Installed apps, and appears under Open with for a `.md` file.
+  - Choose your Documents folder: setup refuses. Choose a folder that already has files: setup offers a `CyberPad` subfolder.
+  - Run the setup file again: it offers to update the existing install, and the folder cannot be changed.
+  - Start setup while CyberPad is running: it asks you to close CyberPad and changes nothing.
+  - Put a file of your own in the install folder, then uninstall from Settings: the program, shortcut and both entries are gone, your file and the folder remain, and your notes are still in `%LOCALAPPDATA%\CyberPad`.
+  - Uninstall with the box ticked and choose Keep notes at the second question: the notes are kept.
 - Kill the WebView render process (`msedgewebview2.exe`) in Task Manager: the window reloads with your notes intact.
 - Kill `CyberPad.exe` while typing: the last save is intact on the next start.
 - Hold `notes.json` open in PowerShell (`$f = [IO.File]::Open("$env:LOCALAPPDATA\CyberPad\notes.json", 'Open', 'ReadWrite', 'None')`), type something, and close the window: the app asks before closing without saving, and **No** keeps it open. Run `$f.Dispose()` afterwards.
@@ -308,4 +345,8 @@ js/platform.js      storage and file adapter (browser or desktop host)
 js/app.js           application controller
 tests/              node:test suites
 desktop/            Windows host (WinForms + WebView2), its xUnit tests, build.ps1
+  CyberPad.Install/   installer and uninstaller logic (folder rules, unpacking, manifest, registry, shortcut)
+  CyberPad.Setup/     the setup window, built into CyberPad-Setup-<version>.exe
+  CyberPad.Uninstall/ the uninstall window, built into Uninstall.exe
+  Shared/             code shared by the two windows (common UI helpers, embedded-library loader)
 ```
