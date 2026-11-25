@@ -24,6 +24,8 @@
     historyIntervalMs: 60000,
     importBytes: 2 * 1024 * 1024,
     backupBytes: 50 * 1024 * 1024,
+    folderName: 40,
+    folders: 100,
   });
 
   const THEMES = Object.freeze(['neon', 'amber', 'terminal']);
@@ -41,6 +43,8 @@
     autoLockMinutes: 10,
     lockOnHide: true,
     clearClipboard: true,
+    arrows: true,
+    collapsedFolders: Object.freeze([]),
   });
 
   const IMPORT_EXTENSIONS = Object.freeze(['txt', 'md', 'markdown', 'json']);
@@ -50,6 +54,9 @@
   const LINK_ID_RE = /^[0-9a-f]{32}$/;
   // eslint-disable-next-line no-control-regex
   const BAD_FILE_NAME_RE = /[\u0000-\u001f\u007f/\\]/;
+
+  // eslint-disable-next-line no-control-regex
+  const BAD_FOLDER_RE = /[\u0000-\u001f\u007f/\\]/;
 
   class StoreError extends Error {}
 
@@ -93,6 +100,13 @@
     return { linkId: f.linkId, name: f.name, format: f.format };
   }
 
+  /** A folder name: trimmed, inner whitespace collapsed to one space; '' when anything is wrong with it. */
+  function cleanFolder(value) {
+    if (typeof value !== 'string' || value.length > LIMITS.folderName * 8 || BAD_FOLDER_RE.test(value)) return '';
+    const name = value.trim().replace(/\s+/g, ' ');
+    return name.length > LIMITS.folderName ? '' : name;
+  }
+
   function validateNote(n, now = Date.now()) {
     if (!isObj(n) || !isId(n.id)) return null;
     let cipher = null;
@@ -113,6 +127,7 @@
       updated,
       history: cipher ? [] : validateHistory(n.history),
       file: validateFile(n.file, cipher !== null),
+      folder: cleanFolder(n.folder),
     };
   }
 
@@ -120,6 +135,7 @@
     if (!Array.isArray(list)) return [];
     const seen = new Set();
     const links = new Set();
+    const folders = new Set();
     const out = [];
     for (const raw of list.slice(0, LIMITS.notes)) {
       const n = validateNote(raw, now);
@@ -130,14 +146,34 @@
         if (links.has(n.file.linkId)) n.file = null;
         else links.add(n.file.linkId);
       }
+      // At most LIMITS.folders distinct folder names; a note with a further name goes to the top level.
+      if (n.folder && !folders.has(n.folder)) {
+        if (folders.size >= LIMITS.folders) n.folder = '';
+        else folders.add(n.folder);
+      }
       out.push(n);
     }
     return out;
   }
 
+  /** A fresh copy of the defaults: the collapsedFolders array is never shared between callers. */
+  function defaultSettings() {
+    return { ...DEFAULT_SETTINGS, collapsedFolders: [] };
+  }
+
+  function validateCollapsed(v) {
+    if (!Array.isArray(v)) return [];
+    const out = new Set();
+    for (const x of v.slice(0, LIMITS.folders * 4)) {
+      if (typeof x === 'string' && cleanFolder(x) === x) out.add(x);
+      if (out.size >= LIMITS.folders) break;
+    }
+    return [...out];
+  }
+
   function validateSettings(s) {
     const d = DEFAULT_SETTINGS;
-    if (!isObj(s)) return { ...d };
+    if (!isObj(s)) return defaultSettings();
     const bool = (v, def) => (typeof v === 'boolean' ? v : def);
     const theme = Object.prototype.hasOwnProperty.call(THEME_ALIASES, s.theme) ? THEME_ALIASES[s.theme] : s.theme;
     return {
@@ -150,11 +186,13 @@
       autoLockMinutes: AUTOLOCK.includes(s.autoLockMinutes) ? s.autoLockMinutes : d.autoLockMinutes,
       lockOnHide: bool(s.lockOnHide, d.lockOnHide),
       clearClipboard: bool(s.clearClipboard, d.clearClipboard),
+      arrows: bool(s.arrows, d.arrows),
+      collapsedFolders: validateCollapsed(s.collapsedFolders),
     };
   }
 
   function emptyState() {
-    return { notes: [], settings: { ...DEFAULT_SETTINGS }, activeId: null, error: null };
+    return { notes: [], settings: defaultSettings(), activeId: null, error: null };
   }
 
   function validateState(raw, now = Date.now()) {
@@ -214,12 +252,13 @@
         updated: n.updated,
         history: n.cipher ? [] : n.history,
         file: n.file || null,
+        folder: n.folder || '',
       })),
     });
   }
 
   function createNote(body = '', now = Date.now(), id = newId()) {
-    return { id, body, cipher: null, pinned: false, created: now, updated: now, history: [], file: null };
+    return { id, body, cipher: null, pinned: false, created: now, updated: now, history: [], file: null, folder: '' };
   }
 
   /**
@@ -242,6 +281,7 @@
       notes: notes.map((n) => ({
         id: n.id, body: n.cipher ? '' : n.body, cipher: n.cipher, pinned: n.pinned,
         created: n.created, updated: n.updated, history: n.cipher ? [] : n.history,
+        folder: n.folder || '',
         file: null, // a link to a file on this computer never travels in a backup
       })),
     }, null, 2);
@@ -283,6 +323,16 @@
     const cipher = raw.v === SCHEMA ? validateEnvelope(raw.cipher, LIMITS.backupBytes) : null;
     if (!cipher) throw new StoreError('This encrypted backup is damaged or uses an unsupported format.');
     return cipher;
+  }
+
+  /** The folders in use with their note counts: sorted by name (case-insensitive), ties by plain order. */
+  function folderList(notes) {
+    const counts = new Map();
+    for (const n of notes) {
+      if (n && typeof n.folder === 'string' && n.folder) counts.set(n.folder, (counts.get(n.folder) || 0) + 1);
+    }
+    return [...counts].map(([name, count]) => ({ name, count }))
+      .sort((a, b) => a.name.localeCompare(b.name, 'en', { sensitivity: 'base' }) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
   }
 
   /** Merge imported notes, giving fresh ids to any that collide. */
@@ -329,7 +379,7 @@
 
   return {
     STORAGE_KEY, LEGACY_STORAGE_KEYS, FILE_FORMATS, SCHEMA, LIMITS, THEMES, VIEWS, AUTOLOCK, DEFAULT_SETTINGS, StoreError,
-    newId, validateEnvelope, validateNote, validateState, parseStored, pickState, serialize, createNote, addSnapshot,
+    newId, cleanFolder, folderList, validateEnvelope, validateNote, validateNotes, validateSettings, validateState, parseStored, pickState, serialize, createNote, addSnapshot,
     makeBackup, parseBackup, makeEncryptedBackup, parseEncryptedBackup, mergeNotes, checkImportFile, decodeImportBytes,
   };
 });

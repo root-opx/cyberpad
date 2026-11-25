@@ -35,7 +35,7 @@ test('invalid notes are dropped, not repaired into something unsafe', () => {
   };
   const { notes } = store.validateState(raw, 7);
   assert.equal(notes.length, 1);
-  assert.deepEqual(notes[0], { id: ID, body: 'ok', cipher: null, pinned: false, created: 7, updated: 7, history: [{ t: 5, body: 'old' }], file: null });
+  assert.deepEqual(notes[0], { id: ID, body: 'ok', cipher: null, pinned: false, created: 7, updated: 7, history: [{ t: 5, body: 'old' }], file: null, folder: '' });
 });
 
 test('encrypted notes never keep plaintext body or history', () => {
@@ -252,4 +252,60 @@ test('validateNotes keeps a duplicate link id only on the first note', () => {
   ] })).notes;
   assert.deepEqual(notes[0].file, file);
   assert.equal(notes[1].file, null);
+});
+
+test('cleanFolder accepts a tidy name and rejects everything else', () => {
+  assert.equal(store.cleanFolder('  Client   work '), 'Client work');
+  assert.equal(store.cleanFolder('a'.repeat(40)), 'a'.repeat(40));
+  for (const bad of ['', '   ', 'a'.repeat(41), 'a/b', 'a\b', 'a\nb', 'a\u0000b', 'a\u007fb', 7, null, undefined, {}, ['x'], true]) {
+    assert.equal(store.cleanFolder(bad), '');
+  }
+  assert.equal(store.cleanFolder('__proto__'), '__proto__');
+});
+
+test('notes keep a valid folder through validate, serialize and backup', () => {
+  const n = { ...store.createNote('hi', 1000, 'a'.repeat(32)), folder: 'Clients' };
+  assert.equal(store.createNote('x').folder, '');
+  const state = store.validateState(JSON.parse(store.serialize({ notes: [n], settings: store.DEFAULT_SETTINGS, activeId: n.id })));
+  assert.equal(state.notes[0].folder, 'Clients');
+  assert.equal(store.parseBackup(store.makeBackup([n]))[0].folder, 'Clients');
+});
+
+test('data written before folders existed loads with no folder', () => {
+  const old = { v: 1, activeId: null, settings: { theme: 'amber' }, notes: [{ id: 'b'.repeat(32), body: 'old', pinned: true, created: 1, updated: 2, history: [] }] };
+  const state = store.validateState(old);
+  assert.equal(state.notes.length, 1);
+  assert.equal(state.notes[0].folder, '');
+  assert.equal(state.notes[0].pinned, true);
+  assert.equal(state.settings.arrows, true);
+  assert.deepEqual(state.settings.collapsedFolders, []);
+});
+
+test('bad folder values are dropped, the note is kept', () => {
+  const mk = (i, folder) => ({ id: String(i).padStart(32, '0'), body: 'x', created: 1, updated: 1, folder });
+  const notes = store.validateNotes([mk(1, 'a/b'), mk(2, 5), mk(3, 'x'.repeat(5000)), mk(4, 'line\nbreak'), mk(5, 'Fine')], 10);
+  assert.deepEqual(notes.map((n) => n.folder), ['', '', '', '', 'Fine']);
+});
+
+test('at most 100 distinct folders survive validation', () => {
+  const list = Array.from({ length: 120 }, (_, i) => ({ id: String(i).padStart(32, '0'), body: 'x', created: 1, updated: 1, folder: `F${i}` }));
+  const notes = store.validateNotes(list, 10);
+  assert.equal(notes.length, 120);
+  assert.equal(new Set(notes.map((n) => n.folder).filter(Boolean)).size, 100);
+  assert.equal(notes[100].folder, '');
+});
+
+test('folderList counts and sorts, ignoring case', () => {
+  const f = (folder) => ({ ...store.createNote('x'), folder });
+  assert.deepEqual(store.folderList([f('beta'), f('Alpha'), f(''), f('beta'), f('alpha')]),
+    [{ name: 'Alpha', count: 1 }, { name: 'alpha', count: 1 }, { name: 'beta', count: 2 }]);
+  assert.deepEqual(store.folderList([]), []);
+});
+
+test('collapsedFolders and arrows settings are validated', () => {
+  const s = store.validateSettings({ arrows: false, collapsedFolders: ['A', 'A', 'b/c', 9, ' x', 'B'] });
+  assert.equal(s.arrows, false);
+  assert.deepEqual(s.collapsedFolders, ['A', 'B']);
+  assert.deepEqual(store.validateSettings({ arrows: 'no', collapsedFolders: 'A' }).collapsedFolders, []);
+  assert.equal(store.validateSettings({ arrows: 'no' }).arrows, true);
 });

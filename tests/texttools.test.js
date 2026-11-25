@@ -144,3 +144,39 @@ test('paletteScore still matches old group names and also the new section names'
   assert.ok(T.paletteScore('zzzz', upper) <= 0);
   assert.equal(T.paletteScore('upper', upper), T.fuzzyScore('upper', 'UPPERCASE'));
 });
+
+const type = (before, ch, after = '') => T.arrowReplacement(before + ch + after, before.length + 1, ch);
+
+test('arrowReplacement turns typed ASCII arrows into real ones', () => {
+  assert.deepEqual(type('a -', '>'), { start: 2, end: 4, insert: '→' });
+  assert.deepEqual(type('-', '>'), { start: 0, end: 2, insert: '→' });
+  assert.deepEqual(type('x <', '-'), { start: 2, end: 4, insert: '←' });
+  assert.deepEqual(type('a =', '>'), { start: 2, end: 4, insert: '⇒' });
+  assert.deepEqual(type('a ←', '>'), { start: 2, end: 4, insert: '↔' });
+  assert.deepEqual(type('a -', '>', ' b'), { start: 2, end: 4, insert: '→' });
+});
+
+test('arrowReplacement leaves look-alikes alone', () => {
+  for (const [before, ch] of [['--', '>'], ['<!--', '>'], ['<-', '>'], ['cat <<', '-'], ['a ==', '>'], ['a <=', '>'], ['a >=', '>'], ['a !=', '>'], ['', '>'], ['a', '>'], ['a -', 'x'], ['a -', '']]) {
+    assert.equal(type(before, ch), null, `${before}${ch}`);
+  }
+  assert.equal(T.arrowReplacement('->', 5, '>'), null);
+  assert.equal(T.arrowReplacement('->', -1, '>'), null);
+  assert.equal(T.arrowReplacement(null, 2, '>'), null);
+});
+
+test('arrowReplacement never fires in code', () => {
+  assert.equal(type('```\nptr-', '>'), null);
+  assert.equal(type('~~~sh\na -', '>'), null);
+  assert.equal(type('use `a-', '>'), null);
+  assert.deepEqual(type('```\ncode\n```\nprose -', '>'), { start: 19, end: 21, insert: '→' });
+  assert.equal(type('```\na\n```\nb\n```\nc -', '>'), null);
+  assert.deepEqual(type('`done` then -', '>'), { start: 12, end: 14, insert: '→' });
+  assert.equal(T.inCodeAt('   ```\nx', 8), true);
+  assert.equal(T.inCodeAt('    ```\nx', 9), false);
+});
+
+test('credentialsTemplate is the agreed table with today as the review date', () => {
+  const out = T.credentialsTemplate(new Date(2026, 10, 25));
+  assert.equal(out, '# Credentials\n\n| System | Username | Password | URL | Notes |\n| --- | --- | --- | --- | --- |\n|  |  |  |  |  |\n\nLast reviewed: 2026-11-25\n');
+});

@@ -264,6 +264,48 @@
     return slug || 'note';
   }
 
+  // ---- arrows and code detection ----------------------------------------
+
+  const FENCE_RE = /^ {0,3}(```|~~~)/;
+
+  /** True when the caret sits inside a fenced block or an open inline code span on its line. */
+  function inCodeAt(text, caret) {
+    if (typeof text !== 'string' || !Number.isSafeInteger(caret) || caret < 0 || caret > text.length) return false;
+    const lineStart = text.lastIndexOf('\n', caret - 1) + 1;
+    let fences = 0;
+    for (const line of text.slice(0, lineStart).split('\n')) if (FENCE_RE.test(line)) fences++;
+    if (fences % 2 === 1) return true;
+    return countChar(text.slice(lineStart, caret), '`') % 2 === 1;
+  }
+
+  /** The range to replace after `typed` went in just before `caret`, or null. */
+  function arrowReplacement(text, caret, typed) {
+    if (typeof text !== 'string' || typeof typed !== 'string' || !Number.isSafeInteger(caret) || caret < 2 || caret > text.length) return null;
+    const a = text[caret - 2];
+    const b = text[caret - 3];
+    let insert = null;
+    if (typed === '>') {
+      if (a === '-' && b !== '-' && b !== '<') insert = '→';
+      else if (a === '←') insert = '↔';
+      else if (a === '=' && !['=', '<', '>', '!'].includes(b)) insert = '⇒';
+    } else if (typed === '-' && a === '<' && b !== '<') insert = '←';
+    if (insert === null || inCodeAt(text, caret)) return null;
+    return { start: caret - 2, end: caret, insert };
+  }
+
+  function credentialsTemplate(now) {
+    return [
+      '# Credentials',
+      '',
+      '| System | Username | Password | URL | Notes |',
+      '| --- | --- | --- | --- | --- |',
+      '|  |  |  |  |  |',
+      '',
+      `Last reviewed: ${ymd(now)}`,
+      '',
+    ].join('\n');
+  }
+
   // ---- slash commands ---------------------------------------------------
 
   const SLASH = [
@@ -365,7 +407,7 @@
   return {
     TransformError, TRANSFORMS, SLASH,
     ymd, hm, utcStamp, isoWeek, stats, position, deriveTitle, extractTags, extractWikiLinks, headings,
-    listContinuation, isTask, toggleTask, numberStats, slugify, expandSlash, fuzzyScore, relativeTime,
+    inCodeAt, arrowReplacement, credentialsTemplate, listContinuation, isTask, toggleTask, numberStats, slugify, expandSlash, fuzzyScore, relativeTime,
     PALETTE_SECTIONS, sectionOf, paletteSections, paletteScore,
   };
 });
