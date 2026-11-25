@@ -728,8 +728,9 @@
   // 3,000-line cap, reuses its per-line blocks (only changed lines are rewritten) and is remeasured at most ~5 times a second.
   const GUTTER_OVERSCAN = 6;
   const GUTTER_WRAP_MAX = 3000;
+  const GUTTER_WRAP_CHARS = 200000; // a wrapped note longer than this is not measured either
   const GUTTER_MEASURE_GAP = 200; // ms between two measurements while typing
-  const g = { on: false, wrapped: false, tooLong: false, hold: false, noteId: null, lines: 1, digits: 0, caret: 1, tops: null, key: '', raf: 0, timer: 0, last: 0, blocks: [], text: [], pool: [], rowN: [] };
+  const g = { on: false, wrapped: false, tooLong: '', hold: false, noteId: null, lines: 1, digits: 0, caret: 1, tops: null, key: '', raf: 0, timer: 0, last: 0, blocks: [], text: [], pool: [], rowN: [] };
 
   function countLines(v) {
     let n = 1;
@@ -777,11 +778,13 @@
     if (id !== g.noteId) { clearMirror(); g.noteId = id; }
     const want = gutterWanted(note);
     g.wrapped = want && !isScript(note);
-    g.tooLong = false;
+    g.tooLong = '';
     let on = want;
     if (want) {
       g.lines = countLines(els.editor.value);
-      if (g.wrapped && g.lines > GUTTER_WRAP_MAX) { g.tooLong = true; on = false; }
+      if (g.wrapped && g.lines > GUTTER_WRAP_MAX) g.tooLong = 'lines';
+      else if (g.wrapped && els.editor.value.length > GUTTER_WRAP_CHARS) g.tooLong = 'chars';
+      if (g.tooLong) on = false;
     }
     g.on = on;
     if (on) {
@@ -795,6 +798,8 @@
     } else {
       clearMirror();
       clearRows();
+      els.editorPane.style.removeProperty('--gutter-w');
+      g.digits = 0;
     }
     els.editorPane.classList.toggle('has-gutter', on);
     if (on) drawGutter();
@@ -908,8 +913,8 @@
     if (!gutterWanted(note)) return;
     const v = els.editor.value;
     const lines = countLines(v);
-    const tooLong = !isScript(note) && lines > GUTTER_WRAP_MAX;
-    if (tooLong !== g.tooLong || Math.max(2, String(lines).length) !== g.digits) { updateGutter(); return; }
+    const tooLong = isScript(note) ? '' : lines > GUTTER_WRAP_MAX ? 'lines' : v.length > GUTTER_WRAP_CHARS ? 'chars' : '';
+    if (tooLong !== g.tooLong || (g.on && Math.max(2, String(lines).length) !== g.digits)) { updateGutter(); return; }
     g.lines = lines;
     g.caret = lineAt(v, els.editor.selectionStart);
     scheduleMeasure();
@@ -927,7 +932,7 @@
   function lineNumbersTitle() {
     const m = S.settings.lineNumbers;
     const name = m === 'all' ? 'every note' : m === 'off' ? 'off' : 'script notes only';
-    const hidden = g.tooLong ? ' (hidden in this note: more than 3,000 lines)' : '';
+    const hidden = g.tooLong === 'chars' ? ' (hidden in this note: too long to measure)' : g.tooLong ? ' (hidden in this note: more than 3,000 lines)' : '';
     return `Line numbers: ${name}${hidden} (change)`;
   }
 
@@ -948,6 +953,7 @@
   function noteRow(n, q, grouped) {
     const m = metaOf(n);
     const mark = n.pinned ? '◆' : n.cipher ? (isLocked(n) ? '▣' : '□') : isScript(n) ? '›' : '';
+    const scriptMark = isScript(n) && (n.pinned || n.cipher); // the pin or lock takes the mark column; the title then carries the script sign
     const extra = [];
     if (q && m.body != null) {
       const idx = m.body.toLowerCase().indexOf(q.toLowerCase());
@@ -973,7 +979,7 @@
         'aria-current': String(n.id === S.activeId),
       },
       h('span', { class: 'note-mark', 'aria-hidden': 'true' }, mark),
-      h('span', { class: 'note-title' }, linked ? h('span', { class: 'note-file', 'aria-hidden': 'true' }, '⇄') : null, m.title,
+      h('span', { class: 'note-title' }, scriptMark ? h('span', { class: 'note-file', 'aria-hidden': 'true' }, '›') : null, linked ? h('span', { class: 'note-file', 'aria-hidden': 'true' }, '⇄') : null, m.title,
         states ? h('span', { class: 'sr-only' }, ` (${states})`) : null),
       h('span', { class: 'note-meta' }, h('span', null, T.relativeTime(n.updated)), folderTag, extra)),
       h('button', { type: 'button', class: 'note-del', 'data-id': n.id, 'aria-label': `Delete ${m.title}` }, '×'));
@@ -1458,7 +1464,7 @@
     }
     // The blank note made when the last note was deleted goes, unless the user has started using it.
     const blank = p.blankId ? noteById(p.blankId) : null;
-    if (blank && !blank.body && !blank.cipher && !blank.pinned && !blank.folder && !blank.file && !blank.history.length && blank.updated === blank.created) {
+    if (blank && !blank.body && !blank.lang && !blank.cipher && !blank.pinned && !blank.folder && !blank.file && !blank.history.length && blank.updated === blank.created) {
       S.notes = S.notes.filter((n) => n.id !== blank.id);
       S.meta.delete(blank.id);
     }
@@ -1796,7 +1802,9 @@
   function scriptKeydown(e, note, escaped) {
     if (e.isComposing || e.keyCode === 229) return;
     // AltGr arrives as Ctrl+Alt on Windows and types the brace on many keyboard layouts.
-    const altGr = typeof e.getModifierState === 'function' && e.getModifierState('AltGraph');
+    // That exception covers the closer characters only, never Tab, Enter or Backspace.
+    const isCloser = e.key === '}' || e.key === ')' || e.key === ']';
+    const altGr = isCloser && typeof e.getModifierState === 'function' && e.getModifierState('AltGraph');
     if (!altGr && (e.ctrlKey || e.altKey || e.metaKey)) return;
     const ed = els.editor;
     const { selectionStart: s, selectionEnd: t, value } = ed;
@@ -1807,9 +1815,11 @@
       r = codeedit.tab(value, s, t, note.lang, e.shiftKey);
     } else if (e.key === 'Enter') r = codeedit.enter(value, s, t, note.lang);
     else if (e.key === 'Backspace') r = codeedit.backspace(value, s, t, note.lang);
-    else if (e.key === '}' || e.key === ')' || e.key === ']') r = codeedit.closer(value, s, t, note.lang, e.key);
+    else if (isCloser) r = codeedit.closer(value, s, t, note.lang, e.key);
     if (!r) return;
     e.preventDefault();
+    // A result that leaves the text as it is only moves the selection: nothing is edited, nothing is dispatched.
+    if (value.slice(r.start, r.end) === r.insert) { ed.setSelectionRange(r.selStart, r.selEnd); return; }
     replaceRange(r.start, r.end, r.insert, r.selStart, r.selEnd);
   }
 

@@ -53,14 +53,14 @@ Then open http://localhost:8787.
   | TypeScript | 2 spaces |
   | YAML | 2 spaces |
 
-- `Tab` and `Shift+Tab` indent and outdent by the language's unit, for the current line or for every selected line.
-- `Enter` keeps the indentation and adds one level after the language's block openers: `:` in Python, `{` in the C family, `then` or `do` in Bash, `|` in YAML, and so on. This also works when the line ends in a comment. `Enter` between a pair of brackets puts the closing bracket on its own line.
-- A closing bracket typed on an empty indented line steps back one level. `Backspace` in the indentation steps back one level. Each of these is one undo step. `Esc`, then `Tab` still leaves the editor.
+- `Tab` with no selection inserts spaces up to the next indent stop (a tab in Go); with a whole line or several lines selected it indents them. `Shift+Tab` removes one level from the current line or from every selected line.
+- `Enter` keeps the indentation and adds one level after the language's block openers: `:` in Python, `{` in the C family, `then` or `do` in Bash, `|` in YAML, and so on. This also works when the line ends in a comment. `Enter` between a pair of brackets puts the closing bracket on its own line, but only when the bracket before the caret is one of the language's block openers (so not in Python, YAML or HTML).
+- A closing bracket typed on an empty indented line steps back one level. `Backspace` steps back one level only when everything to the left of the caret on the line is spaces; in Go it deletes one tab as usual. Each of these is one undo step. `Esc`, then `Tab` still leaves the editor.
 - Long lines scroll sideways instead of wrapping.
-- The preview shows the note as one code block with the language name and a Copy button. **Export note as PDF** prints that block, and **Export note as Markdown** writes the code in a fenced block. Linked files and exports keep the `.md` and `.txt` extensions.
+- The preview shows the note as one code block with the language name and a Copy button. **Export note as PDF** prints that block, and **Export note as Markdown** writes the code in a fenced block. Linked files and exports keep the `.txt`, `.md` and `.cpnote` extensions.
 - Switched off in a script note: arrow replacement, list continuation, `Ctrl+Enter` tasks, `/` quick inserts, the inline calculator, URL-paste links, and `#tags`, `[[links]]` and "Go to heading", so a `# comment` is not a tag or a heading. The secret scanner stays on. There is no syntax colouring.
 - **The language of a script note is not encrypted, even for encrypted notes.**
-- **Line numbers** sit in a gutter at the left of the editor, and the caret's line is brighter. One palette command in the View section cycles three states: script notes only (the default), every note, and off. In a Markdown note a wrapped line gets one number, at its first row. In a wrapped note of more than 3,000 lines the numbers are hidden.
+- **Line numbers** sit in a gutter at the left of the editor, and the caret's line is brighter. **Line numbers: script notes only (change)** in the palette's View section cycles script notes only (the default), every note, off; the title names the current state. In a Markdown note a wrapped line gets one number, at its first row. Numbers are hidden in a wrapped note of more than 3,000 lines or 200,000 characters.
 
 **Organising**
 - `[[Note title]]` links notes together. Clicking a missing link creates the note, and each note lists its backlinks.
@@ -240,7 +240,7 @@ They live in `%LOCALAPPDATA%\CyberPad` (paste it into Explorer's address bar). T
 npm test
 ```
 
-The tests use Node's built-in test runner (Node 18+) and cover the calculator, Markdown parser, text tools, vault, store, security tools, CVSS scoring (checked against reference scores), and the subnet calculator, and the script-mode indentation rules, including negative cases such as injection payloads, tampered ciphertext, bad imports, and prototype pollution.
+The tests use Node's built-in test runner (Node 18+) and cover the calculator, Markdown parser, text tools, vault, store, security tools, CVSS scoring (checked against reference scores), the subnet calculator, the script-mode indentation rules, and the `index.html` checks (the early-theme script, the exact Content-Security-Policy, no inline script or style attribute), including negative cases such as injection payloads, tampered ciphertext, bad imports, and prototype pollution.
 
 **Desktop app.** You need the .NET 8 SDK and Node 18+.
 

@@ -101,19 +101,24 @@
    */
   function stripComment(s, lang) {
     const line = LINE_COMMENT[lang.id];
-    const block = BLOCK_COMMENT.includes(lang.id);
+    // One linear pass: only the LAST `/*` can open a block comment that runs to the end of the line.
+    let end = s.length;
+    while (end > 0 && isWs(s[end - 1])) end -= 1;
+    let c = -1;
+    if (BLOCK_COMMENT.includes(lang.id) && end >= 4 && s[end - 1] === '/' && s[end - 2] === '*') {
+      const k = s.lastIndexOf('/*', end - 4);
+      if (k !== -1 && s.indexOf('*/', k + 2) === end - 2) c = k;
+    }
+    if (!line && c === -1) return s;
     let dq = 0;
     let sq = 0;
     for (let i = 0; i < s.length; i += 1) {
-      const c = s[i];
-      if (c === '"') dq += 1;
-      else if (c === "'") sq += 1;
+      const ch = s[i];
+      if (ch === '"') dq += 1;
+      else if (ch === "'") sq += 1;
       else if (dq % 2 === 0 && sq % 2 === 0) {
         if (line && s.startsWith(line, i) && (line !== '#' || i === 0 || isWs(s[i - 1]))) return s.slice(0, i);
-        if (block && s.startsWith('/*', i)) {
-          const rest = s.slice(i).replace(/[ \t]+$/, '');
-          if (rest.length >= 4 && rest.endsWith('*/') && rest.indexOf('*/', 2) === rest.length - 2) return s.slice(0, i);
-        }
+        if (i === c) return s.slice(0, i);
       }
     }
     return s;

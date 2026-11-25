@@ -17,8 +17,8 @@ The look is "a salvaged corporate terminal": dark screens, a display face in OCR
 
 ```
 index.html        app shell: titlebar, sidebar, workspace (editor + preview), statusbar, dialogs, CSP
-css/style.css     everything visual, about 1,200 lines; theme tokens at the top
-js/app.js         application controller (about 3,500 lines): rendering of lists, bars, dialogs, palette, toasts
+css/style.css     everything visual, about 1,550 lines; theme tokens at the top
+js/app.js         application controller (about 4,550 lines): rendering of lists, bars, dialogs, palette, toasts
 js/ui/dom.js      NP.dom.h(tag, attrs, ...children): the only way UI builds elements
 js/ui/render.js   Markdown tree to DOM for the preview
 js/ui/caret.js    caret position (for the slash popup)
@@ -105,9 +105,9 @@ These come from the project and from the user's security rules in `~/.claude/rul
   ```
 
 - **Tests:**
-  - `npm test` (Node built-in runner, 141 tests);
+  - `npm test` (Node built-in runner, 371 tests);
   - `node --check js/app.js`;
-  - `dotnet test desktop/CyberPad.sln` (316 tests). The .NET test run rewrites `desktop/**/packages.lock.json`; revert that with `git checkout -- "desktop/**/packages.lock.json"`.
+  - `dotnet test desktop/CyberPad.sln` (413 tests). The .NET test run rewrites `desktop/**/packages.lock.json`; revert that with `git checkout -- "desktop/**/packages.lock.json"`.
 - **Manual checks:** README, "Manual checks for the desktop app". Add a line there for any desktop-visible UI change.
 
 ## Git

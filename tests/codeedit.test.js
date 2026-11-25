@@ -679,6 +679,26 @@ test('Enter does its comment stripping on its own line only (a 200,000-char line
   assert.ok(Number(process.hrtime.bigint() - t0) / 1e6 < 100);
 });
 
+const hostileLines = [
+  ['javascript', '/*'.repeat(500000)],
+  ['css', '/*' + ' '.repeat(1000000) + 'x'],
+  ['rust', '/*' + ' '.repeat(1000000) + 'x'],
+  ['javascript', '"'.repeat(1000000)],
+  ['javascript', '/'.repeat(1000000)],
+  ['python', '#'.repeat(1000000)],
+  ['python', ' '.repeat(1000000)],
+  ['javascript', ' '.repeat(1000000)],
+];
+for (const [id, t] of hostileLines) {
+  test(`Enter (${id}) on a 1,000,000-char hostile line (${JSON.stringify(t.slice(0, 4))}...) takes under 100 ms`, () => {
+    const t0 = process.hrtime.bigint();
+    const r = C.enter(t, t.length, t.length, id);
+    const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+    assert.ok(r && r.insert.startsWith('\n'));
+    assert.ok(ms < 100, `took ${ms} ms`);
+  });
+}
+
 // ---- cost ----
 
 test('Enter on a 200,000-line text with the caret near the end returns quickly (it does not scan the whole text)', () => {
