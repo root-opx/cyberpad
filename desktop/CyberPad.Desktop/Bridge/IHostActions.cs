@@ -14,6 +14,9 @@ public interface IHostActions
 
     Task QuarantineAsync();
 
+    /// <summary>Colours the Windows title bar for the page's theme. Never shows anything to the user.</summary>
+    Task SetThemeAsync(HostTheme theme);
+
     /// <returns>The chosen file name, or null if the user cancelled.</returns>
     /// <exception cref="CyberPad.Desktop.Storage.StoreException">The write failed; the message is a safe user-facing reason.</exception>
     Task<string?> ExportAsync(ExportKind kind, string safeName, string text);

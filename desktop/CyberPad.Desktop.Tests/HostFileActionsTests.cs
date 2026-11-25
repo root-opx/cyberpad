@@ -26,7 +26,7 @@ public sealed class HostFileActionsTests : IDisposable
         Directory.CreateDirectory(_docs);
         _links = new LinkStore(_data);
         _links.Load();
-        _host = new HostActions(new NoteStore(_data), _links, new LinkedFiles(), _queue, "1.0.0", _control, () => { }, () => { });
+        _host = new HostActions(new NoteStore(_data), _links, new LinkedFiles(), _queue, "1.0.0", _control, () => { }, () => { }, _ => { });
     }
 
     public void Dispose()
@@ -371,7 +371,7 @@ public sealed class HostFileActionsTests : IDisposable
                 File.Replace(tmp, path, null);
             },
         };
-        var host = new HostActions(new NoteStore(_data), _links, files, _queue, "1.0.0", _control, () => { }, () => { });
+        var host = new HostActions(new NoteStore(_data), _links, files, _queue, "1.0.0", _control, () => { }, () => { }, _ => { });
         Assert.False(host.IsFileOperationInFlight);
 
         var write = Task.Run(() => host.WriteFileAsync(link.LinkId, "two", false));
@@ -403,7 +403,7 @@ public sealed class HostFileActionsTests : IDisposable
     {
         var link = await SaveAs(Doc("a.txt"), text: "one");
         var log = new List<string>();
-        var host = new HostActions(new NoteStore(_data), _links, new LinkedFiles(), _queue, "1.0.0", _control, () => { }, () => { }, log.Add);
+        var host = new HostActions(new NoteStore(_data), _links, new LinkedFiles(), _queue, "1.0.0", _control, () => { }, () => { }, _ => { }, log.Add);
         var linksPath = Path.Combine(_data, LinkStore.FileName);
 
         // links.json held exclusively: the file write succeeds, persisting the refreshed record does not.

@@ -119,7 +119,7 @@ public sealed class HostActionsTests
     public async Task ExportAsync_FailsCleanlyWithoutAWindowHandle_AndCanBeRetried()
     {
         using var control = new Control(); // never shown: no handle, so BeginInvoke has nowhere to post
-        var host = new HostActions(new NoteStore(Unused), new LinkStore(Unused), new LinkedFiles(), new OpenRequestQueue(), "1.0.0", control, () => { }, () => { });
+        var host = new HostActions(new NoteStore(Unused), new LinkStore(Unused), new LinkedFiles(), new OpenRequestQueue(), "1.0.0", control, () => { }, () => { }, _ => { });
 
         for (var attempt = 0; attempt < 2; attempt++)
         {
@@ -133,7 +133,7 @@ public sealed class HostActionsTests
     public void CancelPendingDialog_WithNothingPending_DoesNothing()
     {
         using var control = new Control();
-        var host = new HostActions(new NoteStore(Unused), new LinkStore(Unused), new LinkedFiles(), new OpenRequestQueue(), "1.0.0", control, () => { }, () => { });
+        var host = new HostActions(new NoteStore(Unused), new LinkStore(Unused), new LinkedFiles(), new OpenRequestQueue(), "1.0.0", control, () => { }, () => { }, _ => { });
         host.CancelPendingDialog();
     }
 
@@ -143,7 +143,7 @@ public sealed class HostActionsTests
         using var control = new Control();
         int flushed = 0, failed = 0;
         var host = new HostActions(new NoteStore(Unused), new LinkStore(Unused), new LinkedFiles(), new OpenRequestQueue(), "1.0.0", control,
-            () => flushed++, () => failed++);
+            () => flushed++, () => failed++, _ => { });
         host.FlushFailed();
         Assert.Equal((0, 1), (flushed, failed));
         host.Flushed();

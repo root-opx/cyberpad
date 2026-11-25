@@ -16,6 +16,7 @@ public sealed partial class HostActions : IHostActions
     private readonly Control _ui;
     private readonly Action _onFlushed;
     private readonly Action _onFlushFailed;
+    private readonly Action<HostTheme> _applyTheme;
     private int _dialogOpen;
     private TaskCompletionSource<string?>? _pendingDialog;
 
@@ -34,9 +35,10 @@ public sealed partial class HostActions : IHostActions
     /// <param name="ui">The window that owns the Save dialog; its thread is the UI thread.</param>
     /// <param name="onFlushed">Called (from any thread) when the page reports it has sealed and saved its notes.</param>
     /// <param name="onFlushFailed">Called (from any thread) when the page reports its latest changes could not be saved.</param>
+    /// <param name="applyTheme">Called on the UI thread with the theme the page asked for.</param>
     /// <param name="log">Content-free diagnostics only (type names and reasons, never paths or text).</param>
     public HostActions(NoteStore store, LinkStore links, LinkedFiles files, OpenRequestQueue openQueue, string version,
-        Control ui, Action onFlushed, Action onFlushFailed, Action<string>? log = null)
+        Control ui, Action onFlushed, Action onFlushFailed, Action<HostTheme> applyTheme, Action<string>? log = null)
     {
         ArgumentNullException.ThrowIfNull(store);
         ArgumentNullException.ThrowIfNull(links);
@@ -46,6 +48,7 @@ public sealed partial class HostActions : IHostActions
         ArgumentNullException.ThrowIfNull(ui);
         ArgumentNullException.ThrowIfNull(onFlushed);
         ArgumentNullException.ThrowIfNull(onFlushFailed);
+        ArgumentNullException.ThrowIfNull(applyTheme);
         _store = store;
         _links = links;
         _files = files;
@@ -55,6 +58,7 @@ public sealed partial class HostActions : IHostActions
         _ui = ui;
         _onFlushed = onFlushed;
         _onFlushFailed = onFlushFailed;
+        _applyTheme = applyTheme;
     }
 
     public string Version { get; }
@@ -66,6 +70,21 @@ public sealed partial class HostActions : IHostActions
     public Task SaveAsync(string data) => Task.Run(() => _store.Save(data));
 
     public Task QuarantineAsync() => Task.Run(() => { _store.Quarantine(DateTimeOffset.UtcNow); });
+
+    public Task SetThemeAsync(HostTheme theme)
+    {
+        // The window handle may only be used on the UI thread. A closed window is not an error: nothing to colour.
+        if (_ui.IsDisposed || !_ui.IsHandleCreated) return Task.CompletedTask;
+        var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        // PostToUiAsync reports a window that closed meanwhile through the task, not by throwing.
+        PostToUiAsync(_ui, () => { _applyTheme(theme); return true; }, tcs);
+        return tcs.Task.ContinueWith(
+            t =>
+            {
+                if (t.IsFaulted) _log("theme: " + t.Exception!.GetBaseException().GetType().Name);
+            },
+            TaskScheduler.Default);
+    }
 
     public async Task<string?> ExportAsync(ExportKind kind, string safeName, string text)
     {

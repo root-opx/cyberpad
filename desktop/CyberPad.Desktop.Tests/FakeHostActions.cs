@@ -41,6 +41,18 @@ internal sealed class FakeHostActions : IHostActions
         finally { Interlocked.Decrement(ref _running); }
     }
 
+    public HostTheme? ThemeSet;
+    public int ThemeCalls;
+    public Exception? ThemeThrows;
+
+    public Task SetThemeAsync(HostTheme theme)
+    {
+        ThemeCalls++;
+        if (ThemeThrows is not null) throw ThemeThrows;
+        ThemeSet = theme;
+        return Task.CompletedTask;
+    }
+
     public Task QuarantineAsync() { Calls++; QuarantineCalls++; return Task.CompletedTask; }
 
     /// <summary>When set, ExportAsync waits on this (like a Save dialog the user has left open).</summary>

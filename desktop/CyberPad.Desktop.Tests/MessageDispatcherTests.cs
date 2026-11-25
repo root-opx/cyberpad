@@ -326,4 +326,68 @@ public class MessageDispatcherTests
         Assert.Equal(0, f.Calls);
         Assert.Equal(new[] { "exportFile: unknown kind" }, log);
     }
+
+    [Theory]
+    [InlineData("neon", HostTheme.Neon)]
+    [InlineData("amber", HostTheme.Amber)]
+    [InlineData("terminal", HostTheme.Terminal)]
+    public async Task Theme_AppliesAndReplies(string name, HostTheme expected)
+    {
+        var (d, f, _) = Make();
+        var r = Parse(await d.HandleAsync(Src, $$"""{"type":"theme","id":"r1","theme":"{{name}}"}"""));
+        Assert.Equal("themeApplied", r.GetProperty("type").GetString());
+        Assert.Equal("r1", r.GetProperty("id").GetString());
+        Assert.Equal(expected, f.ThemeSet);
+        Assert.Equal(1, f.ThemeCalls);
+    }
+
+    [Theory]
+    [InlineData("""{"type":"theme","id":"r1","theme":"Neon"}""")]
+    [InlineData("""{"type":"theme","id":"r1","theme":"dark"}""")]
+    [InlineData("""{"type":"theme","id":"r1","theme":""}""")]
+    [InlineData("""{"type":"theme","id":"r1","theme":"#191338"}""")]
+    [InlineData("""{"type":"theme","id":"r1","theme":1}""")]
+    [InlineData("""{"type":"theme","id":"r1","theme":null}""")]
+    [InlineData("""{"type":"theme","id":"r1","theme":["neon"]}""")]
+    [InlineData("""{"type":"theme","id":"r1"}""")]
+    [InlineData("""{"type":"theme","id":"r1","theme":"neon","color":"#fff"}""")]
+    [InlineData("""{"type":"theme","id":"r1","theme":"neon","theme":"amber"}""")]
+    [InlineData("""{"type":"theme","theme":"neon"}""")]
+    public async Task Theme_InvalidMessage_IsRejectedAndNeverApplied(string json)
+    {
+        var (d, f, log) = Make();
+        await d.HandleAsync(Src, json);
+        Assert.Equal(0, f.ThemeCalls);
+        Assert.Single(log);
+        Assert.DoesNotContain("#191338", log[0]);
+    }
+
+    [Fact]
+    public async Task Theme_WrongOrigin_IsRejected()
+    {
+        var (d, f, _) = Make();
+        await d.HandleAsync("https://evil.example/", """{"type":"theme","id":"r1","theme":"neon"}""");
+        Assert.Equal(0, f.ThemeCalls);
+    }
+
+    [Fact]
+    public async Task Theme_UnexpectedFailure_RepliesRejectedWithGenericReason()
+    {
+        var (d, f, _) = Make();
+        f.ThemeThrows = new InvalidOperationException(@"C:\secret\path");
+        var r = Parse(await d.HandleAsync(Src, """{"type":"theme","id":"r1","theme":"neon"}"""));
+        Assert.Equal("rejected", r.GetProperty("type").GetString());
+        Assert.DoesNotContain("secret", r.GetRawText());
+    }
+
+    [Fact]
+    public async Task Theme_DoesNotWaitBehindASlowSave()
+    {
+        var (d, f, _) = Make();
+        f.DelayMs = 500;
+        var save = d.HandleAsync(Src, """{"type":"save","id":"s1","data":"x"}""");
+        var theme = d.HandleAsync(Src, """{"type":"theme","id":"t1","theme":"amber"}""");
+        Assert.Same(theme, await Task.WhenAny(theme, save));
+        await save;
+    }
 }

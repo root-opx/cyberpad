@@ -32,6 +32,7 @@ public sealed class MessageDispatcher
         ["exportFile"] = new[] { "type", "id", "kind", "suggestedName", "text" },
         ["saveAsFile"] = new[] { "type", "id", "format", "suggestedName", "text" },
         ["relinkFile"] = new[] { "type", "id", "linkId", "format", "suggestedName", "text" },
+        ["theme"] = new[] { "type", "id", "theme" },
         ["openFile"] = new[] { "type", "id" },
         ["writeFile"] = new[] { "type", "id", "linkId", "text", "force" },
         ["readFile"] = new[] { "type", "id", "linkId" },
@@ -147,6 +148,19 @@ public sealed class MessageDispatcher
                         await _actions.QuarantineAsync().ConfigureAwait(false);
                         return Serialize(new { type = "quarantined", id });
                     }), null).ConfigureAwait(false);
+
+                case "theme":
+                {
+                    var el = root.GetProperty("theme");
+                    if (el.ValueKind != JsonValueKind.String || !HostThemes.TryParse(el.GetString(), out var theme))
+                        return Reject(type, id, "invalid theme");
+                    // Takes neither gate: a title bar colour must not wait behind a save or a file dialog.
+                    return await RunAsync(type, id!, async () =>
+                    {
+                        await _actions.SetThemeAsync(theme).ConfigureAwait(false);
+                        return Serialize(new { type = "themeApplied", id });
+                    }, null).ConfigureAwait(false);
+                }
 
                 case "save":
                 {

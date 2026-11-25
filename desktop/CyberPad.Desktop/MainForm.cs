@@ -55,6 +55,7 @@ internal sealed class MainForm : Form
     private bool _openRequestPosted; // the page has been asked and has not yet answered with openFile
     private ulong _appNavigationId;
     private bool _recoveryStopped;
+    private HostTheme _theme = HostTheme.Neon;
     private bool _closeRequested;
     private bool _closeConfirmed;
     private FormWindowState _lastShownState = FormWindowState.Normal;
@@ -69,7 +70,7 @@ internal sealed class MainForm : Form
         _instance = instance;
         _openRequests = openRequests;
         _hostActions = new HostActions(new NoteStore(dataDir), links, new LinkedFiles(log), openRequests, version, this,
-            ConfirmClose, FlushFailed, log);
+            ConfirmClose, FlushFailed, ApplyTheme, log);
         _hostActions.DialogClosed += OnFileActivityChanged;
         _hostActions.OpenCompleted += OnOpenCompleted;
         _dispatcher = new MessageDispatcher(_hostActions, log);
@@ -82,6 +83,20 @@ internal sealed class MainForm : Form
 
         _closeTimer.Tick += OnCloseTimerTick;
         _instance.ActivationRequested += OnActivationRequested;
+    }
+
+    // Always called on the UI thread (HostActions.SetThemeAsync posts it there).
+    private void ApplyTheme(HostTheme theme)
+    {
+        _theme = theme;
+        if (IsHandleCreated) TitleBar.Apply(Handle, theme, _log);
+    }
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        // Dark before the page loads, and again after any handle re-creation.
+        TitleBar.Apply(Handle, _theme, _log);
     }
 
     protected override void Dispose(bool disposing)
