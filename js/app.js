@@ -2,7 +2,7 @@
 (function () {
   'use strict';
 
-  const { calc, markdown, text: T, vault, store, secops, cvss, netcalc, dom, caret, sound, renderMarkdown } = window.NP;
+  const { calc, markdown, text: T, codeedit, vault, store, secops, cvss, netcalc, dom, caret, sound, renderMarkdown } = window.NP;
   const { h } = dom;
   const { PlatformError } = window.NP.platformFactory;
   const platform = window.NP.platformFactory.createPlatform(window);
@@ -10,14 +10,14 @@
 
   const els = {
     app: $('app'), sidebar: $('sidebar'), scrim: $('scrim'), workspace: $('workspace'),
-    editor: $('editor'), preview: $('preview'), previewPane: document.querySelector('.pane-preview'), backlinks: $('backlinks'),
+    editor: $('editor'), editorPane: document.querySelector('.pane-editor'), preview: $('preview'), previewPane: document.querySelector('.pane-preview'), backlinks: $('backlinks'),
     lockscreen: $('lockscreen'), unlockForm: $('unlock-form'), unlockPass: $('unlock-pass'), unlockError: $('unlock-error'), unlockBtn: $('unlock-btn'),
     search: $('search'), noteList: $('note-list'), tagList: $('tag-list'), filterRow: $('filter-row'), filterLabel: $('filter-label'),
     btnClearFilter: $('btn-clear-filter'), btnNew: $('btn-new'), btnSidebar: $('btn-sidebar'), themeSelect: $('theme-select'),
     btnCrt: $('btn-crt'), btnSound: $('btn-sound'), btnPalette: $('btn-palette'),
     findbar: $('findbar'), findInput: $('find-input'), replaceInput: $('replace-input'), findCase: $('find-case'),
     findRegex: $('find-regex'), findCount: $('find-count'),
-    stSave: $('st-save'), stSaveText: $('st-save-text'), stPos: $('st-pos'), stWords: $('st-words'), stSel: $('st-sel'),
+    stSave: $('st-save'), stSaveText: $('st-save-text'), stPos: $('st-pos'), stWords: $('st-words'), stLang: $('st-lang'), stSel: $('st-sel'),
     stLock: $('st-lock'), stTimer: $('st-timer'), stClock: $('st-clock'),
     slash: $('slash'), palette: $('palette'), paletteInput: $('palette-input'), paletteList: $('palette-list'),
     paletteSections: $('palette-sections'), paletteStatus: $('palette-status'), paletteFoot: $('palette-foot'),
@@ -120,13 +120,28 @@
   /** The last arrow typed, so one Backspace can give back the characters that made it. */
   let arrowMemo = null;
 
+  /** A script note is one with a language; its text is code, never Markdown. */
+  const isScript = (n) => !!(n && n.lang);
+  const langName = (n) => { const l = isScript(n) ? codeedit.language(n.lang) : null; return l ? l.name : ''; };
+
+  /** The title of a script note: its first non-empty line as written, capped like other titles. */
+  function scriptTitle(body) {
+    for (const raw of body.split('\n', 50)) {
+      const t = raw.trim();
+      if (t) return t.length > 80 ? `${t.slice(0, 79)}…` : t;
+    }
+    return 'Untitled';
+  }
+
   function metaOf(n) {
     const body = bodyOf(n);
     const cached = S.meta.get(n.id);
-    if (cached && cached.body === body) return cached;
-    const m = body == null
-      ? { body, title: 'Encrypted note', tags: [], links: [] }
-      : { body, title: T.deriveTitle(body), tags: T.extractTags(body), links: T.extractWikiLinks(body).map((l) => l.toLowerCase()) };
+    if (cached && cached.body === body && cached.script === isScript(n)) return cached;
+    let m;
+    if (body == null) m = { body, title: 'Encrypted note', tags: [], links: [] };
+    else if (isScript(n)) m = { body, title: scriptTitle(body), tags: [], links: [] };
+    else m = { body, title: T.deriveTitle(body), tags: T.extractTags(body), links: T.extractWikiLinks(body).map((l) => l.toLowerCase()) };
+    m.script = isScript(n);
     S.meta.set(n.id, m);
     return m;
   }
@@ -676,6 +691,8 @@
     syncHostTheme();
   }
 
+  const EDITOR_PLACEHOLDER = els.editor.placeholder;
+
   function renderEditor() {
     const note = active();
     const locked = !note || isLocked(note);
@@ -693,6 +710,8 @@
       }
     }
     els.editor.maxLength = store.LIMITS.body;
+    els.editorPane.classList.toggle('is-script', isScript(note));
+    els.editor.placeholder = isScript(note) ? 'Start typing.' : EDITOR_PLACEHOLDER;
     document.title = note ? `${titleOf(note)} | CyberPad` : 'CyberPad';
   }
 
@@ -703,7 +722,7 @@
   /** One sidebar row: the note button plus its delete button. `grouped` rows sit under a folder header and can be dragged. */
   function noteRow(n, q, grouped) {
     const m = metaOf(n);
-    const mark = n.pinned ? '◆' : n.cipher ? (isLocked(n) ? '▣' : '□') : '';
+    const mark = n.pinned ? '◆' : n.cipher ? (isLocked(n) ? '▣' : '□') : isScript(n) ? '›' : '';
     const extra = [];
     if (q && m.body != null) {
       const idx = m.body.toLowerCase().indexOf(q.toLowerCase());
@@ -718,7 +737,7 @@
       extra.push(h('span', { class: 'snippet' }, m.tags.slice(0, 3).map((t) => `#${t}`).join(' ')));
     }
     const linked = platform.isDesktop && !!n.file;
-    const states = [grouped && n.folder && `in ${n.folder}`, n.pinned && 'pinned', n.cipher && (isLocked(n) ? 'encrypted, locked' : 'encrypted, unlocked'), linked && 'linked to a file'].filter(Boolean).join(', ');
+    const states = [grouped && n.folder && `in ${n.folder}`, n.pinned && 'pinned', n.cipher && (isLocked(n) ? 'encrypted, locked' : 'encrypted, unlocked'), isScript(n) && `script, ${langName(n)}`, linked && 'linked to a file'].filter(Boolean).join(', ');
     // In the flat (search or tag) list there are no headers, so the row names its folder.
     const folderTag = !grouped && n.folder ? h('span', { class: 'note-folder' }, n.folder) : null;
     const li = h('li', { class: grouped && n.folder ? 'note-row in-folder' : 'note-row', 'data-id': n.id, 'data-group': grouped ? n.folder : null },
@@ -855,6 +874,48 @@
     });
   }
 
+  /** Switches a note between Markdown (`''`) and a script language. The text, its history and its date are not touched. */
+  function setNoteLang(note, id) {
+    if (!note || !isEditable(note) || (id !== '' && !codeedit.language(id))) return;
+    closeSlash();
+    arrowMemo = null;
+    note.lang = id;
+    persistNow();
+    if (note.id === S.activeId) {
+      renderEditor();
+      renderList();
+      renderTags();
+      renderPreview();
+      updateStatus();
+    }
+    toast(id ? `Script mode: ${codeedit.language(id).name}.` : 'Back to a Markdown note.');
+  }
+
+  async function chooseLanguage() {
+    const note = active();
+    if (!isEditable(note)) return;
+    const choice = (id, label) => {
+      const on = note.lang === id;
+      const b = h('button', { type: 'button', class: 'chip lang-choice', 'data-lang': id, 'aria-pressed': String(on) },
+        on ? h('span', { 'aria-hidden': 'true' }, '●') : null, label);
+      b.addEventListener('click', () => { if (finishCurrentDialog) finishCurrentDialog({ id }); });
+      return b;
+    };
+    const picked = await showDialog({
+      title: 'Script mode',
+      initialFocus: '.lang-choice[aria-pressed="true"]',
+      body: [
+        h('p', null, 'Pick the language this note is written in. Tab, Enter and Backspace then indent the way it expects. The text does not change.'),
+        h('div', { class: 'lang-choices', role: 'group', 'aria-label': 'Language' },
+          choice('', 'Markdown note (no script mode)'),
+          codeedit.LANGUAGES.map((l) => choice(l.id, l.name))),
+      ],
+      actions: [{ label: 'Cancel', value: null }],
+    });
+    if (!picked || active() !== note) return;
+    setNoteLang(note, picked.id);
+  }
+
   async function moveToFolder() {
     const note = active();
     if (!note) return;
@@ -970,6 +1031,16 @@
       return;
     }
     const body = bodyOf(note);
+    if (isScript(note)) {
+      // One code block: the text is a text node, never parsed, and a script note has no backlinks.
+      els.preview.replaceChildren(body.trim()
+        ? h('pre', { 'data-lang': langName(note) },
+          h('button', { type: 'button', class: 'copy-btn', 'data-copy': '' }, 'Copy'),
+          h('code', null, body))
+        : h('p', { class: 'preview-empty' }, 'Nothing here yet. The preview fills in as you write.'));
+      els.backlinks.replaceChildren();
+      return;
+    }
     let titles = null;
     const ctx = {
       readOnly: false,
@@ -1023,6 +1094,12 @@
         els.stSel.textContent = '';
       }
     }
+    const lang = isEditable(note) ? langName(note) : '';
+    els.stLang.hidden = !lang;
+    if (els.stLang.textContent !== lang) {
+      els.stLang.textContent = lang;
+      els.stLang.setAttribute('aria-label', `${lang}. Change script language.`);
+    }
     const unlocked = S.keys.size;
     els.stLock.hidden = !unlocked && !(note && note.cipher);
     els.stLock.textContent = note && note.cipher
@@ -1052,13 +1129,14 @@
     else if (isLocked(active())) els.unlockPass.focus();
   }
 
-  function addNote(body, caretPos, folder = '') {
+  function addNote(body, caretPos, folder = '', lang = '') {
     if (S.notes.length >= store.LIMITS.notes) {
       toast(`You have reached ${store.LIMITS.notes} notes. Delete some to make room.`, 'error');
       return null;
     }
     const n = store.createNote(body);
     n.folder = store.cleanFolder(folder);
+    n.lang = codeedit.language(lang) ? lang : '';
     S.notes.push(n);
     S.query = '';
     els.search.value = '';
@@ -1106,7 +1184,7 @@
   function duplicateNote() {
     const note = active();
     if (!isEditable(note) || note.cipher) return;
-    addNote(note.body, undefined, note.folder);
+    addNote(note.body, undefined, note.folder, note.lang);
   }
 
   const UNDO_MS = 10000;
@@ -1386,7 +1464,7 @@
       return;
     }
     // "->" becomes an arrow as it is typed. The replacement raises its own input event, which does the rest once.
-    if (S.settings.arrows && !programmaticInsert && e && e.inputType === 'insertText' && !e.isComposing
+    if (S.settings.arrows && !isScript(note) && !programmaticInsert && e && e.inputType === 'insertText' && !e.isComposing
       && typeof e.data === 'string' && e.data.length === 1
       && els.editor.selectionStart === els.editor.selectionEnd) {
       const r = T.arrowReplacement(value, els.editor.selectionStart, e.data);
@@ -1463,6 +1541,9 @@
     const escaped = S.tabEscape;
     S.tabEscape = false;
 
+    const note = active();
+    if (isScript(note)) { scriptKeydown(e, note, escaped); return; }
+
     if (e.key === 'Tab' && !e.ctrlKey && !e.altKey && !e.metaKey) {
       if (escaped) return; // Esc then Tab moves focus out of the editor.
       e.preventDefault();
@@ -1483,8 +1564,33 @@
     }
   }
 
+  /**
+   * Indentation keys in a script note: the language rules decide, the browser's undo stack keeps each result as
+   * one step. Nothing else (lists, tasks, calculator) runs in a script note.
+   */
+  function scriptKeydown(e, note, escaped) {
+    if (e.isComposing || e.keyCode === 229) return;
+    // AltGr arrives as Ctrl+Alt on Windows and types the brace on many keyboard layouts.
+    const altGr = typeof e.getModifierState === 'function' && e.getModifierState('AltGraph');
+    if (!altGr && (e.ctrlKey || e.altKey || e.metaKey)) return;
+    const ed = els.editor;
+    const { selectionStart: s, selectionEnd: t, value } = ed;
+    let r = null;
+    if (e.key === 'Tab') {
+      if (escaped) return; // Esc then Tab moves focus out of the editor.
+      e.preventDefault(); // Tab never leaves the editor, even when there is nothing to indent or remove.
+      r = codeedit.tab(value, s, t, note.lang, e.shiftKey);
+    } else if (e.key === 'Enter') r = codeedit.enter(value, s, t, note.lang);
+    else if (e.key === 'Backspace') r = codeedit.backspace(value, s, t, note.lang);
+    else if (e.key === '}' || e.key === ')' || e.key === ']') r = codeedit.closer(value, s, t, note.lang, e.key);
+    if (!r) return;
+    e.preventDefault();
+    replaceRange(r.start, r.end, r.insert, r.selStart, r.selEnd);
+  }
+
   /** Pasting a URL over selected text turns it into a Markdown link. */
   function onEditorPaste(e) {
+    if (isScript(active())) return; // code stays as pasted
     const ed = els.editor;
     if (ed.selectionStart === ed.selectionEnd || !e.clipboardData) return;
     const pasted = e.clipboardData.getData('text/plain').trim();
@@ -1499,6 +1605,7 @@
   // ------------------------------------------------------------ slash menu
 
   function updateSlash() {
+    if (isScript(active())) { closeSlash(); return; }
     const ed = els.editor;
     const s = ed.selectionStart;
     if (s !== ed.selectionEnd || document.activeElement !== ed) { closeSlash(); return; }
@@ -1713,7 +1820,9 @@
       C('Note', note && note.pinned ? 'Unpin note' : 'Pin note', togglePin, 'Alt P', !!note),
       C('Note', 'Duplicate note', duplicateNote, null, editable && !note.cipher),
       C('Note', 'Show version history', showHistory, null, editable),
-      C('Note', 'Go to heading', () => setTimeout(() => openPalette('@'), 0), '@', editable),
+      C('Note', 'Go to heading', () => setTimeout(() => openPalette('@'), 0), '@', editable && !isScript(note)),
+      C('Note', 'Script mode: choose a language…', chooseLanguage, null, editable),
+      C('Note', 'Back to a Markdown note', () => setNoteLang(active(), ''), null, editable && isScript(note)),
       C('Note', 'Move to folder…', moveToFolder, null, !!note),
       C('Note', 'Remove from folder', removeFromFolder, null, !!(note && note.folder)),
       C('Note', 'Rename folder…', renameFolder, null, !!(note && note.folder)),
@@ -1799,7 +1908,7 @@
     const q = query.trim();
     if (q.startsWith('@')) {
       const note = active();
-      if (!isEditable(note)) return [];
+      if (!isEditable(note) || isScript(note)) return [];
       const hq = q.slice(1).trim();
       return T.headings(els.editor.value)
         .map((hd) => ({ group: 'Headings', title: `${'  '.repeat(hd.level - 1)}${hd.text}`, keys: `Ln ${hd.line + 1}`, run: () => gotoLine(hd.line), score: hq ? T.fuzzyScore(hq, hd.text) : 1 }))
@@ -2760,7 +2869,15 @@
       if (!ok) return;
       if (!isEditable(note)) { toast('The note was locked. Unlock it and try again.', 'error'); return; }
     }
-    const saved = await exportOut('note', `${T.slugify(titleOf(note))}.md`, bodyOf(note), 'text/markdown;charset=utf-8');
+    let text = bodyOf(note);
+    if (isScript(note)) {
+      // A fence longer than any run of backticks in the code cannot be closed by the code itself.
+      let longest = 0;
+      for (const m of text.matchAll(/`+/g)) longest = Math.max(longest, m[0].length);
+      const fence = '`'.repeat(Math.max(3, longest + 1));
+      text = `${fence}${note.lang}\n${text}${text.endsWith('\n') ? '' : '\n'}${fence}\n`;
+    }
+    const saved = await exportOut('note', `${T.slugify(titleOf(note))}.md`, text, 'text/markdown;charset=utf-8');
     if (saved) toast(`Saved ${saved}.`);
   }
 
@@ -3912,6 +4029,7 @@
     ed.addEventListener('input', onEditorInput);
     ed.addEventListener('keydown', onEditorKeydown);
     ed.addEventListener('paste', onEditorPaste);
+    els.stLang.addEventListener('click', chooseLanguage);
     ['keyup', 'mouseup', 'select', 'focus'].forEach((t) => ed.addEventListener(t, scheduleStatus));
     ed.addEventListener('blur', () => setTimeout(() => { if (document.activeElement !== ed) closeSlash(); }, 120));
     ed.addEventListener('mousedown', () => { arrowMemo = null; closeSlash(); });
