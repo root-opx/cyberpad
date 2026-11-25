@@ -921,10 +921,10 @@
     previewTimer = setTimeout(renderPreview, 120);
   }
 
-  function renderPreview() {
+  function renderPreview(force = false) {
     clearTimeout(previewTimer);
     const note = active();
-    if (S.settings.view === 'edit' || !note) {
+    if ((S.settings.view === 'edit' && !force) || !note) {
       els.preview.replaceChildren();
       els.backlinks.replaceChildren();
       return;
@@ -1664,6 +1664,7 @@
       C('File', 'Show file in folder', revealActive, null, platform.isDesktop && !!(note && note.file)),
       C('File', 'Unlink from file', unlinkActive, null, platform.isDesktop && !!(note && note.file)),
       C('File', 'Export note as Markdown', exportNote, null, editable),
+      C('File', 'Export note as PDF', exportPdf, null, editable),
       C('File', 'Export backup of all notes', exportBackup),
       C('File', 'Export encrypted backup of all notes', exportEncryptedBackup),
       C('File', 'Import a file', () => els.fileInput.click()),
@@ -2699,6 +2700,39 @@
     }
     const saved = await exportOut('note', `${T.slugify(titleOf(note))}.md`, bodyOf(note), 'text/markdown;charset=utf-8');
     if (saved) toast(`Saved ${saved}.`);
+  }
+
+  // Printing is the PDF route: the print stylesheet draws the preview on paper and the
+  // user picks "Save as PDF" in the print dialog. Nothing is written anywhere new.
+  async function exportPdf() {
+    const note = active();
+    if (!isEditable(note)) return;
+    if (note.cipher) {
+      const ok = await confirmDialog('Export this encrypted note as PDF?', 'The PDF is not encrypted. Anyone who can open it can read the note.', 'Export as PDF');
+      if (!ok) return;
+      if (active() !== note || !isEditable(note)) { toast('The note was locked. Unlock it and try again.', 'error'); return; }
+    }
+    const savedTitle = document.title;
+    let restored = false;
+    const restore = () => {
+      if (restored) return;
+      restored = true;
+      window.removeEventListener('afterprint', restore);
+      document.title = savedTitle;
+      // In Write layout the preview was only filled for the print; empty it again.
+      if (S.settings.view === 'edit') renderPreview();
+    };
+    window.addEventListener('afterprint', restore);
+    try {
+      renderPreview(true);
+      document.title = titleOf(note);
+      toast('In the print dialog, choose Save as PDF.');
+      window.print();
+    } finally {
+      // print() blocks until the dialog closes in the engines CyberPad runs on, so this is
+      // the normal path (also when print() throws); afterprint covers engines that return early.
+      restore();
+    }
   }
 
   async function exportBackup() {

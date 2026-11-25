@@ -1379,3 +1379,37 @@ button.sev:hover { box-shadow: 0 0 0 1px currentColor; }
   .result-list.compact .result-row { grid-template-columns: minmax(0, 1fr) auto; }
   .result-list.compact .result-row .result-label { grid-column: 1 / -1; }
 }
+
+/* ---------- print: "Export note as PDF" (the preview on paper) ---------- */
+@media print {
+  :root,
+  [data-theme] {
+    --void: #fff; --panel: #f4f4f4; --raise: #ececec; --line: #b5b5b5; --ink: #111;
+    --dim: #555; --hot: #a3004f; --cool: #00605c; --warn: #7a5600;
+  }
+
+  @page { margin: 18mm; }
+
+  *, *::before, *::after { text-shadow: none !important; }
+
+  html, body, .app, .workspace, .panes, .pane-preview {
+    display: block; height: auto; overflow: visible; background: #fff;
+  }
+
+  .titlebar, .sidebar, .scrim, .statusbar, .findbar, .alertbar, .pane-editor, .backlinks,
+  .copy-btn, .toasts, .boot, .dropzone, .slash, dialog { display: none !important; }
+  body.crt::after { display: none; }
+
+  .workspace[data-view] .pane-preview { display: block; border: 0; }
+
+  .preview { max-width: none; padding: 0; }
+  .preview pre { white-space: pre-wrap; overflow-wrap: anywhere; overflow: visible; }
+  .table-wrap { overflow: visible; }
+  .preview table { width: 100%; }
+  .preview th, .preview td { overflow-wrap: anywhere; }
+
+  .preview a[href^="http"]::after { content: " (" attr(href) ")"; font-size: var(--fs-xs); color: var(--dim); overflow-wrap: anywhere; }
+
+  h1, h2, h3 { break-after: avoid; }
+  pre, blockquote, tr { break-inside: avoid; }
+}
