@@ -35,6 +35,10 @@ desktop/          Windows host, xUnit tests, build.ps1
 | Neon | `neon` | the default |
 | Amber | `amber` | amber terminal |
 | Terminal green | `terminal` | green phosphor |
+| Light | `light` | off-white background, dark text |
+| Dark | `dark` | neutral dark grey, no glow |
+
+The System setting resolves to Light or Dark and is never a `data-theme` value.
 
 - **Colour tokens:** `--void` (screen), `--panel`, `--raise`, `--line`, `--ink`, `--dim`, `--hot` (active/danger), `--cool` (links/focus/success), `--warn`, `--sel`, `--glow-strength`.
 - **Type:** `--mono` (Cascadia Mono and fallbacks) and `--display` (OCR A and fallbacks). The size scale is `--fs-*`.

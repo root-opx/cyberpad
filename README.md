@@ -70,9 +70,9 @@ Then open http://localhost:8787.
 - The same templates are in the palette under Insert. Block templates always start on a new line.
 
 **Look and feel**
-- Three screen themes, picked from the menu in the title bar or the palette: Neon, Amber, and Terminal green (classic monochrome green screen).
-- In the desktop app, the Windows title bar takes the theme's colour (Windows 11; Windows 10 shows its own dark bar).
-- A CRT effect (scanlines, glow, vignette) that you can switch off. Flicker is disabled when your system asks for reduced motion.
+- Six theme choices, picked from the menu in the title bar or the palette: System, Light, Dark, Neon, Amber, and Terminal green (classic monochrome green screen). Neon is the default. System follows your operating system's light or dark setting: Light in light mode, Dark in dark mode, and it switches live when the setting changes.
+- In the desktop app, the Windows title bar takes the colour of the theme on screen, for all five themes (Windows 11; Windows 10 shows its own dark bar).
+- A CRT effect (scanlines, glow, vignette) that you can switch off. On Light it gives faint scanlines only. On Dark it gives scanlines and dark corners, with no text glow. Flicker is disabled when your system asks for reduced motion.
 - Optional synthesized typing sounds and a boot screen you can skip.
 - Zen mode (`Alt+Z`), and a layout that works on phone screens.
 
@@ -189,7 +189,7 @@ They live in `%LOCALAPPDATA%\CyberPad` (paste it into Explorer's address bar). T
 
 ### Desktop app
 
-- **Narrow host bridge.** The page can send only a fixed list of message types: load, save, quarantine, export, flushed, flushFailed, theme and the linked-file messages (save as, relink, open, write, read, check, unlink, reveal, prune). Each is checked for the exact origin (`https://cyberpad.example/`), a known `type`, exact field types, no extra fields, and size limits (64 Mi characters of note text, 4 Mi for a linked file, 120-character file names, link IDs of exactly 32 hex characters). Anything else is rejected and written to `cyberpad.log` by type and reason only; note content is never logged. The `theme` message carries only `neon`, `amber` or `terminal`; the colours are fixed in the host, and any other value is rejected. There is no message to read or write an arbitrary path or run a command. Export file names are reduced to a safe name with a forced extension, and the user picks the real path in the Save dialog.
+- **Narrow host bridge.** The page can send only a fixed list of message types: load, save, quarantine, export, flushed, flushFailed, theme and the linked-file messages (save as, relink, open, write, read, check, unlink, reveal, prune). Each is checked for the exact origin (`https://cyberpad.example/`), a known `type`, exact field types, no extra fields, and size limits (64 Mi characters of note text, 4 Mi for a linked file, 120-character file names, link IDs of exactly 32 hex characters). Anything else is rejected and written to `cyberpad.log` by type and reason only; note content is never logged. The `theme` message carries only `neon`, `amber`, `terminal`, `light` or `dark`; with System chosen the page sends `light` or `dark`, never `system`, and sends again when the system setting changes; the colours are fixed in the host, and any other value is rejected. There is no message to read or write an arbitrary path or run a command. Export file names are reduced to a safe name with a forced extension, and the user picks the real path in the Save dialog.
 - **Linked files.** The page only ever sees link IDs and file names; the host holds every path and accepts only `.txt`, `.md` and `.cpnote` (also from the command line and the pipe). Writes go through a hidden temporary file in the target folder and a swap, and a file that changed since CyberPad last read it is not overwritten unless you choose to. "Open with" hands paths to a running window over a named pipe that only your own Windows account can open. It carries one path of at most 32,767 characters, which is checked again before use, and at most 20 pending opens are kept. At startup CyberPad switches its working directory to its own folder, so nothing is ever resolved against the folder of a file you opened.
 - **Locked-down web view.** The app loads only from its own virtual host `cyberpad.example` (a reserved name that never resolves), keeping the strict CSP. Navigation anywhere else is cancelled, new windows are cancelled, and downloads are cancelled. Every permission request (camera, microphone, location, clipboard read, and so on) is denied. Dev tools and browser shortcut keys are off in release builds, password and form autofill are off, and SmartScreen reputation checks are off for the local page.
 - **External links.** A clicked link opens in the default browser only if it is a well-formed `http`, `https`, or `mailto` URL. `file:`, `javascript:`, `ms-settings:`, UNC paths, and every other scheme are ignored.
@@ -227,6 +227,8 @@ Manual checks for the desktop app:
 - Click an NVD link in the preview: it opens in the default browser.
 - Start `CyberPad.exe` a second time: the first window comes to the front.
 - With the CRT effect off, the Windows title bar is the same colour as the app's bar in each theme and changes when the theme changes. With CRT on it is the same base colour without the scanlines.
+- Choose System, then switch Windows between light and dark mode: the app and its title bar follow.
+- Choose Light: the title bar is light with dark text, and the CRT switch gives faint scanlines only.
 - Minimise, maximise, close, drag, snap and the title bar's system menu still work.
 - Linked files (use a scratch folder):
   - Save a note as `.md`, edit it, and see the file change on disk.
