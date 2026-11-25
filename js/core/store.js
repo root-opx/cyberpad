@@ -104,7 +104,8 @@
   function cleanFolder(value) {
     if (typeof value !== 'string' || value.length > LIMITS.folderName * 8 || BAD_FOLDER_RE.test(value)) return '';
     const name = value.trim().replace(/\s+/g, ' ');
-    return name.length > LIMITS.folderName ? '' : name;
+    if (name.length > LIMITS.folderName) return '';
+    return /[\p{L}\p{N}\p{P}\p{S}]/u.test(name) ? name : ''; // a name of invisible characters is no name
   }
 
   function validateNote(n, now = Date.now()) {
@@ -339,8 +340,14 @@
   function mergeNotes(existing, incoming) {
     const ids = new Set(existing.map((n) => n.id));
     const room = Math.max(0, LIMITS.notes - existing.length);
+    // Folders in use, existing notes first: an imported note may not bring the total past LIMITS.folders.
+    const folders = new Set(existing.map((n) => n.folder).filter(Boolean));
     const added = incoming.slice(0, room).map((raw) => {
       const n = { ...raw, file: null }; // an imported note is never linked to a file
+      if (n.folder && !folders.has(n.folder)) {
+        if (folders.size >= LIMITS.folders) n.folder = '';
+        else folders.add(n.folder);
+      }
       if (!ids.has(n.id)) { ids.add(n.id); return n; }
       const copy = { ...n, id: newId() };
       ids.add(copy.id);

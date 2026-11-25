@@ -257,10 +257,23 @@ test('validateNotes keeps a duplicate link id only on the first note', () => {
 test('cleanFolder accepts a tidy name and rejects everything else', () => {
   assert.equal(store.cleanFolder('  Client   work '), 'Client work');
   assert.equal(store.cleanFolder('a'.repeat(40)), 'a'.repeat(40));
-  for (const bad of ['', '   ', 'a'.repeat(41), 'a/b', 'a\b', 'a\nb', 'a\u0000b', 'a\u007fb', 7, null, undefined, {}, ['x'], true]) {
+  for (const bad of ['', '   ', 'a'.repeat(41), 'a/b', 'a\\b', 'a\u0008b', 'a\nb', '​', '​‍', '⁠ ﻿', '\u0085', 'a\u0000b', 'a\u007fb', 7, null, undefined, {}, ['x'], true]) {
     assert.equal(store.cleanFolder(bad), '');
   }
   assert.equal(store.cleanFolder('__proto__'), '__proto__');
+  assert.equal(store.cleanFolder('A​B'), 'A​B');
+});
+
+test('mergeNotes does not push the folder count past the limit', () => {
+  const mk = (i, folder) => ({ ...store.createNote('n', 1, `id-${String(i).padStart(8, '0')}`), folder });
+  const existing = Array.from({ length: store.LIMITS.folders }, (_, i) => mk(i, `F${i}`));
+  const incoming = [mk(500, 'Brand new'), mk(501, 'F7'), mk(502, 'Brand new')];
+  const r = store.mergeNotes(existing, incoming);
+  const byId = (id) => r.notes.find((n) => n.id === id);
+  assert.equal(byId('id-00000500').folder, '');
+  assert.equal(byId('id-00000501').folder, 'F7');
+  assert.equal(byId('id-00000502').folder, '');
+  assert.equal(store.folderList(r.notes).length, store.LIMITS.folders);
 });
 
 test('notes keep a valid folder through validate, serialize and backup', () => {

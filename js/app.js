@@ -74,7 +74,7 @@
 
   const S = {
     notes: [],
-    settings: { ...store.DEFAULT_SETTINGS },
+    settings: store.validateSettings(null), // fresh defaults, with their own collapsedFolders array
     activeId: null,
     hostTheme: null,
     query: '',
@@ -99,6 +99,7 @@
     unlockFails: 0,
     unlockBlockedUntil: 0,
     unlockBusy: false,
+    pendingDelete: null,    // the latest deleted note, kept for undo: { note, index, link, blankId, timer, toastEl }
     secretIgnored: new Map(), // note id -> signature of findings the user chose to ignore (memory only)
     secretFindings: [],
     tabEscape: false,
@@ -604,14 +605,12 @@
     document.title = note ? `${titleOf(note)} | CyberPad` : 'CyberPad';
   }
 
-  function renderList() {
-    const list = visibleNotes();
-    const q = S.query.trim();
-    const frag = document.createDocumentFragment();
-    if (!list.length) {
-      frag.append(h('li', { class: 'empty-list' }, S.query || S.tag ? 'No notes match. Clear the filter, or press Alt+N to start one.' : 'No notes yet. Press Alt+N to start one.'));
-    }
-    for (const n of list.slice(0, 500)) {
+  const LIST_CAP = 500;
+  const isFlatList = () => !!(S.query.trim() || S.tag);
+
+  /** One sidebar row: the note button plus its delete button. `grouped` rows sit under a folder header and can be dragged. */
+  function noteRow(n, q, grouped) {
+    {
       const m = metaOf(n);
       const mark = n.pinned ? '◆' : n.cipher ? (isLocked(n) ? '▣' : '□') : '';
       const extra = [];
@@ -629,20 +628,214 @@
       }
       const linked = platform.isDesktop && !!n.file;
       const states = [n.pinned && 'pinned', n.cipher && (isLocked(n) ? 'encrypted, locked' : 'encrypted, unlocked'), linked && 'linked to a file'].filter(Boolean).join(', ');
-      frag.append(h('li', null, h('button', {
-        type: 'button',
-        class: 'note-item',
-        'data-id': n.id,
-        'aria-current': String(n.id === S.activeId),
-      },
-      h('span', { class: 'note-mark', 'aria-hidden': 'true' }, mark),
-      h('span', { class: 'note-title' }, linked ? h('span', { class: 'note-file', 'aria-hidden': 'true' }, '⇄') : null, m.title,
-        states ? h('span', { class: 'sr-only' }, ` (${states})`) : null),
-      h('span', { class: 'note-meta' }, h('span', null, T.relativeTime(n.updated)), extra))));
+      // In the flat (search or tag) list there are no headers, so the row names its folder.
+      const folderTag = !grouped && n.folder ? h('span', { class: 'note-folder' }, n.folder) : null;
+      const li = h('li', { class: grouped && n.folder ? 'note-row in-folder' : 'note-row', 'data-id': n.id, 'data-group': grouped ? n.folder : null },
+        h('button', {
+          type: 'button',
+          class: 'note-item',
+          'data-id': n.id,
+          'aria-current': String(n.id === S.activeId),
+        },
+        h('span', { class: 'note-mark', 'aria-hidden': 'true' }, mark),
+        h('span', { class: 'note-title' }, linked ? h('span', { class: 'note-file', 'aria-hidden': 'true' }, '⇄') : null, m.title,
+          states ? h('span', { class: 'sr-only' }, ` (${states})`) : null),
+        h('span', { class: 'note-meta' }, h('span', null, T.relativeTime(n.updated)), folderTag, extra)),
+        h('button', { type: 'button', class: 'note-del', 'data-id': n.id, 'aria-label': `Delete ${m.title}` }, '×'));
+      // draggable is not in the h() allow-list and the allow-list is deliberately not widened: it is set as a property, and the value is a fixed boolean, never data.
+      if (grouped) li.draggable = true;
+      return li;
+    }
+  }
+
+  function renderList() {
+    const list = visibleNotes();
+    const q = S.query.trim();
+    const flat = isFlatList();
+    const frag = document.createDocumentFragment();
+    if (!list.length) {
+      frag.append(h('li', { class: 'empty-list' }, S.query || S.tag ? 'No notes match. Clear the filter, or press Alt+N to start one.' : 'No notes yet. Press Alt+N to start one.'));
+    }
+    let rows = 0;
+    const add = (n, grouped) => { if (rows < LIST_CAP) { frag.append(noteRow(n, q, grouped)); rows += 1; } };
+    if (flat) {
+      for (const n of list) add(n, false);
+    } else {
+      const byFolder = new Map();
+      const loose = [];
+      for (const n of list) {
+        if (!n.folder) { loose.push(n); continue; }
+        if (!byFolder.has(n.folder)) byFolder.set(n.folder, []);
+        byFolder.get(n.folder).push(n);
+      }
+      const closed = new Set(S.settings.collapsedFolders);
+      for (const f of store.folderList(S.notes)) {
+        const open = !closed.has(f.name);
+        frag.append(h('li', { class: 'folder-li', 'data-group': f.name },
+          h('button', { type: 'button', class: 'folder-head', 'aria-expanded': String(open), 'data-folder': f.name },
+            h('span', { class: 'folder-caret', 'aria-hidden': 'true' }, open ? '▾' : '▸'),
+            h('span', { class: 'folder-name' }, f.name),
+            h('span', { class: 'count' }, f.count))));
+        if (open) for (const n of byFolder.get(f.name) || []) add(n, true);
+      }
+      for (const n of loose) add(n, true);
     }
     els.noteList.replaceChildren(frag);
     els.filterRow.hidden = !S.tag;
     els.filterLabel.textContent = S.tag ? `Tagged #${S.tag}` : '';
+  }
+
+  // ---------------------------------------------------------------- folders
+
+  const folderHeadFor = (name) => [...els.noteList.querySelectorAll('.folder-head')].find((b) => b.dataset.folder === name) || null;
+
+  /** Forget closed-state for folders that no longer exist. Always a new array: the settings object never shares one. */
+  function pruneCollapsed() {
+    const live = new Set(store.folderList(S.notes).map((f) => f.name));
+    S.settings.collapsedFolders = S.settings.collapsedFolders.filter((name) => live.has(name));
+  }
+
+  function toggleFolder(name) {
+    if (!store.folderList(S.notes).some((f) => f.name === name)) return;
+    const closed = S.settings.collapsedFolders;
+    S.settings.collapsedFolders = closed.includes(name) ? closed.filter((x) => x !== name) : [...closed, name];
+    pruneCollapsed();
+    saveSettings();
+    renderList();
+    const head = folderHeadFor(name);
+    if (head) head.focus();
+  }
+
+  function expandFolder(name) {
+    if (name && S.settings.collapsedFolders.includes(name)) S.settings.collapsedFolders = S.settings.collapsedFolders.filter((x) => x !== name);
+  }
+
+  /** Puts a note in a folder ('' for none). Returns whether anything changed. `name` is already cleaned. */
+  function setNoteFolder(note, name) {
+    if (note.folder === name) return false;
+    note.folder = name;
+    if (note.id === S.activeId) expandFolder(name);
+    pruneCollapsed();
+    persistNow();
+    renderList();
+    return true;
+  }
+
+  const FOLDER_NAME_MSG = `Folder names are 1 to ${store.LIMITS.folderName} characters, without / or \\.`;
+  const FOLDER_LIMIT_MSG = `You already have ${store.LIMITS.folders} folders. Move the note into one of them.`;
+
+  /** Dialog with a name box and the existing folders as buttons. Resolves to the cleaned name, or null when cancelled. */
+  function folderNameDialog({ title, label, initial, submit, checkLimit }) {
+    const folders = store.folderList(S.notes);
+    const input = h('input', { type: 'text', id: 'folder-name', maxlength: store.LIMITS.folderName, autocomplete: 'off', value: initial });
+    const err = h('p', { class: 'form-error', role: 'alert' });
+    const choices = folders.length
+      ? h('div', { class: 'folder-choices', role: 'group', 'aria-label': 'Existing folders' }, folders.map((f) => {
+        const b = h('button', { type: 'button', class: 'chip' }, f.name);
+        b.addEventListener('click', () => { input.value = f.name; err.textContent = ''; input.focus(); });
+        return b;
+      }))
+      : null;
+    input.addEventListener('focus', () => input.select(), { once: true });
+    return showDialog({
+      title,
+      initialFocus: '#folder-name',
+      body: [h('label', { class: 'field' }, h('span', null, label), input), choices, err],
+      actions: [{ label: 'Cancel', value: null }, { label: submit, submit: true, className: 'btn-primary' }],
+      onSubmit: () => {
+        const name = store.cleanFolder(input.value);
+        if (!name) { err.textContent = FOLDER_NAME_MSG; input.focus(); return undefined; }
+        if (checkLimit && !folders.some((f) => f.name === name) && folders.length >= store.LIMITS.folders) {
+          err.textContent = FOLDER_LIMIT_MSG;
+          input.focus();
+          return undefined;
+        }
+        return name;
+      },
+    });
+  }
+
+  async function moveToFolder() {
+    const note = active();
+    if (!note) return;
+    const name = await folderNameDialog({ title: 'Move to folder', label: 'Folder name', initial: note.folder, submit: 'Move', checkLimit: true });
+    if (!name || !noteById(note.id)) return;
+    if (setNoteFolder(note, name)) toast(`Moved to ${name}.`);
+  }
+
+  function removeFromFolder() {
+    const note = active();
+    if (!note || !note.folder) return;
+    const old = note.folder;
+    if (setNoteFolder(note, '')) toast(`Removed from ${old}.`);
+  }
+
+  async function renameFolder() {
+    const note = active();
+    if (!note || !note.folder) return;
+    const old = note.folder;
+    const name = await folderNameDialog({ title: 'Rename folder', label: 'Folder name', initial: old, submit: 'Rename', checkLimit: false });
+    if (!name || name === old) return;
+    const merging = S.notes.some((n) => n.folder === name);
+    if (merging && !(await confirmDialog(`Merge into "${name}"?`, `Every note in "${old}" moves into "${name}".`, 'Merge folders'))) return;
+    const wasClosed = S.settings.collapsedFolders.includes(old);
+    for (const n of S.notes) if (n.folder === old) n.folder = name;
+    if (wasClosed && !merging) S.settings.collapsedFolders = [...S.settings.collapsedFolders, name];
+    pruneCollapsed();
+    persistNow();
+    renderList();
+    toast(`Renamed to ${name}.`);
+  }
+
+  // Drag a note row onto a folder header (or onto the loose notes) to move it. The id lives here, never in dataTransfer text.
+  let dragId = null;
+
+  function clearDropMarks() {
+    els.noteList.classList.remove('drop-loose');
+    for (const el of els.noteList.querySelectorAll('.drop-target')) el.classList.remove('drop-target');
+  }
+
+  function dropGroup(e) {
+    const li = e.target instanceof Element ? e.target.closest('li[data-group]') : null;
+    return li && els.noteList.contains(li) ? li : null;
+  }
+
+  function wireFolderDrag() {
+    const list = els.noteList;
+    list.addEventListener('dragstart', (e) => {
+      const row = e.target instanceof Element ? e.target.closest('.note-row') : null;
+      if (!row || isFlatList() || !e.dataTransfer) { dragId = null; return; }
+      dragId = row.dataset.id;
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('application/x-cyberpad-note', '1'); // a marker only (some browsers need data to start a drag)
+    });
+    list.addEventListener('dragover', (e) => {
+      if (!dragId || isFlatList()) return;
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+      clearDropMarks();
+      const li = dropGroup(e);
+      if (li && li.dataset.group) li.classList.add('drop-target');
+      else list.classList.add('drop-loose');
+    });
+    list.addEventListener('dragleave', (e) => { if (!e.relatedTarget || !list.contains(e.relatedTarget)) clearDropMarks(); });
+    list.addEventListener('drop', (e) => {
+      if (!dragId) return;
+      e.preventDefault();
+      const id = dragId;
+      dragId = null;
+      clearDropMarks();
+      if (isFlatList()) return;
+      const li = dropGroup(e);
+      const group = li ? li.dataset.group : '';
+      const note = noteById(id);
+      if (!note) return;
+      // Only an existing folder or no folder is a target, so no name is typed or created here.
+      if (group && !store.folderList(S.notes).some((f) => f.name === group)) return;
+      const old = note.folder;
+      if (setNoteFolder(note, group)) toast(group ? `Moved to ${group}.` : `Removed from ${old}.`);
+    });
+    list.addEventListener('dragend', () => { dragId = null; clearDropMarks(); });
   }
 
   function renderTags() {
@@ -742,6 +935,7 @@
     if (!noteById(id)) return;
     closeSlash();
     S.activeId = id;
+    expandFolder(noteById(id).folder); // opening a note shows the folder it is in
     schedulePersist();
     renderEditor();
     renderList();
@@ -754,12 +948,13 @@
     else if (isLocked(active())) els.unlockPass.focus();
   }
 
-  function addNote(body, caretPos) {
+  function addNote(body, caretPos, folder = '') {
     if (S.notes.length >= store.LIMITS.notes) {
       toast(`You have reached ${store.LIMITS.notes} notes. Delete some to make room.`, 'error');
       return null;
     }
     const n = store.createNote(body);
+    n.folder = store.cleanFolder(folder);
     S.notes.push(n);
     S.query = '';
     els.search.value = '';
@@ -771,8 +966,10 @@
   }
 
   function newNote() {
-    if (S.tag) addNote(`\n\n#${S.tag}`, 0);
-    else addNote('', 0);
+    const note = active();
+    const folder = note ? note.folder : ''; // a new note joins the folder of the note that was open
+    if (S.tag) addNote(`\n\n#${S.tag}`, 0, folder);
+    else addNote('', 0, folder);
   }
 
   function openDaily() {
@@ -804,28 +1001,76 @@
   function duplicateNote() {
     const note = active();
     if (!isEditable(note) || note.cipher) return;
-    addNote(note.body);
+    addNote(note.body, undefined, note.folder);
   }
 
-  async function deleteNote() {
-    const note = active();
+  const UNDO_MS = 10000;
+
+  /** Makes the pending delete final. Only now is the host told to forget a linked file; best effort, a failure is left for the next prune. */
+  function finalizePendingDelete() {
+    const p = S.pendingDelete;
+    if (!p) return;
+    S.pendingDelete = null;
+    clearTimeout(p.timer);
+    if (p.toastEl) p.toastEl.remove();
+    if (platform.isDesktop) forgetFileState(p.note.id);
+    if (p.link) forgetHostLink(p.link.linkId);
+  }
+
+  function undoDelete(p) {
+    if (S.pendingDelete !== p) return; // already final
+    if (noteById(p.note.id)) return; // a note with this id exists: never two notes with one id
+    if (S.notes.length >= store.LIMITS.notes) {
+      toast(`You have reached ${store.LIMITS.notes} notes. Delete some to make room, then press Undo again.`, 'error');
+      return;
+    }
+    S.pendingDelete = null;
+    clearTimeout(p.timer);
+    // The blank note made when the last note was deleted goes, unless the user has started using it.
+    const blank = p.blankId ? noteById(p.blankId) : null;
+    if (blank && !blank.body && !blank.cipher && !blank.pinned && !blank.folder && !blank.file && !blank.history.length && blank.updated === blank.created) {
+      S.notes = S.notes.filter((n) => n.id !== blank.id);
+      S.meta.delete(blank.id);
+    }
+    S.notes.splice(Math.min(p.index, S.notes.length), 0, p.note); // an encrypted note has no key in S.keys, so it returns locked
+    S.query = '';
+    els.search.value = '';
+    openNote(p.note.id);
+    renderTags();
+    persistNow();
+    renderAll();
+  }
+
+  async function deleteNote(note = active()) {
     if (!note) return;
+    const fromList = els.noteList.contains(document.activeElement);
     const link = platform.isDesktop && note.file ? note.file : null;
-    const ok = await confirmDialog(`Delete "${titleOf(note)}"?`, `This cannot be undone. Export a backup first if you might need it later.${link ? ' The file stays where it is.' : ''}`, 'Delete note', true);
-    if (!ok) return;
+    const ok = await confirmDialog(`Delete "${titleOf(note)}"?`, `You can undo this for ${UNDO_MS / 1000} seconds. After that the note is gone, so export a backup first if you might need it later.${link ? ' The file stays where it is.' : ''}`, 'Delete note', true);
+    if (!ok || !noteById(note.id)) return;
+    // Pending edits of an unlocked encrypted note are sealed first, so Undo brings back its latest text.
+    if (note.cipher) { await flushSeals(); if (!noteById(note.id)) return; }
+    finalizePendingDelete(); // only the latest delete can be undone
     clearTimeout(S.sealTimers.get(note.id));
     S.sealTimers.delete(note.id);
+    const index = S.notes.findIndex((n) => n.id === note.id);
     S.notes = S.notes.filter((n) => n.id !== note.id);
     S.keys.delete(note.id);
     S.plain.delete(note.id);
     S.meta.delete(note.id);
-    if (platform.isDesktop) forgetFileState(note.id);
-    if (!S.notes.length) S.notes.push(store.createNote(''));
+    let blankId = null;
+    if (!S.notes.length) { const blank = store.createNote(''); blankId = blank.id; S.notes.push(blank); }
     S.activeId = sortedNotes()[0].id;
+    pruneCollapsed();
     persistNow();
     renderAll();
-    toast('Note deleted.');
-    if (link) forgetHostLink(link.linkId); // best effort: a failure is left for the next prune
+    const p = { note, index, link, blankId, timer: 0, toastEl: null };
+    S.pendingDelete = p;
+    p.toastEl = toast('Note deleted.', 'info', [{ label: 'Undo', fn: () => undoDelete(p) }]);
+    p.timer = setTimeout(finalizePendingDelete, UNDO_MS);
+    if (fromList) {
+      const row = [...els.noteList.querySelectorAll('.note-item')].find((b) => b.dataset.id === S.activeId);
+      if (row) row.focus();
+    }
   }
 
   function setTag(tag) {
@@ -1270,7 +1515,10 @@
       C('Note', 'Duplicate note', duplicateNote, null, editable && !note.cipher),
       C('Note', 'Show version history', showHistory, null, editable),
       C('Note', 'Go to heading', () => setTimeout(() => openPalette('@'), 0), '@', editable),
-      C('Note', 'Delete note', deleteNote, null, !!note),
+      C('Note', 'Move to folder…', moveToFolder, null, !!note),
+      C('Note', 'Remove from folder', removeFromFolder, null, !!(note && note.folder)),
+      C('Note', 'Rename folder…', renameFolder, null, !!(note && note.folder)),
+      C('Note', 'Delete note', () => deleteNote(), null, !!note),
       C('File', 'Save', saveCommand, 'Ctrl S', platform.isDesktop && !!note),
       C('File', 'Save as file…', () => saveAsFileFor(active()), 'Ctrl Shift S', platform.isDesktop && !!note),
       C('File', 'Open file…', openFileCommand, 'Ctrl O', platform.isDesktop),
@@ -3246,6 +3494,7 @@
     els.toasts.append(t);
     while (els.toasts.children.length > 4) els.toasts.firstElementChild.remove();
     setTimeout(() => t.remove(), buttons.length ? 12000 : (kind === 'error' ? 7000 : 3500));
+    return t;
   }
 
   function copyText(text) {
@@ -3440,9 +3689,22 @@
     });
 
     els.noteList.addEventListener('click', (e) => {
-      const b = e.target.closest('.note-item');
+      const t = e.target instanceof Element ? e.target : null;
+      if (!t) return;
+      const del = t.closest('.note-del');
+      if (del) { const n = noteById(del.dataset.id); if (n) deleteNote(n); return; }
+      const head = t.closest('.folder-head');
+      if (head) { toggleFolder(head.dataset.folder); return; }
+      const b = t.closest('.note-item');
       if (b) openNote(b.dataset.id);
     });
+    els.noteList.addEventListener('keydown', (e) => {
+      if (e.key !== 'Delete' || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+      const b = e.target instanceof Element ? e.target.closest('.note-item') : null;
+      const n = b ? noteById(b.dataset.id) : null;
+      if (n) { e.preventDefault(); deleteNote(n); }
+    });
+    wireFolderDrag();
 
     els.tagList.addEventListener('click', (e) => {
       const b = e.target.closest('[data-tag]');
@@ -3584,6 +3846,7 @@
         }
       });
     }
+    window.addEventListener('pagehide', finalizePendingDelete);
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'hidden') {
         if (S.saveTimer) saveNow();
@@ -3614,6 +3877,7 @@
     if (platform.isDesktop) {
       // Resolves true only when every change is saved, in notes.json and in linked files; false makes the host ask before closing.
       platform.onFlushRequest(async () => {
+        finalizePendingDelete();
         await flushSeals();
         if (await saveNow()) syncLinkedFiles(true);
         await files.queue.idle();
