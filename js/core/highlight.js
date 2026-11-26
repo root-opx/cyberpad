@@ -801,7 +801,7 @@
 
   /*
    * States: '0', and 'yb<n>' (n = 0..99) inside a block scalar whose header sat at
-   * indentation n; deeper headers are stored as 99.
+   * indentation n; a header deeper than 99 does not open one.
    */
   function runYaml(line, st, add) {
     const n = line.length;
@@ -852,11 +852,11 @@
         }
       }
     }
-    if (hdrCol >= 0) {
+    if (hdrCol >= 0 && hdrCol <= YAML_MAX_INDENT) { // a header deeper than 99 does not open a block scalar
       const h = yamlHeader(line, i);
       if (h >= 0) {
         if (h < n) add(h, n, 'comment');
-        return 'yb' + Math.min(hdrCol, YAML_MAX_INDENT);
+        return 'yb' + hdrCol;
       }
     }
     while (i < n) {

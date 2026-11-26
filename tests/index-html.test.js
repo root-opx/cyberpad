@@ -55,3 +55,11 @@ test('ctf.js is loaded once, after highlight.js and before app.js', () => {
   assert.ok(html.indexOf('js/core/highlight.js') < html.indexOf('js/core/ctf.js'));
   assert.ok(html.indexOf('js/core/ctf.js') < html.indexOf('js/app.js'));
 });
+
+test('the copy and cut listeners never receive noteSensitiveCopy directly (an Event would count as force)', () => {
+  const app = fs.readFileSync(path.join(__dirname, '..', 'js', 'app.js'), 'utf8');
+  const lines = app.split('\n').filter((l) => /addEventListener\(\s*'(copy|cut)'/.test(l));
+  assert.ok(lines.length >= 2, 'copy and cut listeners present');
+  for (const l of lines) assert.ok(!/,\s*noteSensitiveCopy\s*\)/.test(l), l.trim());
+  assert.match(app, /force !== true/, 'only a literal true forces the clipboard clear');
+});

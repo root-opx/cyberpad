@@ -410,6 +410,38 @@ test('caesarBruteForce returns 25 shifts, capped, and nothing for bad input', ()
   for (const r of C.caesarBruteForce('A'.repeat(50000))) assert.ok(r.output.length <= 2000);
 });
 
+test('xorBruteForce: a short input with a flag lists the flag key first, and prefixes are optional and validated', () => {
+  const hex = Buffer.from('flag{xor}').map((b) => b ^ 0x42).toString('hex');
+  assert.equal(hex, '242e2325393a2d303f');
+  const res = C.xorBruteForce(hex);
+  assert.equal(res[0].key, 0x42);
+  assert.equal(res[0].output, 'flag{xor}');
+  assert.ok(res.length > 10 && res.length <= C.LIMITS.results);
+  const custom = Buffer.from('zz{xor}').map((b) => b ^ 0x11).toString('hex');
+  assert.equal(C.xorBruteForce(custom, ['zz'])[0].key, 0x11);
+  assert.equal(C.xorBruteForce(hex, 'nonsense')[0].key, 0x42);
+  for (const r of res) assert.ok(r.output.length <= C.LIMITS.resultChars);
+});
+
+test('xorBruteForce: 100,000 hex characters stay under a second', () => {
+  const hex = '41'.repeat(50000);
+  let best = Infinity;
+  for (let i = 0; i < 3; i++) {
+    const t0 = process.hrtime.bigint();
+    C.xorBruteForce(hex);
+    best = Math.min(best, Number(process.hrtime.bigint() - t0) / 1e6);
+  }
+  assert.ok(best < 1000, `best of 3: ${best} ms`);
+});
+
+test('tryDecodings: Caesar results need two common words or a flag', () => {
+  assert.ok(!C.tryDecodings('xyzzy plugh').some((r) => r.path.includes('caesar')));
+  const shifted = (str, k) => str.replace(/[a-z]/g, (c) => String.fromCharCode(((c.charCodeAt(0) - 97 + k) % 26) + 97));
+  assert.ok(C.tryDecodings(shifted('attack at dawn', 3)).some((r) => r.output === 'attack at dawn'));
+  const f = C.tryDecodings(shifted('flag{shifted}', 7)).find((r) => r.path.includes('caesar'));
+  assert.ok(f && f.output === 'flag{shifted}');
+});
+
 test('xorBruteForce: hex, Base64 or raw bytes in; the ten most readable keys out', () => {
   const plain = 'the quick brown fox jumps over the lazy dog';
   const hex = Buffer.from(plain).map((b) => b ^ 0x2a).toString('hex');
@@ -863,7 +895,7 @@ test('parseChallenge reads the template and rejects other text', () => {
   assert.equal(solved.solved, true);
   assert.equal(solved.flag, 'flag{x}');
   assert.equal(C.parseChallenge(CHALLENGE_TEXT.replace('- Status: unsolved', '- Status: Solved')).solved, true);
-  assert.equal(C.parseChallenge(CHALLENGE_TEXT.replace('- Flag:', '- Flag: flag{y}')).solved, true); // a flag alone counts as solved
+  assert.equal(C.parseChallenge(CHALLENGE_TEXT.replace('- Flag:', '- Flag: flag{y}')).solved, false); // a flag alone does not: only the Status line decides
   assert.equal(C.parseChallenge(CHALLENGE_TEXT.replace('- Status: unsolved', '- Status: not solved')).solved, false);
   assert.equal(C.parseChallenge(CHALLENGE_TEXT.replace('- Status: unsolved', '- Status: unsolved (was solved?)')).solved, false);
   assert.equal(C.parseChallenge('# Just a note\n\nnothing here'), null);

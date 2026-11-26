@@ -390,7 +390,8 @@
     // A dialog opened on an unlocked encrypted note may show its plaintext, and
     // its follow-up action must not run against a locked note: cancel it.
     // A dialog that lists text from encrypted notes (flags found in all notes) is marked sensitive and closes on any lock.
-    if (finishCurrentDialog && (dialogSensitive || (n && n.cipher))) finishCurrentDialog(null);
+    // A sensitive dialog closes on any lock. Any other closes when the active note (the one now locking) is encrypted.
+    if (finishCurrentDialog && (dialogSensitive || (n && n.cipher && S.keys.has(n.id)))) finishCurrentDialog(null);
     if (els.palette.open) closePalette();
     S.keys.clear();
     S.plain.clear();
@@ -929,7 +930,7 @@
     const v = els.editor.value;
     const lines = countLines(v);
     const tooLong = isScript(note) ? '' : lines > GUTTER_WRAP_MAX ? 'lines' : v.length > GUTTER_WRAP_CHARS ? 'chars' : '';
-    if (tooLong !== g.tooLong || (g.on && Math.max(2, String(lines).length) !== g.digits)) { updateGutter(); return; }
+    if (tooLong !== g.tooLong || (g.on && Math.max(2, String(lines).length) !== g.digits)) { updateGutter(); updateHl(); return; }
     g.lines = lines;
     g.caret = lineAt(v, els.editor.selectionStart);
     scheduleMeasure();
@@ -965,7 +966,7 @@
   const HL_OVERSCAN = 3;
   const HL_CHUNK_CACHE = 48;
   const HL_TOKEN_TYPES = new Set(['comment', 'string', 'keyword', 'number', 'constant', 'tag', 'attr', 'section', 'variable']);
-  const HL_SIMPLE_EDITS = new Set(['insertText', 'insertLineBreak', 'insertParagraph', 'insertFromPaste', 'insertReplacementText', 'insertCompositionText', 'deleteContentBackward', 'deleteContentForward', 'deleteByCut']);
+  const HL_SIMPLE_EDITS = new Set(['insertText', 'insertLineBreak', 'insertParagraph', 'insertFromPaste', 'insertCompositionText', 'deleteContentBackward', 'deleteContentForward', 'deleteByCut']);
   const hl = {
     on: false, lang: '', noteId: null, lines: 1, len: 0,
     offs: [0], sts: [highlight.initialState()], chunks: new Map(), rows: new Map(),
@@ -973,20 +974,25 @@
     want: 0, buildTimer: 0, matchRaf: 0, match: null, marks: new Map(), key: '', pitch: '', sbw: -1, sbh: -1,
   };
 
-  /** The one place that shows or hides the layer: the class shows it and makes the editor's own text transparent. */
-  function setHlActive(on) {
-    hl.on = on;
-    els.editorPane.classList.toggle('hl-on', on);
+  /** Clears the layer after a failure and logs the error's name only, never note text. */
+  function hlFailed(err) {
+    clearHl();
+    console.error('highlight failed', err && err.name);
   }
 
-  /** Empties the layer and forgets everything about the text. Safe to call at any time. */
+  /** The class shows the layer and makes the editor's own text transparent, so it is added only once a row is drawn. */
+  function showHl() {
+    if (hl.on && hl.box && hl.box.firstChild) els.editorPane.classList.add('hl-on');
+  }
+
+  /** Empties the layer and forgets everything about the text. Safe to call at any time; it never throws. */
   function clearHl() {
-    clearTimeout(hl.buildTimer);
-    cancelAnimationFrame(hl.matchRaf);
+    try { els.editorPane.classList.remove('hl-on'); } catch (e) { /* nothing more can be done */ }
+    hl.on = false;
+    try { clearTimeout(hl.buildTimer); cancelAnimationFrame(hl.matchRaf); } catch (e) { /* ignore */ }
     hl.buildTimer = 0;
     hl.matchRaf = 0;
-    setHlActive(false);
-    els.hl.replaceChildren();
+    try { els.hl.replaceChildren(); } catch (e) { /* ignore */ }
     hl.box = null;
     hl.rows = new Map();
     hl.chunks = new Map();
@@ -1011,7 +1017,8 @@
 
   function hlWanted(note) {
     return !!note && isEditable(note) && isScript(note) && note.lang !== 'plain' && S.settings.syntaxColors
-      && !g.hold && highlight.LANGUAGE_IDS.includes(note.lang) && !els.editor.hidden;
+      && !g.hold && highlight.LANGUAGE_IDS.includes(note.lang) && !els.editor.hidden
+      && !(window.matchMedia && window.matchMedia('(forced-colors: active)').matches); // CSS hides the layer there
   }
 
   /** Forget everything from `line` on (its start offset and state, and so everything before it, stay valid). */
@@ -1177,6 +1184,13 @@
 
   /** Draws the visible rows. Rows below dirtyFrom (and the dirty ones) are rebuilt; the others are only moved. */
   function drawHl() {
+    try {
+      drawHlRows();
+      showHl();
+    } catch (err) { hlFailed(err); }
+  }
+
+  function drawHlRows() {
     if (!hl.on) return;
     const ed = els.editor;
     if (!ed.clientHeight || !ed.clientWidth) { clearHl(); return; } // editor not on screen
@@ -1231,6 +1245,10 @@
   /** One slice of catching up: tokenizes up to 5,000 lines towards the viewport, then redraws or schedules the next slice (a timer, so catching up does not wait for frames). */
   function hlBuildStep() {
     hl.buildTimer = 0;
+    try { hlBuildSlice(); } catch (err) { hlFailed(err); }
+  }
+
+  function hlBuildSlice() {
     if (!hl.on) return;
     const v = els.editor.value;
     if (v.length !== hl.len) return; // an edit is about to rebuild everything anyway
@@ -1253,6 +1271,10 @@
 
   /** Decides whether the layer shows for the open note, and (re)builds it from scratch when it does. */
   function updateHl() {
+    try { updateHlNow(); } catch (err) { hlFailed(err); }
+  }
+
+  function updateHlNow() {
     const note = active();
     const ed = els.editor;
     if (!hlWanted(note) || !ed.clientHeight || !ed.clientWidth) { if (hl.on || hl.noteId) clearHl(); return; }
@@ -1265,7 +1287,7 @@
     hl.lines = lines;
     hl.len = v.length;
     hlInvalidate(0);
-    setHlActive(true);
+    hl.on = true;
     drawHl();
     scheduleBracket();
   }
@@ -1273,11 +1295,15 @@
   /** The line the edit about to happen starts on is remembered, so its input event forgets only from there. */
   function onHlBeforeInput(e) {
     if (!hl.on) return;
-    if (!HL_SIMPLE_EDITS.has(e.inputType)) { hl.pending = 0; return; }
+    if (!HL_SIMPLE_EDITS.has(e.inputType)) { hl.pending = 0; return; } // any other (unknown) input type forgets from line 0
     hl.pending = hlLineBound(els.editor.value, Math.max(0, els.editor.selectionStart - 1));
   }
 
   function onHlInput() {
+    try { onHlInputNow(); } catch (err) { hlFailed(err); }
+  }
+
+  function onHlInputNow() {
     const note = active();
     if (!hlWanted(note)) { if (hl.on || hl.noteId) clearHl(); return; }
     if (!hl.on) { updateHl(); return; }
@@ -1342,6 +1368,10 @@
 
   function updateBracket() {
     hl.matchRaf = 0;
+    try { updateBracketNow(); } catch (err) { hlFailed(err); }
+  }
+
+  function updateBracketNow() {
     if (!hl.on) return;
     const ed = els.editor;
     let next = null;
@@ -1383,6 +1413,7 @@
     S.settings.lineNumbers = a[(a.indexOf(S.settings.lineNumbers) + 1) % a.length];
     saveSettings();
     updateGutter();
+    updateHl(); // updateGutter empties the layer of a script note
     const m = S.settings.lineNumbers;
     toast(`Line numbers: ${m === 'all' ? 'every note' : m === 'off' ? 'off' : 'script notes only'}.`);
   }
@@ -2014,6 +2045,7 @@
     } finally {
       programmaticInsert = false;
     }
+    followSeltools();
   }
 
   function replaceRangeNow(start, end, text, caretStart, caretEnd) {
@@ -2267,7 +2299,7 @@
     else if (kind === 'move') r = codeedit.moveLines(value, s, t, id, dir);
     if (!r) return false;
     // A result that leaves the text as it is only moves the selection: nothing is edited, nothing is dispatched.
-    if (value.slice(r.start, r.end) === r.insert) { setSel(r.selStart, r.selEnd); return true; }
+    if (value.slice(r.start, r.end) === r.insert) { setSel(r.selStart, r.selEnd); followSeltools(); return true; }
     if (value.length - (r.end - r.start) + r.insert.length > store.LIMITS.body) { toast('The result would be too long for one note.', 'error'); return true; }
     replaceRange(r.start, r.end, r.insert, r.selStart, r.selEnd);
     return true;
@@ -2386,6 +2418,7 @@
   let selSnapshot = null;    // the editor selection, kept while focus is inside the toolbar
   let selQuietUntil = 0;     // our own edits can scroll the editor: its scroll events do not hide the toolbar until then
   let selProgAt = 0;         // when code last set the selection, so the `select` event it causes is not the user's
+  let selInput = { type: '', at: 0 }; // the last beforeinput or input type: undo and redo must not open the toolbar
   let selTimer = 0;
   let selBuiltFor = '';
 
@@ -2395,9 +2428,17 @@
     els.editor.setSelectionRange(start, end, dir);
   }
 
+  /** After code changed the text or selection: put the toolbar over the new selection, or drop it when nothing is selected. */
+  function followSeltools() {
+    if (els.seltools.hidden) return;
+    selQuietUntil = performance.now() + 300;
+    if (els.editor.selectionStart === els.editor.selectionEnd) hideSeltools();
+    else showSeltools();
+  }
+
   function selKeyDown(e) {
     const mod = e.ctrlKey || e.metaKey;
-    return (e.shiftKey && !mod && SEL_KEYS.includes(e.key)) || (mod && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'a');
+    return (e.shiftKey && !e.altKey && SEL_KEYS.includes(e.key)) || (mod && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'a');
   }
 
   function toggleSelectionToolbar() {
@@ -2439,7 +2480,7 @@
     const r = formatResult(kind, note, value, s, t);
     if (!r) return false;
     // A result that leaves the text as it is only moves the selection: nothing is edited, nothing is dispatched.
-    if (value.slice(r.start, r.end) === r.insert) { setSel(r.selStart, r.selEnd); return true; }
+    if (value.slice(r.start, r.end) === r.insert) { setSel(r.selStart, r.selEnd); followSeltools(); return true; }
     if (value.length - (r.end - r.start) + r.insert.length > store.LIMITS.body) { toast('The result would be too long for one note.', 'error'); return true; }
     replaceRange(r.start, r.end, r.insert, r.selStart, r.selEnd);
     return true;
@@ -2567,11 +2608,18 @@
     const ed = els.editor;
     const box = els.seltools;
     ed.addEventListener('mousedown', () => { selMouseDown = true; hideSeltools(); });
-    document.addEventListener('mouseup', () => {
+    // A drag can end outside the window or be cancelled: the flag is cleared on every way the button can come up.
+    const endMouse = (show) => {
       if (!selMouseDown) return;
       selMouseDown = false;
-      scheduleSeltools();
-    });
+      if (show) scheduleSeltools();
+    };
+    window.addEventListener('mouseup', () => endMouse(true));
+    window.addEventListener('pointercancel', () => endMouse(true));
+    window.addEventListener('blur', () => endMouse(false));
+    const noteInput = (e) => { selInput = { type: e.inputType || '', at: performance.now() }; };
+    ed.addEventListener('beforeinput', noteInput);
+    ed.addEventListener('input', noteInput);
     ed.addEventListener('keydown', (e) => { if (selKeyDown(e)) selKeyHeld = e.key.toLowerCase(); });
     ed.addEventListener('keyup', (e) => {
       if (selKeyHeld && e.key.toLowerCase() === selKeyHeld) { selKeyHeld = ''; scheduleSeltools(); return; }
@@ -2579,6 +2627,7 @@
     });
     ed.addEventListener('select', () => {
       if (selMouseDown || selKeyHeld || performance.now() - selProgAt < 300) return;
+      if (selInput.type.startsWith('history') && performance.now() - selInput.at < 300) return; // undo and redo move the selection too
       scheduleSeltools(120);
     });
     ed.addEventListener('input', () => { if (!programmaticInsert) hideSeltools(); });
@@ -2703,6 +2752,7 @@
     const cmd = sl.items[i];
     if (!cmd) return;
     const ex = expandSlashHere(cmd.name, slashCtx());
+    if (!ex) { closeSlash(); return; }
     const start = sl.start;
     const end = els.editor.selectionStart;
     closeSlash();
@@ -3376,7 +3426,7 @@
       if (text === '') message = CTF_EMPTY;
       else if (text.length > ctf.LIMITS.input) message = CTF_TOO_LONG;
       else if (st.view === 'caesar') rows = ctf.caesarBruteForce(text).map((r) => [`Shift ${r.shift}`, r.output]);
-      else rows = ctf.xorBruteForce(text).map((r) => [`Key 0x${r.keyHex}`, r.output]);
+      else rows = ctf.xorBruteForce(text, S.settings.flagPrefixes).map((r) => [`Key 0x${r.keyHex}`, r.output]);
       results.replaceChildren(...rows.slice(0, ctf.LIMITS.results).map(([label, value]) => ctfCopyRow(label, value)));
       status.textContent = message || (rows.length ? '' : 'No results.');
     }
@@ -3450,7 +3500,7 @@
       title: 'Decode or encode',
       className: 'wide ctf',
       initialFocus: '#decode-input',
-      sensitive: !!(note && note.cipher),
+      sensitive: true, // people paste secrets into CTF dialogs: any lock closes and empties them
       body: [
         h('label', { class: 'field' }, h('span', null, 'Input'), input),
         codecRow, paramBox, outBox, results, status, tools,
@@ -3482,7 +3532,7 @@
     const pending = showDialog({
       title: 'Common decodings',
       className: 'wide ctf',
-      sensitive: !!note.cipher,
+      sensitive: true, // people paste secrets into CTF dialogs: any lock closes and empties them
       body: [status, list],
       actions: [{ label: 'Close', value: null, className: 'btn-primary' }],
     });
@@ -3493,7 +3543,7 @@
       try {
         found = ctf.tryDecodings(text, S.settings.flagPrefixes);
       } catch (err) {
-        console.error('decoding failed');
+        console.error('decode failed', err && err.name);
       }
       if (closed) return;
       const rows = found.slice(0, ctf.LIMITS.results);
@@ -3537,7 +3587,7 @@
     const res = await showDialog({
       title: 'Flags in this note',
       className: 'wide ctf',
-      sensitive: !!note.cipher,
+      sensitive: true, // people paste secrets into CTF dialogs: any lock closes and empties them
       body: [
         h('p', { role: 'status', class: 'ctf-status' }, flags.length ? `${plural(flags.length, 'flag')} found` : NO_FLAGS),
         h('div', { class: 'result-list ctf-results' }, flags.map((f) => flagRow(f, note.id, false))),
@@ -3631,6 +3681,7 @@
       onSubmit: () => {
         const list = area.value.split(/\r\n|\r|\n/).map((l) => l.trim()).filter((l) => l !== '');
         if (list.some((l) => !PREFIX_RE.test(l))) { err.textContent = 'Each prefix can only contain letters, digits and underscores, up to 20 characters.'; area.focus(); return undefined; }
+        if (!list.length) { err.textContent = 'Enter at least one prefix, or choose Reset to defaults.'; area.focus(); return undefined; }
         if (list.length > ctf.LIMITS.prefixes) { err.textContent = 'Keep it to 30 prefixes at most.'; area.focus(); return undefined; }
         return { list };
       },
@@ -4891,7 +4942,8 @@
       const sealing = S.sealing.get(note.id);
       if (sealing) await sealing; // a seal finishing later must not overwrite the file's version
       if (!noteById(note.id) || !note.cipher) throw new FL.FileLinkError('The note changed while the file was read.');
-      if (note.id === S.activeId && finishCurrentDialog) finishCurrentDialog(null); // it may show the old plaintext
+      // A sensitive dialog closes on any lock; another one only when it may show this note's old plaintext.
+      if (finishCurrentDialog && (dialogSensitive || note.id === S.activeId)) finishCurrentDialog(null);
       note.cipher = cipher;
       note.body = '';
       note.history = [];
@@ -5105,7 +5157,10 @@
   function suggestedNameFor(note, format, copy) {
     const current = note.file && note.file.format === format ? note.file.name : null;
     if (!copy && current && current.length <= 120) return current;
-    return FL.suggestedFileName(copy ? `${titleOf(note)} copy` : titleOf(note), format);
+    const title = titleOf(note);
+    // ".env" or ".gitignore" as a title: keep the leading dot, so the host's dot-file rule gives ".env", not "env.env".
+    if (!copy && title.length > 1 && title[0] === '.' && store.FILE_FORMATS.includes(title.slice(1).toLowerCase())) return title.toLowerCase();
+    return FL.suggestedFileName(copy ? `${title} copy` : title, format);
   }
 
   function reportFileError(err, prefix) {
@@ -5127,7 +5182,9 @@
     await flushSeals();
     if (S.sealFailed.has(note.id)) { toast('The latest changes could not be encrypted, so they were not saved to a file. Press Ctrl+S to retry.', 'error'); return; }
     // The host's dialog offers this type first, then every supported type; the reply says what the user picked.
-    const format = store.defaultExtFor(note);
+    // The type the note is linked to now comes first, when it still fits the note; else the language's own.
+    const linked = note.file && FL.formatsFor(note).includes(note.file.format) ? note.file.format : null;
+    const format = linked || store.defaultExtFor(note);
     if (!noteById(note.id) || !FL.formatsFor(note).includes(format)) return;
     let relinkId = !copy && note.file ? note.file.linkId : null;
     files.hold.add(note.id);
@@ -5180,7 +5237,8 @@
       if (modeChanged) refreshAfterLang(note);
       renderList();
       updateStatus();
-      toast(`Saved to ${res.name}. Every change now goes to this file too.`);
+      const now = note.lang === '' ? 'Markdown' : ((codeedit.language(note.lang) || {}).name || note.lang);
+      toast(`Saved to ${res.name}. Every change now goes to this file too.${modeChanged ? ` It is now a ${now} note.` : ''}`);
     } catch (err) {
       if (err instanceof FL.FileLinkError) toast(`Not saved to file: ${err.message}`, 'error');
       else reportFileError(err, 'Not saved to file');
@@ -5469,7 +5527,7 @@
   function noteSensitiveCopy(force = false) {
     const note = active();
     if (!S.settings.clearClipboard) return false;
-    if (!force && (!note || !note.cipher || isLocked(note))) return false;
+    if (force !== true && (!note || !note.cipher || isLocked(note))) return false; // only a literal true forces (never an Event)
     const first = !clip.pending;
     clip.pending = true;
     clearTimeout(clip.timer);
@@ -5590,7 +5648,14 @@
     if (mod && !e.altKey && !e.shiftKey && k === 'b') { e.preventDefault(); toggleSidebar(); return; }
     if (mod && !e.altKey && !e.shiftKey && k === 'f') { e.preventDefault(); openFind(); return; }
     if (mod && !e.altKey && !e.shiftKey && k === 'h') { e.preventDefault(); openFind(true); return; }
-    if (e.key === 'F3' || (mod && !e.altKey && k === 'g')) { e.preventDefault(); findStep(e.shiftKey ? -1 : 1); return; }
+    if (e.key === 'F3') { e.preventDefault(); findStep(e.shiftKey ? -1 : 1); return; }
+    if (mod && !e.altKey && k === 'g') {
+      // Same rule as in the editor: Find next while the find bar is open, otherwise Go to line, wherever focus is.
+      e.preventDefault();
+      if (!els.findbar.hidden || e.shiftKey) findStep(e.shiftKey ? -1 : 1);
+      else if (isEditable(active()) && !els.editor.hidden) gotoLineDialog();
+      return;
+    }
     if (e.key === 'F1') { e.preventDefault(); showShortcuts(); return; }
 
     if (e.altKey && !mod && !e.shiftKey && e.key === 'F10') {
@@ -5831,8 +5896,8 @@
     });
     window.addEventListener('beforeprint', prepareForPrint);
     window.addEventListener('afterprint', afterPrint);
-    document.addEventListener('copy', noteSensitiveCopy);
-    document.addEventListener('cut', noteSensitiveCopy);
+    document.addEventListener('copy', () => { noteSensitiveCopy(); });
+    document.addEventListener('cut', () => { noteSensitiveCopy(); });
     window.addEventListener('focus', () => { if (clip.pending && !clip.timer) clearClipboardNow(); });
     if (!platform.isDesktop) {
       window.addEventListener('storage', (e) => {

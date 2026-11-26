@@ -1175,14 +1175,58 @@
     return count ? all.slice(0, count) : all;
   }
 
-  function xorBruteForce(text) {
+  const SHORT_XOR_BYTES = 16; // below this many bytes every fully printable candidate is listed, not only the best ten
+
+  function plainAscii(text) {
+    for (let i = 0; i < text.length; i++) {
+      const c = text.charCodeAt(i);
+      if (!((c >= 32 && c < 127) || c === 9 || c === 10 || c === 13)) return false;
+    }
+    return text.length > 0;
+  }
+
+  /** Candidates holding a flag come first, then by readableScore; a short input also lists every fully printable candidate. */
+  function xorBruteForce(text, prefixes) {
     if (typeof text !== 'string' || text === '' || text.length > LIMITS.input) return [];
     const bytes = parseBinaryText(text) || toBytes(text);
     if (!bytes.length) return [];
-    return xorCandidates(bytes, 10);
+    const pf = validatePrefixes(prefixes);
+    const map = prefixMap(pf);
+    const all = xorCandidates(bytes, 0);
+    for (const c of all) {
+      c.flag = false;
+      scanPlain(c.output, map, () => { c.flag = true; return false; });
+      c.score = readableScore(c.output, pf);
+    }
+    all.sort((a, b) => (b.flag ? 1 : 0) - (a.flag ? 1 : 0) || b.score - a.score || a.key - b.key);
+    if (bytes.length >= SHORT_XOR_BYTES) return all.slice(0, 10);
+    const out = [];
+    for (let i = 0; i < all.length && out.length < LIMITS.results; i++) {
+      if (i < 10 || all[i].flag || plainAscii(all[i].output)) out.push(all[i]);
+    }
+    return out;
   }
 
   // ------------------------------------------------------- common decodings
+
+  // A Caesar result is one of 25 tries, so it is listed only when it holds a flag or two distinct common words.
+  const COMMON_WORDS = new Set(('the of and to in is you that it he was for on are as with his they at be this have from or one had by but not what all were we when your can said there use an each which she do how their if will up other about out many then them these so some her would make like him into time has look two more write go see number no way could people my than first water been call who oil its now find long down day did get come made may part flag password user admin key attack secret message hello world login root token').split(' '));
+
+  function commonWords(text) {
+    const lower = text.toLowerCase();
+    const seen = new Set();
+    let i = 0;
+    while (i < lower.length) {
+      let j = i;
+      while (j < lower.length && lower.charCodeAt(j) >= 97 && lower.charCodeAt(j) <= 122) j++;
+      if (j > i) {
+        const w = lower.slice(i, j);
+        if (COMMON_WORDS.has(w)) { seen.add(w); if (seen.size >= 2) return 2; }
+        i = j;
+      } else i++;
+    }
+    return seen.size;
+  }
 
   const ENCODING_IDS = ['base64', 'base64url', 'base32', 'base58', 'ascii85', 'z85', 'hex', 'binary', 'octal', 'decimal', 'url', 'htmlEntities', 'unicodeEscape', 'morse'];
   const CIPHER_IDS = ['rot13', 'rot47', 'atbash', 'reverse'];
@@ -1217,7 +1261,7 @@
     const rootScore = rawScore(text);
     const queue = [{ text, path: [], score: rootScore, readable: rootScore >= READABLE_THRESHOLD }];
     // `floor` is the lowest score a result may have (cipher steps pass the parent's score plus a margin).
-    const accept = (output, path, detail, floor, cipher, brute, needSpaces) => {
+    const accept = (output, path, detail, floor, cipher, brute, needSpaces, needWords) => {
       if (seen.has(output)) return null;
       seen.add(output);
       const flag = hasFlag(output);
@@ -1226,7 +1270,7 @@
       const printable = printableShare(output) >= PRINTABLE_MIN;
       const readable = printable && score >= READABLE_THRESHOLD;
       const shown = cap(output);
-      if ((flag || (readable && score >= floor && (!cipher || output.length >= SHORT_CIPHER_CHARS || score >= SHORT_CIPHER_SCORE) && (!needSpaces || spaceShare(output) >= XOR_MIN_SPACES))) && !shownOutputs.has(shown)) {
+      if ((flag || (readable && score >= floor && (!cipher || output.length >= SHORT_CIPHER_CHARS || score >= SHORT_CIPHER_SCORE) && (!needSpaces || spaceShare(output) >= XOR_MIN_SPACES) && (!needWords || commonWords(output) >= 2))) && !shownOutputs.has(shown)) {
         shownOutputs.add(shown);
         const item = { path, output: shown, score };
         if (detail) item.detail = detail;
@@ -1257,7 +1301,7 @@
       if (afterCipher) continue;
       if (spend(Math.min(node.text.length, LIMITS.resultChars) * 25)) {
         const head = cap(node.text);
-        for (let shift = 1; shift <= 25; shift++) accept(caesar(head, 26 - shift), node.path.concat('caesar'), `shift ${shift}`, cipherFloor, true, true);
+        for (let shift = 1; shift <= 25; shift++) accept(caesar(head, 26 - shift), node.path.concat('caesar'), `shift ${shift}`, cipherFloor, true, true, false, true);
       } else break;
       if (spend(LIMITS.resultChars * 256)) {
         const bytes = parseBinaryText(node.text);
@@ -1389,7 +1433,7 @@
     const flag = field(found.Flag);
     return {
       name: field(found.name), event: field(found.Event), category, points, status, flag,
-      solved: startsWithCI(status, 'solved') || flag !== '',
+      solved: startsWithCI(status, 'solved'),
     };
   }
 

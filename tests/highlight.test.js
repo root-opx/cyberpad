@@ -517,12 +517,12 @@ test('yaml: block scalar headers with indicators, list items and a trailing comm
   assert.deepEqual(s.out[2], [['attr', 'name']]);
 });
 
-test('yaml: block scalar indentation is capped at 99 in the state', () => {
+test('yaml: a header deeper than 99 does not open a block scalar', () => {
   const deep = ' '.repeat(150) + 'k: |';
-  assert.equal(H.tokenizeLine('yaml', deep, INIT).state, 'yb99');
-  assert.deepEqual(tk('yaml', ' '.repeat(120) + 'x: 1', 'yb99'), [['string', 'x: 1']]);
+  assert.equal(H.tokenizeLine('yaml', deep, INIT).state, INIT);
+  assert.equal(H.tokenizeLine('yaml', ' '.repeat(99) + 'k: |', INIT).state, 'yb99');
   assert.deepEqual(tk('yaml', ' '.repeat(99) + 'x: 1', 'yb99'), [['attr', 'x'], ['number', '1']]);
-  assert.equal(H.tokenizeLine('yaml', ' '.repeat(100) + 'x', 'yb99').state, 'yb99');
+  assert.deepEqual(tk('yaml', ' '.repeat(100) + 'x: 1', 'yb99'), [['string', 'x: 1']]);
   assert.equal(H.tokenizeLine('yaml', 'x: 1', 'yb99').state, INIT);
 });
 
