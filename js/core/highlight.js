@@ -107,18 +107,18 @@
       cst: W('true false'),
     },
     php: {
-      line: ['//', '#'], block: ['/*', '*/'], quotes: '"\'', esc: '"\'', dollar: true, ci: true,
+      line: ['//', '#'], block: ['/*', '*/'], quotes: '"\'', esc: '"\'', dollar: true, ci: true, phpAttr: true,
       kw: W('abstract and array as break callable case catch class clone const continue declare default do echo else elseif empty enddeclare endfor endforeach endif endswitch endwhile extends final finally fn for foreach function global goto if implements include include_once instanceof insteadof interface isset list namespace new or print private protected public require require_once return static switch throw trait try unset use var while xor yield'),
       cst: W('true false null'),
     },
     bash: {
-      line: ['#'], hashWord: true, quotes: '"\'', esc: '"', dollar: true, dollarSpecial: true,
+      line: ['#'], hashWord: true, quotes: '"\'', esc: '"', escOut: true, dollar: true, dollarSpecial: true,
       kw: W('if then else elif fi for while until do done case esac function in return exit echo export local select time read cd source alias set unset shift break continue trap eval exec printf declare readonly test'),
       cst: W('true false'),
     },
     powershell: {
       line: ['#'], hashWord: true, block: ['<#', '#>'], quotes: '"\'', esc: '"', dbl: '"\'', escChar: '`',
-      dollar: true, dollarSpecial: true, psColon: true, ci: true, idHyphen: true, psOps: true,
+      dollar: true, dollarSpecial: true, psColon: true, ci: true, idHyphen: true, psOps: true, psHere: true,
       kw: W('if elseif else switch foreach for while do until break continue return function param begin process end try catch finally throw trap exit class using in filter workflow'),
       cst: W('true false null'),
       verbs: W('get set new remove write read invoke import export select where foreach sort out add clear test start stop copy move rename join split format convert compare measure enable disable register unregister wait'),
@@ -157,6 +157,7 @@
     if (cfg.triple) { if (cfg.triple.indexOf('"') >= 0) s.add('td'); if (cfg.triple.indexOf("'") >= 0) s.add('ts'); }
     if (cfg.tmpl) s.add('tl');
     if (cfg.goRaw) s.add('gb');
+    if (cfg.psHere) { s.add('hd'); s.add('hq'); }
     if (cfg.luaLong) for (let l = 0; l <= 3; l++) { s.add('lc' + l); s.add('ls' + l); }
     return s;
   }
@@ -243,7 +244,13 @@
     };
 
     // Continue a construct carried over from the previous line.
-    if (st !== INITIAL) multi(st, typeOfState(st), 0, 0);
+    if (st !== INITIAL) {
+      if (cfg.psHere && (st === 'hd' || st === 'hq')) {
+        // PowerShell here-string: the closer must be at the very start of a line.
+        if (line.startsWith(st === 'hd' ? '"@' : "'@")) { add(0, 2, 'string'); i = 2; }
+        else { add(0, n, 'string'); return st; }
+      } else multi(st, typeOfState(st), 0, 0);
+    }
 
     // Batch: whole-line comments and labels.
     if (cfg.batch && state === INITIAL && i === 0) {
@@ -271,6 +278,7 @@
       const first = !seen;
       seen = true;
 
+      if (cfg.escOut && c === '\\') { i += 2; continue; } // bash: an escaped character outside quotes
       if (hasLine) {
         let lc = null;
         for (let m = 0; m < cfg.line.length; m++) {
@@ -278,6 +286,7 @@
           if (c === mk[0] && line.startsWith(mk, i)) { lc = mk; break; }
         }
         if (lc !== null) {
+          if (cfg.phpAttr && lc === '#' && line[i + 1] === '[') { i++; continue; } // #[Attribute]
           if (cfg.hashWord && lc === '#' && i > 0 && !isWs(line[i - 1]) && ';&|('.indexOf(line[i - 1]) < 0) {
             i++;
             continue;
@@ -386,6 +395,11 @@
         continue;
       }
       if (c === '@') {
+        if (cfg.psHere && (line[i + 1] === '"' || line[i + 1] === "'")) {
+          let k = i + 2;
+          while (k < n && isWs(line[k])) k++;
+          if (k >= n) { add(i, n, 'string'); state = line[i + 1] === '"' ? 'hd' : 'hq'; i = n; continue; }
+        }
         if (cfg.decorator && first && isIdStart(line[i + 1])) {
           let e = i + 2;
           while (e < n && (isIdChar(line[e]) || line[e] === '.')) e++;
@@ -475,25 +489,68 @@
 
   const isNameChar = (c) => isIdChar(c) || c === '-' || c === ':' || c === '.';
 
-  function runMarkup(line, st, add) {
+  /** Index of the closing tag `</name` (case-insensitive, whole name) at or after `from`, or -1. */
+  function findClose(line, from, name) {
+    const len = name.length;
+    let p = line.indexOf('</', from);
+    while (p >= 0) {
+      if (p + 2 + len <= line.length && line.substr(p + 2, len).toLowerCase() === name) {
+        const after = line[p + 2 + len];
+        if (after === undefined || !isNameChar(after)) return p;
+      }
+      p = line.indexOf('</', p + 2);
+    }
+    return -1;
+  }
+
+  /*
+   * States: 'hc' comment, 'cd' CDATA, 'tag' inside a tag, 'tq"' / "tq'" inside an
+   * attribute value, and for html only 'hs' / 'hy' inside script / style content.
+   * A tag that opens a script or style element carries a trailing 's' / 'y'
+   * ('tags', 'tq"y', ...) so the content mode starts when its '>' arrives.
+   */
+  function runMarkup(line, st, add, isHtml) {
     const n = line.length;
     let i = 0;
     let tagMode = false;
+    let rawOpen = '';  // 's' | 'y': the tag being read opens a script / style element
+    let inRaw = '';    // 's' | 'y': inside script / style content
     if (st === 'hc') {
       const e = line.indexOf('-->');
       if (e < 0) { add(0, n, 'comment'); return 'hc'; }
       add(0, e + 3, 'comment');
       i = e + 3;
-    } else if (st === 'tq"' || st === "tq'") {
+    } else if (st === 'cd') {
+      const e = line.indexOf(']]>');
+      if (e < 0) return 'cd';
+      add(e, e + 3, 'tag');
+      i = e + 3;
+    } else if (st === 'hs' || st === 'hy') {
+      inRaw = st[1];
+    } else if (st[0] === 't' && st[1] === 'q') {
       const q = st[2];
+      rawOpen = st.length > 3 ? st[3] : '';
       const e = line.indexOf(q);
       if (e < 0) { add(0, n, 'string'); return st; }
       add(0, e + 1, 'string');
       i = e + 1;
       tagMode = true;
-    } else if (st === 'tag') tagMode = true;
+    } else if (st[0] === 't' && st[1] === 'a') {
+      tagMode = true;
+      rawOpen = st.length > 3 ? st[3] : '';
+    }
 
     while (i < n) {
+      if (inRaw) {
+        const nm = inRaw === 's' ? 'script' : 'style';
+        const k = findClose(line, i, nm);
+        if (k < 0) return 'h' + inRaw;
+        add(k, k + 2 + nm.length, 'tag');
+        i = k + 2 + nm.length;
+        inRaw = '';
+        tagMode = true;
+        continue;
+      }
       if (!tagMode) {
         const lt = line.indexOf('<', i);
         if (lt < 0) break;
@@ -504,12 +561,24 @@
           i = e + 3;
           continue;
         }
+        if (line.startsWith('<![CDATA[', lt)) {
+          add(lt, lt + 9, 'tag');
+          const e = line.indexOf(']]>', lt + 9);
+          if (e < 0) return 'cd';
+          add(e, e + 3, 'tag');
+          i = e + 3;
+          continue;
+        }
         const d = line[lt + 1];
         if (isLetter(d) || d === '/' || d === '!' || d === '?') {
           let j = lt + 1;
           if (!isLetter(d)) j++;
           while (j < n && isNameChar(line[j])) j++;
           add(lt, j, 'tag');
+          if (isHtml && isLetter(d)) {
+            const nm = line.slice(lt + 1, j).toLowerCase();
+            rawOpen = nm === 'script' ? 's' : nm === 'style' ? 'y' : '';
+          }
           i = j;
           tagMode = true;
           continue;
@@ -519,12 +588,18 @@
       }
       const c = line[i];
       if (isWs(c) || c === '=') { i++; continue; }
-      if (c === '>') { add(i, i + 1, 'tag'); tagMode = false; i++; continue; }
-      if ((c === '/' || c === '?') && line[i + 1] === '>') { add(i, i + 2, 'tag'); tagMode = false; i += 2; continue; }
+      if (c === '>') {
+        add(i, i + 1, 'tag');
+        tagMode = false;
+        i++;
+        if (rawOpen) { inRaw = rawOpen; rawOpen = ''; }
+        continue;
+      }
+      if ((c === '/' || c === '?') && line[i + 1] === '>') { add(i, i + 2, 'tag'); tagMode = false; rawOpen = ''; i += 2; continue; }
       if (c === '/') { i++; continue; }
       if (c === '"' || c === "'") {
         const e = line.indexOf(c, i + 1);
-        if (e < 0) { add(i, n, 'string'); return 'tq' + c; }
+        if (e < 0) { add(i, n, 'string'); return 'tq' + c + rawOpen; }
         add(i, e + 1, 'string');
         i = e + 1;
         continue;
@@ -539,7 +614,8 @@
       add(i, j, 'attr');
       i = j;
     }
-    return tagMode ? 'tag' : INITIAL;
+    if (inRaw) return 'h' + inRaw;
+    return tagMode ? 'tag' + rawOpen : INITIAL;
   }
 
   // ------------------------------------------------------------------- CSS
@@ -568,13 +644,24 @@
         i = e + 2;
         continue;
       }
+      // SCSS-style line comment: only at line start or after whitespace (never http://, never inside url() or a string).
+      if (c === '/' && line[i + 1] === '/' && (i === 0 || isWs(line[i - 1]))) { add(i, n, 'comment'); i = n; continue; }
       if (!inBlock) {
         if (c === '{') { inBlock = !group; group = false; inValue = false; i++; continue; }
         if (c === '}' || c === ';') { i++; continue; }
         let j = i;
+        let paren = 0;
         while (j < n) {
           const d = line[j];
           if (d === '{' || d === ';' || d === '}' || (d === '/' && line[j + 1] === '*')) break;
+          if (d === '/' && line[j + 1] === '/' && paren === 0 && j > i && isWs(line[j - 1])) break;
+          if (d === '(') paren++;
+          else if (d === ')') { if (paren > 0) paren--; } else if (d === '"' || d === "'") {
+            let k = j + 1;
+            while (k < n && line[k] !== d) k += line[k] === '\\' ? 2 : 1;
+            j = k < n ? k + 1 : n;
+            continue;
+          }
           j++;
         }
         let e = j;
@@ -620,6 +707,16 @@
       if (isIdChar(c) || c === '-') {
         let j = i + 1;
         while (j < n && (isIdChar(line[j]) || line[j] === '-')) j++;
+        if (line[j] === '(' && j - i === 3 && line.slice(i, j).toLowerCase() === 'url') {
+          // An unquoted url(...) is opaque: nothing inside it is a comment or a number.
+          let k = j + 1;
+          while (k < n && isWs(line[k])) k++;
+          if (line[k] !== '"' && line[k] !== "'") {
+            const e = line.indexOf(')', k);
+            i = e < 0 ? n : e + 1;
+            continue;
+          }
+        }
         if (!inValue) {
           let k = j;
           while (k < n && isWs(line[k])) k++;
@@ -686,15 +783,44 @@
     else if (consts.has(line.slice(i, j).toLowerCase())) add(i, j, 'constant');
   }
 
+  const YAML_MAX_INDENT = 99;
+
+  /** After a key's colon or a list dash: a block scalar header (| or >, indicators, comment)? Returns where its comment starts (or n), else -1. */
+  function yamlHeader(line, i) {
+    const n = line.length;
+    while (i < n && isWs(line[i])) i++;
+    if (line[i] !== '|' && line[i] !== '>') return -1;
+    let j = i + 1;
+    let k = 0;
+    while (j < n && k < 2 && (line[j] === '-' || line[j] === '+' || (line[j] >= '1' && line[j] <= '9'))) { j++; k++; }
+    const e = j;
+    while (j < n && isWs(line[j])) j++;
+    if (j >= n) return n;
+    return line[j] === '#' && j > e ? j : -1;
+  }
+
+  /*
+   * States: '0', and 'yb<n>' (n = 0..99) inside a block scalar whose header sat at
+   * indentation n; deeper headers are stored as 99.
+   */
   function runYaml(line, st, add) {
     const n = line.length;
     let i = 0;
+    let hdrCol = -1;
+    if (st !== INITIAL) {
+      const hdr = +st.slice(2);
+      let k = 0;
+      while (k < n && isWs(line[k])) k++;
+      if (k >= n) return st;                        // blank line: still inside
+      if (k > hdr) { add(k, n, 'string'); return st; } // indented deeper than the key: scalar text
+    }
     if ((line.startsWith('---') || line.startsWith('...')) && (n === 3 || isWs(line[3]))) {
       add(0, 3, 'section');
       i = 3;
     } else {
       while (i < n && isWs(line[i])) i++;
       while (line[i] === '-' && (i + 1 >= n || isWs(line[i + 1]))) {
+        hdrCol = i;
         i++;
         while (i < n && isWs(line[i])) i++;
       }
@@ -721,8 +847,16 @@
         }
         if (colon >= 0 && kEnd > i) {
           add(i, kEnd, 'attr');
+          hdrCol = i;
           i = colon + 1;
         }
+      }
+    }
+    if (hdrCol >= 0) {
+      const h = yamlHeader(line, i);
+      if (h >= 0) {
+        if (h < n) add(h, n, 'comment');
+        return 'yb' + Math.min(hdrCol, YAML_MAX_INDENT);
       }
     }
     while (i < n) {
@@ -776,6 +910,7 @@
     while (i < n) {
       const c = line[i];
       if (isWs(c)) { i++; continue; }
+      if (c === '#' && i > 0 && isWs(line[i - 1])) { add(i, n, 'comment'); break; }
       if (c === '"' || c === "'") {
         const e = line.indexOf(c, i + 1);
         const end = e < 0 ? n : e + 1;
@@ -802,24 +937,36 @@
     const states = statesOf(cfg);
     IMPL.set(id, { states, run: (line, st, add) => scan(cfg, line, st, add) });
   }
-  IMPL.set('html', { states: new Set([INITIAL, 'hc', 'tag', 'tq"', "tq'"]), run: runMarkup });
-  IMPL.set('xml', IMPL.get('html'));
+  const xmlStates = [INITIAL, 'hc', 'cd', 'tag', 'tq"', "tq'"];
+  IMPL.set('html', {
+    states: new Set(xmlStates.concat(['hs', 'hy', 'tags', 'tagy', 'tq"s', "tq's", 'tq"y', "tq'y"])),
+    run: (line, st, add) => runMarkup(line, st, add, true),
+  });
+  IMPL.set('xml', { states: new Set(xmlStates), run: (line, st, add) => runMarkup(line, st, add, false) });
   IMPL.set('css', { states: new Set([INITIAL, 'bc', 'css', 'cbc']), run: runCss });
   IMPL.set('json', { states: new Set([INITIAL]), run: runJson });
-  IMPL.set('yaml', { states: new Set([INITIAL]), run: runYaml });
+  const yamlStates = new Set([INITIAL]);
+  for (let k = 0; k <= YAML_MAX_INDENT; k++) yamlStates.add('yb' + k);
+  IMPL.set('yaml', { states: yamlStates, run: runYaml });
   IMPL.set('ini', { states: new Set([INITIAL]), run: runIni });
 
+  const ALL_STATES = new Set();
+  for (const impl of IMPL.values()) for (const s of impl.states) ALL_STATES.add(s);
+
   /**
-   * Colour one line. Unknown language, 'plain' or a non-string line: no tokens,
-   * state returned unchanged. A line over 20,000 characters is not coloured and
-   * the returned state resets to initialState(). A state that is not valid for
-   * the language is treated as the initial state. Never throws.
+   * Colour one line. A state that is not a string, or not valid for the language,
+   * is treated as the initial state. Unknown language or 'plain': no tokens and
+   * the returned state is the caller's only when it is a valid state of some
+   * language, else initialState(). A non-string line: no tokens, the (validated)
+   * state is kept. A line over 20,000 characters is not coloured and the
+   * returned state resets to initialState(). Never throws.
    */
   function tokenizeLine(lang, line, state) {
     const impl = typeof lang === 'string' ? IMPL.get(lang) : undefined;
-    if (!impl || typeof line !== 'string') return { tokens: [], state };
-    if (line.length > MAX_LINE) return { tokens: [], state: INITIAL };
+    if (!impl) return { tokens: [], state: typeof state === 'string' && ALL_STATES.has(state) ? state : INITIAL };
     const st = typeof state === 'string' && impl.states.has(state) ? state : INITIAL;
+    if (typeof line !== 'string') return { tokens: [], state: st };
+    if (line.length > MAX_LINE) return { tokens: [], state: INITIAL };
     const tokens = [];
     const n = line.length;
     let last = 0;
@@ -858,10 +1005,11 @@
         const text = getLine(i);
         if (typeof text === 'string') {
           budget -= text.length + 1;
+          res = [];
+          if (text.length > MAX_LINE) { cache.set(i, res); return res; } // not tokenized: its brackets may be inside strings
           let st;
           try { st = typeof stateAt === 'function' ? stateAt(i) : undefined; } catch (e) { st = undefined; }
           const toks = tokenizeLine(lang, text, st === undefined ? INITIAL : st).tokens;
-          res = [];
           let t = 0;
           for (let k = 0; k < text.length; k++) {
             const ch = text[k];
@@ -877,7 +1025,7 @@
         return res;
       };
       const text0 = getLine(lineIndex);
-      if (typeof text0 !== 'string' || column > text0.length) return null;
+      if (typeof text0 !== 'string' || column > text0.length || text0.length > MAX_LINE) return null;
       const here = bracketsOf(lineIndex);
       if (!here) return null;
       const at = (col) => {

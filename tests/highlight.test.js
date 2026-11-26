@@ -463,21 +463,269 @@ test('states are by value and limited to the language; foreign states are ignore
   assert.ok(H.sameState(H.tokenizeLine('c', '/* a', INIT).state, H.tokenizeLine('java', '/* b', INIT).state));
 });
 
+// ------------------------------------------------------- everyday fixes
+
+test('yaml: block scalar text is a string, not keys or comments, until the indentation drops', () => {
+  const r = thread('yaml', [
+    'steps:',
+    '  - run: | # keep',
+    '      echo "a: b" # x',
+    '',
+    '      # not a comment',
+    '      key: value',
+    '    next: 1',
+    '  other: 2',
+  ]);
+  assert.deepEqual(r.out[1], [['attr', 'run'], ['comment', '# keep']]);
+  assert.deepEqual(r.out[2], [['string', 'echo "a: b" # x']]);
+  assert.deepEqual(r.out[3], []);
+  assert.deepEqual(r.out[4], [['string', '# not a comment']]);
+  assert.deepEqual(r.out[5], [['string', 'key: value']]);
+  assert.deepEqual(r.out[6], [['attr', 'next'], ['number', '1']], 'the key is at column 4: a line at column 4 is a key again');
+  assert.deepEqual(r.out[7], [['attr', 'other'], ['number', '2']]);
+  assert.equal(r.state, INIT);
+});
+
+test('yaml: a line at the header indentation is a key again after a block scalar', () => {
+  const r = thread('yaml', ['run: |', '  echo "a: b" # x', 'next: 1', 'v: >-', '  folded', '  text', 'z: true']);
+  assert.deepEqual(r.out[0], [['attr', 'run']]);
+  assert.deepEqual(r.out[1], [['string', 'echo "a: b" # x']]);
+  assert.deepEqual(r.out[2], [['attr', 'next'], ['number', '1']]);
+  assert.deepEqual(r.out[4], [['string', 'folded']]);
+  assert.deepEqual(r.out[5], [['string', 'text']]);
+  assert.deepEqual(r.out[6], [['attr', 'z'], ['constant', 'true']]);
+  assert.equal(r.state, INIT);
+});
+
+test('yaml: block scalar headers with indicators, list items and a trailing comment', () => {
+  for (const [hdr, col] of [['k: |', 0], ['k: >', 0], ['k: |-', 0], ['k: >+', 0], ['k: |2', 0], ['k: |2-', 0], ['k: >-1', 0],
+    ['k: |  # c', 0], ['  k: |', 2], ['- |', 0], ['  - >-', 2], ['- k: |', 2], ['- - |', 2]]) {
+    assert.equal(H.tokenizeLine('yaml', hdr, INIT).state, 'yb' + col, hdr);
+  }
+  assert.deepEqual(tk('yaml', 'k: | # c'), [['attr', 'k'], ['comment', '# c']]);
+  assert.deepEqual(tk('yaml', '- |'), []);
+  const l = thread('yaml', ['- |', '  text: here', '- b: 1']);
+  assert.deepEqual(l.out[1], [['string', 'text: here']]);
+  assert.deepEqual(l.out[2], [['attr', 'b'], ['number', '1']]);
+  // not headers
+  for (const t of ['k: |x', 'k: |#c', 'k: a |', 'k: "|"', 'k: ||', 'k: |---', '# k: |', '|']) {
+    assert.equal(H.tokenizeLine('yaml', t, INIT).state, INIT, t);
+  }
+  // the key's own column decides, so a sibling key after "- key: |" is not scalar text
+  const s = thread('yaml', ['- run: |', '    echo hi', '  name: x']);
+  assert.deepEqual(s.out[1], [['string', 'echo hi']]);
+  assert.deepEqual(s.out[2], [['attr', 'name']]);
+});
+
+test('yaml: block scalar indentation is capped at 99 in the state', () => {
+  const deep = ' '.repeat(150) + 'k: |';
+  assert.equal(H.tokenizeLine('yaml', deep, INIT).state, 'yb99');
+  assert.deepEqual(tk('yaml', ' '.repeat(120) + 'x: 1', 'yb99'), [['string', 'x: 1']]);
+  assert.deepEqual(tk('yaml', ' '.repeat(99) + 'x: 1', 'yb99'), [['attr', 'x'], ['number', '1']]);
+  assert.equal(H.tokenizeLine('yaml', ' '.repeat(100) + 'x', 'yb99').state, 'yb99');
+  assert.equal(H.tokenizeLine('yaml', 'x: 1', 'yb99').state, INIT);
+});
+
+test('yaml: a document marker ends a block scalar', () => {
+  const r = thread('yaml', ['k: |', '  text', '---', 'a: 1']);
+  assert.deepEqual(r.out[2], [['section', '---']]);
+  assert.deepEqual(r.out[3], [['attr', 'a'], ['number', '1']]);
+});
+
+test('html: script and style content is left alone until the closing tag', () => {
+  const r = thread('html', ['<script type="module" async>', 'for (i = 0; i<n; i++) { x = "<b>"; } // <!--', '</script ><p>', '<STYLE>a > b { }', '</Style>']);
+  assert.deepEqual(r.out[0], [['tag', '<script'], ['attr', 'type'], ['string', '"module"'], ['attr', 'async'], ['tag', '>']]);
+  assert.deepEqual(r.out[1], []);
+  assert.deepEqual(r.out[2], [['tag', '</script'], ['tag', '>'], ['tag', '<p'], ['tag', '>']]);
+  assert.deepEqual(r.out[3], [['tag', '<STYLE'], ['tag', '>']]);
+  assert.deepEqual(r.out[4], [['tag', '</Style'], ['tag', '>']]);
+  assert.equal(r.state, INIT);
+  assert.equal(H.tokenizeLine('html', '<script>', INIT).state, 'hs');
+  assert.equal(H.tokenizeLine('html', '<style>', INIT).state, 'hy');
+  assert.equal(H.tokenizeLine('html', 'a<b', 'hs').state, 'hs');
+  assert.equal(H.tokenizeLine('html', '<style>x{}</style>', INIT).state, INIT);
+});
+
+test('html: script on one line, a closing tag on the same line, and look-alike closing tags', () => {
+  assert.deepEqual(tk('html', '<script>if (a<b) go()</script><i>'), [['tag', '<script'], ['tag', '>'], ['tag', '</script'], ['tag', '>'], ['tag', '<i'], ['tag', '>']]);
+  assert.deepEqual(tk('html', '</scripts> </script-x> <b>', 'hs'), []);
+  assert.equal(H.tokenizeLine('html', '</scripts> </script-x>', 'hs').state, 'hs');
+  assert.deepEqual(tk('html', 'x </style> y', 'hs'), [], 'a style close does not end script content');
+  assert.deepEqual(tk('html', '</script', 'hs'), [['tag', '</script']]);
+});
+
+test('html: an opening script tag split over lines still enters script content', () => {
+  const r = thread('html', ['<script', '  src="a"', '  data-x="long', 'value" defer>', 'var a = "<b>";', '</script>']);
+  assert.equal(H.tokenizeLine('html', '<script', INIT).state, 'tags');
+  assert.equal(H.tokenizeLine('html', '<style', INIT).state, 'tagy');
+  assert.equal(H.tokenizeLine('html', '  data-x="long', 'tags').state, 'tq"s');
+  assert.deepEqual(r.out[4], []);
+  assert.deepEqual(r.out[5], [['tag', '</script'], ['tag', '>']]);
+  assert.equal(r.state, INIT);
+  // a self-closing script tag does not open content, nor does a different tag
+  assert.equal(H.tokenizeLine('html', '<script src="a"/>', INIT).state, INIT);
+  assert.equal(H.tokenizeLine('html', '<scripts>', INIT).state, INIT);
+  assert.equal(H.tokenizeLine('html', '<b>', INIT).state, INIT);
+  const q = thread('html', ['<b', 'x>', '<script>', 'a', '</script>']);
+  assert.equal(q.out[3].length, 0);
+});
+
+test('xml: script and style are ordinary elements', () => {
+  assert.deepEqual(tk('xml', '<script>'), [['tag', '<script'], ['tag', '>']]);
+  assert.equal(H.tokenizeLine('xml', '<script>', INIT).state, INIT);
+  assert.deepEqual(tk('xml', '<b x="1">', INIT), [['tag', '<b'], ['attr', 'x'], ['string', '"1"'], ['tag', '>']]);
+});
+
+test('xml and html: CDATA content is not coloured, across lines, quotes inside do not start strings', () => {
+  for (const lang of ['xml', 'html']) {
+    const r = thread(lang, ['<a><![CDATA[ x < y "q', "it's <b> --> ", ']]><c/>', 'tail']);
+    assert.deepEqual(r.out[0], [['tag', '<a'], ['tag', '>'], ['tag', '<![CDATA[']], lang);
+    assert.deepEqual(r.out[1], [], lang);
+    assert.deepEqual(r.out[2], [['tag', ']]>'], ['tag', '<c'], ['tag', '/>']], lang);
+    assert.deepEqual(r.out[3], [], lang);
+    assert.equal(r.state, INIT, lang);
+    assert.equal(H.tokenizeLine(lang, '<![CDATA[ x', INIT).state, 'cd', lang);
+    assert.equal(H.tokenizeLine(lang, ' x ]]> y', 'cd').state, INIT, lang);
+    assert.deepEqual(tk(lang, '<![CDATA[ "a" ]]> <b>'), [['tag', '<![CDATA['], ['tag', ']]>'], ['tag', '<b'], ['tag', '>']], lang);
+  }
+});
+
+test('php: #[ starts an attribute, not a comment; # alone still comments', () => {
+  assert.deepEqual(tk('php', '#[Route("/x")]'), [['string', '"/x"']]);
+  assert.deepEqual(tk('php', '#[Route("/x")] # real'), [['string', '"/x"'], ['comment', '# real']]);
+  assert.deepEqual(tk('php', '#[A] $x = 1;'), [['variable', '$x'], ['number', '1']]);
+  assert.deepEqual(tk('php', '# [x]'), [['comment', '# [x]']]);
+  assert.deepEqual(tk('php', '#note'), [['comment', '#note']]);
+  assert.deepEqual(tk('php', '//[x]'), [['comment', '//[x]']]);
+  assert.deepEqual(tk('python', '#[x]'), [['comment', '#[x]']]);
+});
+
+test('powershell: here-strings are strings until a closer at the start of a line', () => {
+  const d = thread('powershell', ['$a = @"', '# not a comment $x', '  "@ still inside', '"@ + 1', '$b = 2']);
+  assert.deepEqual(d.out[0], [['variable', '$a'], ['string', '@"']]);
+  assert.deepEqual(d.out[1], [['string', '# not a comment $x']]);
+  assert.deepEqual(d.out[2], [['string', '  "@ still inside']]);
+  assert.deepEqual(d.out[3], [['string', '"@'], ['number', '1']]);
+  assert.deepEqual(d.out[4], [['variable', '$b'], ['number', '2']]);
+  assert.equal(d.state, INIT);
+  const s = thread('powershell', ["@'", 'it is "raw" $x', "'@", 'if (1) {}']);
+  assert.deepEqual(s.out[0], [['string', "@'"]]);
+  assert.deepEqual(s.out[1], [['string', 'it is "raw" $x']]);
+  assert.deepEqual(s.out[2], [['string', "'@"]]);
+  assert.deepEqual(s.out[3], [['keyword', 'if'], ['number', '1']]);
+  assert.equal(s.state, INIT);
+  assert.equal(H.tokenizeLine('powershell', '$a = @"', INIT).state, 'hd');
+  assert.equal(H.tokenizeLine('powershell', "$a = @'  ", INIT).state, 'hq');
+  assert.equal(H.tokenizeLine('powershell', "'@", 'hd').state, 'hd', 'a single-quote closer does not close a double-quote here-string');
+  assert.deepEqual(tk('powershell', '', 'hd'), []);
+});
+
+test('powershell: @" that is not at the end of the line is an ordinary string', () => {
+  assert.deepEqual(tk('powershell', 'x = @"a" + 1'), [['string', '"a"'], ['number', '1']]);
+  assert.equal(H.tokenizeLine('powershell', 'x = @"a"', INIT).state, INIT);
+  assert.equal(H.tokenizeLine('powershell', '@"x', INIT).state, INIT);
+  assert.equal(H.tokenizeLine('csharp', 'var s = @"', INIT).state, INIT);
+});
+
+test('css: // comments only at the line start or after whitespace, never in urls or strings', () => {
+  assert.deepEqual(tk('css', 'a { background: url(http://x/y.png); } // note'), [['section', 'a'], ['attr', 'background'], ['comment', '// note']]);
+  assert.deepEqual(tk('css', '// whole line'), [['comment', '// whole line']]);
+  assert.deepEqual(tk('css', '  // indented { not a block'), [['comment', '// indented { not a block']]);
+  assert.equal(H.tokenizeLine('css', '// {', INIT).state, INIT);
+  assert.deepEqual(tk('css', 'content: "//";', 'css'), [['attr', 'content'], ['string', '"//"']]);
+  assert.deepEqual(tk('css', 'content: "a" // x', 'css'), [['attr', 'content'], ['string', '"a"'], ['comment', '// x']]);
+  assert.deepEqual(tk('css', 'background: url( http://x/a ); color: red', 'css'), [['attr', 'background'], ['attr', 'color']]);
+  assert.deepEqual(tk('css', 'background: url("//cdn/x.png") // c', 'css'), [['attr', 'background'], ['string', '"//cdn/x.png"'], ['comment', '// c']]);
+  assert.deepEqual(tk('css', 'width: 10px; // c', 'css'), [['attr', 'width'], ['number', '10px'], ['comment', '// c']]);
+  assert.deepEqual(tk('css', '@import url(http://x/a.css);'), [['section', '@import url(http://x/a.css)']]);
+  assert.deepEqual(tk('css', '@import url( //cdn/a.css );'), [['section', '@import url( //cdn/a.css )']]);
+  assert.deepEqual(tk('css', 'a[href="x //y"] { }'), [['section', 'a[href="x //y"]']]);
+  assert.deepEqual(tk('css', 'a, b // sel'), [['section', 'a, b'], ['comment', '// sel']]);
+  // a comment line inside a block keeps the block open
+  const r = thread('css', ['a {', '  // c: 1', '  color: red', '}']);
+  assert.deepEqual(r.out[1], [['comment', '// c: 1']]);
+  assert.deepEqual(r.out[2], [['attr', 'color']]);
+  assert.equal(r.state, INIT);
+});
+
+test('bash: an escaped quote outside a string is a character, not a string start', () => {
+  assert.deepEqual(tk('bash', "echo don\\'t stop"), [['keyword', 'echo']]);
+  assert.deepEqual(tk('bash', 'echo \\"hi\\" x'), [['keyword', 'echo']]);
+  assert.deepEqual(tk('bash', "echo \\'a\\' 'b'"), [['keyword', 'echo'], ['string', "'b'"]]);
+  assert.deepEqual(tk('bash', 'echo \\$HOME \\# x'), [['keyword', 'echo']]);
+  assert.deepEqual(tk('bash', 'echo a\\'), [['keyword', 'echo']]);
+  // inside double quotes \" is still an escape; inside single quotes there are no escapes
+  assert.deepEqual(tk('bash', 'echo "a\\"b" 1'), [['keyword', 'echo'], ['string', '"a\\"b"'], ['number', '1']]);
+  assert.deepEqual(tk('bash', "echo 'a\\' b"), [['keyword', 'echo'], ['string', "'a\\'"]]);
+  assert.equal(H.tokenizeLine('bash', "echo don\\'t", INIT).state, INIT);
+  assert.deepEqual(tk('python', "x = 'a\\'b'"), [['string', "'a\\'b'"]]);
+});
+
+test('ini: a # after whitespace outside quotes starts a comment; ; only at the line start', () => {
+  assert.deepEqual(tk('ini', 'x = 1 # note'), [['attr', 'x'], ['number', '1'], ['comment', '# note']]);
+  assert.deepEqual(tk('ini', 'x = "a # b" # c'), [['attr', 'x'], ['string', '"a # b"'], ['comment', '# c']]);
+  assert.deepEqual(tk('ini', "x = 'a # b'"), [['attr', 'x'], ['string', "'a # b'"]]);
+  assert.deepEqual(tk('ini', 'url = http://x/#frag'), [['attr', 'url']]);
+  assert.deepEqual(tk('ini', 'x = a#b true'), [['attr', 'x'], ['constant', 'true']]);
+  assert.deepEqual(tk('ini', 'x = true ; not a comment 5'), [['attr', 'x'], ['constant', 'true'], ['number', '5']]);
+  assert.deepEqual(tk('ini', '  ; note'), [['comment', '; note']]);
+  assert.deepEqual(tk('ini', 'x = 1\t# tab'), [['attr', 'x'], ['number', '1'], ['comment', '# tab']]);
+});
+
+test('javascript and typescript: a quoted string never extends past the end of its line', () => {
+  for (const lang of ['javascript', 'typescript']) {
+    for (const q of ['"', "'"]) {
+      const line = `<p>don${q}t stop</p> x = 5`;
+      const r = H.tokenizeLine(lang, line, INIT);
+      const last = r.tokens[r.tokens.length - 1];
+      assert.equal(last.type, 'string', lang);
+      assert.equal(last.end, line.length, lang);
+      assert.equal(r.state, INIT, lang);
+      assert.deepEqual(tk(lang, 'y = 7', r.state), [['number', '7']], lang);
+    }
+  }
+});
+
 // -------------------------------------------------- unknown input, limits
 
-test('unknown language, plain and hostile arguments return no tokens and pass the state through', () => {
+test('unknown language, plain and hostile arguments return no tokens and a valid state', () => {
   for (const lang of ['plain', 'nope', '', '__proto__', 'constructor', 'toString', 'hasOwnProperty', null, undefined, 5, {}, []]) {
     const r = H.tokenizeLine(lang, 'if (x) "a" // 1', 'bc');
     assert.deepEqual(r.tokens, []);
-    assert.equal(r.state, 'bc');
+    assert.equal(r.state, 'bc', 'a state that is valid for some language is kept');
+    assert.equal(H.tokenizeLine(lang, 'x', 'not a state').state, INIT);
+    assert.equal(H.tokenizeLine(lang, 'x', { s: 1 }).state, INIT);
+    assert.equal(H.tokenizeLine(lang, 'x', undefined).state, INIT);
   }
   for (const line of [null, undefined, 5, {}, [], ['a']]) {
     const r = H.tokenizeLine('javascript', line, 'tl');
     assert.deepEqual(r.tokens, []);
     assert.equal(r.state, 'tl');
+    assert.equal(H.tokenizeLine('javascript', line, 'td').state, INIT, 'a foreign state is not passed through');
+    assert.equal(H.tokenizeLine('javascript', line, 7).state, INIT);
   }
   assert.deepEqual(H.tokenizeLine('javascript', 'x', undefined).tokens, []);
   assert.doesNotThrow(() => H.tokenizeLine());
+  assert.equal(H.tokenizeLine().state, INIT);
+});
+
+test('a non-string state is treated as the initial state in every language', () => {
+  for (const lang of COLOURED) {
+    for (const bad of [undefined, null, 0, 1, true, {}, [], ['bc'], () => 'bc']) {
+      assert.deepEqual(H.tokenizeLine(lang, 'x 1', bad), H.tokenizeLine(lang, 'x 1', INIT), lang);
+    }
+  }
+});
+
+test('a state string that belongs to another language is treated as initial', () => {
+  assert.deepEqual(H.tokenizeLine('json', '1', 'yb3'), H.tokenizeLine('json', '1', INIT));
+  assert.deepEqual(H.tokenizeLine('yaml', 'a: 1', 'bc'), H.tokenizeLine('yaml', 'a: 1', INIT));
+  assert.deepEqual(H.tokenizeLine('yaml', 'a: 1', 'yb100'), H.tokenizeLine('yaml', 'a: 1', INIT));
+  assert.deepEqual(H.tokenizeLine('yaml', 'a: 1', 'yb'), H.tokenizeLine('yaml', 'a: 1', INIT));
+  assert.deepEqual(H.tokenizeLine('xml', '<b>', 'hs'), H.tokenizeLine('xml', '<b>', INIT));
+  assert.deepEqual(H.tokenizeLine('javascript', 'x', 'hd'), H.tokenizeLine('javascript', 'x', INIT));
+  assert.deepEqual(H.tokenizeLine('powershell', 'x', 'td'), H.tokenizeLine('powershell', 'x', INIT));
+  assert.deepEqual(H.tokenizeLine('css', 'x', 'tl'), H.tokenizeLine('css', 'x', INIT));
 });
 
 test('a line over 20,000 characters is not coloured and the state resets to initialState()', () => {
@@ -492,29 +740,60 @@ test('a line over 20,000 characters is not coloured and the state resets to init
   assert.deepEqual(H.tokenizeLine('python', 'x'.repeat(20001), 'td'), { tokens: [], state: INIT });
 });
 
-test('state of plain text and bad lang is the state passed in (not normalised)', () => {
-  assert.equal(H.tokenizeLine('plain', 'x', 'zzz').state, 'zzz');
+test('state of plain text is initialState() unless the state passed in is a valid state', () => {
+  assert.equal(H.tokenizeLine('plain', 'x', 'zzz').state, INIT);
+  assert.equal(H.tokenizeLine('plain', 'x', 'bc').state, 'bc');
+  assert.equal(H.tokenizeLine('plain', 'x', undefined).state, INIT);
 });
 
 // -------------------------------------------------------------- performance
 
+// Every state each language can carry (the fuzz test checks that this list is complete).
+const LANG_STATES = {};
+for (const l of COLOURED) LANG_STATES[l] = ['0'];
+const addStates = (langs, states) => { for (const l of langs) LANG_STATES[l].push(...states); };
+addStates(['c', 'cpp', 'csharp', 'java', 'go', 'rust', 'php', 'javascript', 'typescript', 'sql', 'powershell'], ['bc']);
+addStates(['python', 'java'], ['td']);
+addStates(['python'], ['ts']);
+addStates(['javascript', 'typescript'], ['tl']);
+addStates(['go'], ['gb']);
+addStates(['lua'], [0, 1, 2, 3].flatMap((k) => ['lc' + k, 'ls' + k]));
+addStates(['powershell'], ['hd', 'hq']);
+addStates(['css'], ['bc', 'css', 'cbc']);
+addStates(['xml'], ['hc', 'cd', 'tag', 'tq"', "tq'"]);
+addStates(['html'], ['hc', 'cd', 'tag', 'tq"', "tq'", 'hs', 'hy', 'tags', 'tagy', 'tq"s', "tq's", 'tq"y', "tq'y"]);
+addStates(['yaml'], ['yb0', 'yb1', 'yb2', 'yb50', 'yb99']);
+const ALL_TEST_STATES = [...new Set(Object.values(LANG_STATES).flat())];
+
 const NASTY = {
   dq: '"', sq: "'", bt: '`', slash: '/', star: '*', cstart: '/*', hash: '#', dash: '-', lt: '<', brace: '{',
   bslash: '\\', space: ' ', a: 'a', dqbs: '"\\',
+  pipe: '|', gt: '>', cdata: '<![CDATA[', cdend: ']]>', scriptclose: '</script', hereopen: '@"', hereclose: '"@',
+  dslash: '//', escsq: "\\'",
 };
+/** Best of three runs, so a busy machine does not make the suite flaky. */
+function bestMs(fn) {
+  let best = Infinity;
+  for (let k = 0; k < 3; k++) {
+    const t0 = process.hrtime.bigint();
+    fn();
+    best = Math.min(best, Number(process.hrtime.bigint() - t0) / 1e6);
+  }
+  return best;
+}
 const timings = [];
-test('performance: 20,000-character awkward lines finish under 50 ms in every language', () => {
+test('performance: 20,000-character awkward lines finish under 50 ms in every language and every state', () => {
   for (const lang of COLOURED) {
     for (const [name, unit] of Object.entries(NASTY)) {
       const line = unit.repeat(Math.ceil(20000 / unit.length)).slice(0, 20000);
       assert.equal(line.length, 20000);
-      for (const st of [INIT]) {
-        const t0 = process.hrtime.bigint();
+      for (const st of LANG_STATES[lang]) {
         const r = H.tokenizeLine(lang, line, st);
-        const ms = Number(process.hrtime.bigint() - t0) / 1e6;
-        timings.push([ms, lang, name]);
         checkInvariants(line, r.tokens);
-        assert.ok(ms < 50, `${lang} ${name}: ${ms.toFixed(1)} ms`);
+        assert.ok(LANG_STATES[lang].includes(r.state), `${lang} returned unlisted state ${r.state}`);
+        const ms = bestMs(() => H.tokenizeLine(lang, line, st));
+        timings.push([ms, lang, `${name}@${st}`]);
+        assert.ok(ms < 50, `${lang} ${name} in state ${st}: ${ms.toFixed(1)} ms`);
       }
     }
   }
@@ -537,13 +816,15 @@ test('performance: more awkward shapes (variables, percent, brackets, equals, do
 });
 
 test('performance: carried-in multi-line states on a long line are also linear', () => {
-  const line = '"\\'.repeat(10000);
-  for (const [lang, st] of [['python', 'td'], ['javascript', 'tl'], ['go', 'gb'], ['lua', 'lc3'], ['c', 'bc'], ['html', 'hc'], ['html', 'tq"'], ['css', 'cbc']]) {
-    const t0 = process.hrtime.bigint();
-    const r = H.tokenizeLine(lang, line, st);
-    const ms = Number(process.hrtime.bigint() - t0) / 1e6;
-    checkInvariants(line, r.tokens);
-    assert.ok(ms < 50, `${lang} ${st}: ${ms.toFixed(1)} ms`);
+  const mixed = 'a b: | # "\\</script ]]> @" \'\\ // '.repeat(800).slice(0, 20000);
+  for (const line of ['"\\'.repeat(10000), mixed]) {
+    for (const lang of COLOURED) {
+      for (const st of LANG_STATES[lang]) {
+        checkInvariants(line, H.tokenizeLine(lang, line, st).tokens);
+        const ms = bestMs(() => H.tokenizeLine(lang, line, st));
+        assert.ok(ms < 50, `${lang} ${st}: ${ms.toFixed(1)} ms`);
+      }
+    }
   }
 });
 
@@ -553,22 +834,40 @@ test('fuzz: tokens never overlap, never exceed the line, never empty; never thro
   let seed = 12345;
   const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
   const alphabet = ['"', "'", '`', '/', '*', '#', '-', '<', '>', '{', '}', '\\', '$', '%', '@', ':', '=', '[', ']', '(', ')', '!', '?', ';',
-    'a', 'b', 'e', 'i', 'f', 'r', 'x', 'if', 'rem', '0', '1', '9', ' ', ' ', '\t'];
-  const pool = ['0'];
-  for (let k = 0; k < 20000; k++) {
+    'a', 'b', 'e', 'i', 'f', 'r', 'x', 'if', 'rem', '0', '1', '9', ' ', ' ', '\t',
+    '|', '- ', ': ', '| ', '>-', '# ', '//', '</script', '</style', '<script', '<style', '<![CDATA[', ']]>', '@"', '"@', "\\'",
+    'url(', '#[', '-->', '<!--', '  ', 'k: |', '    '];
+  const hostile = [undefined, null, 0, 7, true, {}, [], 'zzz', 'yb100', 'yb-1', 'yb'];
+  const seen = new Set();
+  for (let k = 0; k < 40000; k++) {
     const lang = H.LANGUAGE_IDS[Math.floor(rnd() * H.LANGUAGE_IDS.length)];
     const len = Math.floor(rnd() * 40);
     let s = '';
     for (let j = 0; j < len; j++) s += alphabet[Math.floor(rnd() * alphabet.length)];
-    const st = pool[Math.floor(rnd() * pool.length)];
+    // random carried states drawn from all states of all languages, now and then a non-string or bogus one
+    const st = rnd() < 0.1 ? hostile[Math.floor(rnd() * hostile.length)] : ALL_TEST_STATES[Math.floor(rnd() * ALL_TEST_STATES.length)];
     const r = H.tokenizeLine(lang, s, st);
     checkInvariants(s, r.tokens);
     assert.equal(typeof r.state, 'string');
-    if (pool.length < 200 && !pool.includes(r.state)) pool.push(r.state);
+    // the returned state is valid input for the next line of the same language
+    assert.ok(lang === 'plain' || LANG_STATES[lang].includes(r.state), `${lang} returned unlisted state ${r.state}`);
+    seen.add(`${lang}:${r.state}`);
     // Re-running is deterministic and does not mutate anything.
     assert.deepEqual(H.tokenizeLine(lang, s, st), r);
   }
-  assert.ok(pool.length > 5, 'saw several states: ' + pool.join(','));
+  assert.ok(seen.size > 40, 'saw many (language, state) pairs: ' + seen.size);
+  // threading random documents through every language keeps every state valid
+  for (const lang of COLOURED) {
+    let st = INIT;
+    for (let k = 0; k < 400; k++) {
+      let s = '';
+      for (let j = 0; j < 10; j++) s += alphabet[Math.floor(rnd() * alphabet.length)];
+      const r = H.tokenizeLine(lang, s, st);
+      checkInvariants(s, r.tokens);
+      assert.ok(LANG_STATES[lang].includes(r.state), `${lang} ${r.state}`);
+      st = r.state;
+    }
+  }
 });
 
 // ------------------------------------------------------------ matchBracket
@@ -684,6 +983,23 @@ test('matchBracket: very long lines stay bounded', () => {
   const t0 = process.hrtime.bigint();
   assert.equal(H.matchBracket(() => big, 3000, 0, 1, 'javascript', () => INIT), null);
   assert.ok(Number(process.hrtime.bigint() - t0) / 1e6 < 1000);
+});
+
+test('matchBracket: a line over 20,000 characters contributes no brackets; as the caret line it gives null', () => {
+  const longLine = '")" '.repeat(5000) + '('; // 20,001 characters, not tokenized
+  assert.ok(longLine.length > 20000);
+  // brackets on the over-long line are skipped, so the ) inside its strings does not close the ( above
+  const lines = ['f(', longLine, 'x)'];
+  assert.deepEqual(H.matchBracket((i) => lines[i], 3, 0, 2, 'javascript', () => INIT), { open: pos(0, 1), close: pos(2, 1) });
+  // searching backwards skips it too
+  assert.deepEqual(H.matchBracket((i) => lines[i], 3, 2, 2, 'javascript', () => INIT), { open: pos(0, 1), close: pos(2, 1) });
+  // a line of exactly 20,000 characters is still read
+  const ok = '(' + ' '.repeat(19998) + ')';
+  assert.equal(ok.length, 20000);
+  assert.deepEqual(H.matchBracket(() => ok, 1, 0, 1, 'javascript', () => INIT), { open: pos(0, 0), close: pos(0, 19999) });
+  // caret on an over-long line: null, even next to a real bracket
+  assert.equal(H.matchBracket(() => '()' + ' '.repeat(20000), 1, 0, 1, 'javascript', () => INIT), null);
+  assert.equal(H.matchBracket(() => '()' + ' '.repeat(20000), 1, 0, 0, 'plain'), null);
 });
 
 test('matchBracket: missing or odd stateAt is treated as the initial state', () => {
