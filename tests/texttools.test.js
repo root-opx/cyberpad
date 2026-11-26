@@ -110,10 +110,10 @@ test('engagement templates and UTC stamps', () => {
 });
 
 test('sectionOf merges Theme, Templates and Transform and leaves the rest', () => {
-  assert.equal(T.sectionOf('Theme'), 'View');
+  assert.equal(T.sectionOf('Theme'), 'Settings');
   assert.equal(T.sectionOf('Templates'), 'Insert');
   assert.equal(T.sectionOf('Transform'), 'Text');
-  for (const g of ['Note', 'File', 'View', 'Insert', 'Tools', 'CTF', 'Vault', 'Security', 'Recent notes']) assert.equal(T.sectionOf(g), g);
+  for (const g of ['Note', 'File', 'Edit', 'Format', 'Text', 'Insert', 'View', 'Settings', 'Tools', 'CTF', 'Vault', 'Security', 'Recent notes']) assert.equal(T.sectionOf(g), g);
   assert.equal(T.sectionOf('__proto__'), '__proto__');
 });
 
@@ -124,9 +124,9 @@ test('paletteSections orders, merges, drops empty sections and keeps item order'
     { group: 'View', title: 'v1' }, { group: 'Transform', title: 'x1' },
   ];
   const out = T.paletteSections(items);
-  assert.deepEqual(out.map((s) => s.name), ['Recent notes', 'Note', 'View', 'Insert', 'Text', 'Security']);
+  assert.deepEqual(out.map((s) => s.name), ['Recent notes', 'Note', 'Text', 'Insert', 'View', 'Settings', 'Security']);
   assert.deepEqual(out.find((s) => s.name === 'Insert').items.map((i) => i.title), ['t1', 'i1']);
-  assert.deepEqual(out.find((s) => s.name === 'View').items.map((i) => i.title), ['th1', 'v1']);
+  assert.deepEqual(out.find((s) => s.name === 'Settings').items.map((i) => i.title), ['th1']);
   assert.equal(items.length, 8);
 });
 
@@ -144,7 +144,9 @@ test('paletteScore still matches old group names and also the new section names'
   assert.ok(T.paletteScore('transform', upper) > 0);
   assert.ok(T.paletteScore('text', upper) > 0);
   assert.ok(T.paletteScore('templates', finding) > 0);
-  assert.ok(T.paletteScore('view', amber) > 0);
+  assert.ok(T.paletteScore('theme', amber) > 0);
+  assert.ok(T.paletteScore('settings', amber) > 0);
+  assert.ok(T.paletteScore('settings', { group: 'Settings', title: 'Turn on CRT effect' }) > 0);
   assert.ok(T.paletteScore('zzzz', upper) <= 0);
   assert.equal(T.paletteScore('upper', upper), T.fuzzyScore('upper', 'UPPERCASE'));
 });
@@ -193,8 +195,8 @@ test('inCodeAt: a four-backtick fence opens code and any later fence line of thr
 
 // ---- palette: the CTF section ----
 
-test('PALETTE_SECTIONS: CTF sits between Tools and Vault; sectionOf keeps it', () => {
-  assert.deepEqual([...T.PALETTE_SECTIONS], ['Recent notes', 'Note', 'File', 'View', 'Insert', 'Text', 'Tools', 'CTF', 'Vault', 'Security']);
+test('PALETTE_SECTIONS: thirteen sections, Edit and Format after File, Settings after View, CTF between Tools and Vault', () => {
+  assert.deepEqual([...T.PALETTE_SECTIONS], ['Recent notes', 'Note', 'File', 'Edit', 'Format', 'Text', 'Insert', 'View', 'Settings', 'Tools', 'CTF', 'Vault', 'Security']);
   assert.equal(Object.isFrozen(T.PALETTE_SECTIONS), true);
   assert.equal(T.sectionOf('CTF'), 'CTF');
   const out = T.paletteSections([{ group: 'Vault', title: 'v' }, { group: 'CTF', title: 'c' }, { group: 'Tools', title: 't' }, { group: 'Security', title: 's' }]);

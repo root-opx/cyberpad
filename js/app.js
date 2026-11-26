@@ -20,7 +20,7 @@
     findRegex: $('find-regex'), findCount: $('find-count'),
     stSave: $('st-save'), stSaveText: $('st-save-text'), stPos: $('st-pos'), stWords: $('st-words'), stLang: $('st-lang'), stSel: $('st-sel'),
     stLock: $('st-lock'), stTimer: $('st-timer'), stClock: $('st-clock'),
-    slash: $('slash'), palette: $('palette'), paletteInput: $('palette-input'), paletteList: $('palette-list'),
+    slash: $('slash'), seltools: $('seltools'), statusbar: $('statusbar'), palette: $('palette'), paletteInput: $('palette-input'), paletteList: $('palette-list'),
     paletteSections: $('palette-sections'), paletteStatus: $('palette-status'), paletteFoot: $('palette-foot'),
     modal: $('modal'), toasts: $('toasts'), boot: $('boot'), bootLog: $('boot-log'), dropzone: $('dropzone'),
     fileInput: $('file-input'), hashFileInput: $('hash-file-input'), wordmark: document.querySelector('.wordmark-text'),
@@ -394,6 +394,7 @@
     S.plain.clear();
     S.meta.clear();
     closeSlash();
+    hideSeltools();
     renderAll();
     if (clip.pending) clearClipboardNow();
     toast(reason || 'Encrypted notes locked.');
@@ -696,6 +697,7 @@
   const EDITOR_PLACEHOLDER = els.editor.placeholder;
 
   function renderEditor() {
+    hideSeltools();
     const note = active();
     const locked = !note || isLocked(note);
     els.lockscreen.hidden = !locked;
@@ -1792,6 +1794,7 @@
   function openNote(id, { focus = true } = {}) {
     if (!noteById(id)) return;
     closeSlash();
+    hideSeltools();
     arrowMemo = null;
     S.activeId = id;
     expandFolder(noteById(id).folder); // opening a note shows the folder it is in
@@ -2014,7 +2017,7 @@
   function replaceRangeNow(start, end, text, caretStart, caretEnd) {
     const ed = els.editor;
     ed.focus();
-    ed.setSelectionRange(start, end);
+    setSel(start, end);
     const before = ed.value;
     let ok = false;
     // execCommand acts on whatever has focus, so only use it when the editor really does.
@@ -2027,7 +2030,7 @@
       ed.value = expected;
       ed.dispatchEvent(new Event('input', { bubbles: true }));
     }
-    ed.setSelectionRange(caretStart, caretEnd);
+    setSel(caretStart, caretEnd);
   }
 
   function continueList() {
@@ -2113,7 +2116,7 @@
   function selectRange(start, end, { keepFocusOn } = {}) {
     const ed = els.editor;
     ed.focus();
-    ed.setSelectionRange(start, end);
+    setSel(start, end);
     scrollToOffset(start);
     if (keepFocusOn) keepFocusOn.focus();
     scheduleStatus();
@@ -2215,7 +2218,8 @@
       }
     }
 
-    if (e.key === 'Escape') { S.tabEscape = true; return; }
+    if (e.key === 'Escape') { hideSeltools(); S.tabEscape = true; return; }
+    if (selKeyDown(e)) hideSeltools();
     const escaped = S.tabEscape;
     S.tabEscape = false;
 
@@ -2261,7 +2265,7 @@
     else if (kind === 'move') r = codeedit.moveLines(value, s, t, id, dir);
     if (!r) return false;
     // A result that leaves the text as it is only moves the selection: nothing is edited, nothing is dispatched.
-    if (value.slice(r.start, r.end) === r.insert) { ed.setSelectionRange(r.selStart, r.selEnd); return true; }
+    if (value.slice(r.start, r.end) === r.insert) { setSel(r.selStart, r.selEnd); return true; }
     if (value.length - (r.end - r.start) + r.insert.length > store.LIMITS.body) { toast('The result would be too long for one note.', 'error'); return true; }
     replaceRange(r.start, r.end, r.insert, r.selStart, r.selEnd);
     return true;
@@ -2351,7 +2355,7 @@
     if (!r) return;
     e.preventDefault();
     // A result that leaves the text as it is only moves the selection: nothing is edited, nothing is dispatched.
-    if (value.slice(r.start, r.end) === r.insert) { ed.setSelectionRange(r.selStart, r.selEnd); return; }
+    if (value.slice(r.start, r.end) === r.insert) { setSel(r.selStart, r.selEnd); return; }
     replaceRange(r.start, r.end, r.insert, r.selStart, r.selEnd);
   }
 
@@ -2367,6 +2371,252 @@
     if (sel.includes('\n') || sel.length > 300) return;
     e.preventDefault();
     replaceRange(ed.selectionStart, ed.selectionEnd, `[${sel}](${href})`);
+  }
+
+  // ------------------------------------------------------------ selection toolbar
+  //
+  // A row of buttons above a finished selection. It holds labels only, never note text: it is built when it shows
+  // and emptied when it hides. It never takes focus by itself (mousedown on it is cancelled); Alt+F10 moves focus in.
+
+  const SEL_KEYS = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown'];
+  let selMouseDown = false;  // the mouse button went down in the editor and is not up yet
+  let selKeyHeld = '';       // a selection key (Shift+arrow, Ctrl+A) is down: show the toolbar when it comes up
+  let selSnapshot = null;    // the editor selection, kept while focus is inside the toolbar
+  let selQuietUntil = 0;     // our own edits can scroll the editor: its scroll events do not hide the toolbar until then
+  let selProgAt = 0;         // when code last set the selection, so the `select` event it causes is not the user's
+  let selTimer = 0;
+  let selBuiltFor = '';
+
+  /** setSelectionRange for code: its `select` event must not pop the toolbar up. */
+  function setSel(start, end, dir) {
+    selProgAt = performance.now();
+    els.editor.setSelectionRange(start, end, dir);
+  }
+
+  function selKeyDown(e) {
+    const mod = e.ctrlKey || e.metaKey;
+    return (e.shiftKey && !mod && SEL_KEYS.includes(e.key)) || (mod && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'a');
+  }
+
+  function openDecodeDialog(selectionText) {
+    // Stub: the CTF step replaces this body. The selected text is passed in; nothing is kept.
+    void selectionText;
+    toast('Decode or encode is not available yet.');
+  }
+
+  function toggleSelectionToolbar() {
+    S.settings.selectionToolbar = !S.settings.selectionToolbar;
+    saveSettings();
+    if (!S.settings.selectionToolbar) hideSeltools();
+    toast(S.settings.selectionToolbar ? 'Selection toolbar on.' : 'Selection toolbar off.');
+  }
+
+  /** What each formatting action does to the editor text: a texttools or codeedit result, or null. */
+  function formatResult(kind, note, value, s, t) {
+    switch (kind) {
+      case 'bold': return T.toggleWrap(value, s, t, '**');
+      case 'italic': return T.toggleWrap(value, s, t, '*');
+      case 'strike': return T.toggleWrap(value, s, t, '~~');
+      case 'mark': return T.toggleWrap(value, s, t, '==');
+      case 'code': return T.toggleWrap(value, s, t, '`');
+      case 'link': return T.makeLink(value, s, t);
+      case 'quote': return T.toggleLinePrefix(value, s, t, '> ');
+      case 'list': return T.toggleLinePrefix(value, s, t, '- ');
+      case 'comment': return codeedit.toggleComment(value, s, t, note.lang);
+      case 'indent': return codeedit.tab(value, s, t, note.lang, false);
+      case 'outdent': return codeedit.tab(value, s, t, note.lang, true);
+      default: return null;
+    }
+  }
+
+  const SCRIPT_FORMATS = ['comment', 'indent', 'outdent'];
+
+  /**
+   * Applies a formatting action to the editor's current text and selection as one undo step. The Format palette
+   * section and the selection toolbar share it. With an empty selection toggleWrap inserts an empty pair of markers.
+   */
+  function formatAction(kind) {
+    const note = active();
+    const ed = els.editor;
+    if (!isEditable(note) || ed.hidden || isScript(note) !== SCRIPT_FORMATS.includes(kind)) return false;
+    const { selectionStart: s, selectionEnd: t, value } = ed;
+    const r = formatResult(kind, note, value, s, t);
+    if (!r) return false;
+    // A result that leaves the text as it is only moves the selection: nothing is edited, nothing is dispatched.
+    if (value.slice(r.start, r.end) === r.insert) { setSel(r.selStart, r.selEnd); return true; }
+    if (value.length - (r.end - r.start) + r.insert.length > store.LIMITS.body) { toast('The result would be too long for one note.', 'error'); return true; }
+    replaceRange(r.start, r.end, r.insert, r.selStart, r.selEnd);
+    return true;
+  }
+
+  /** The buttons for a note: [id, visible label, accessible name, extra class]. */
+  function seltoolSpecs(note) {
+    if (!isScript(note)) {
+      return [['bold', 'B', 'Bold', 'seltool-bold'], ['italic', 'I', 'Italic', 'seltool-italic'], ['strike', 'S', 'Strikethrough', 'seltool-strike'],
+        ['mark', 'Mark', 'Highlight', ''], ['code', 'Code', 'Code', ''], ['link', 'Link', 'Link', ''], ['quote', 'Quote', 'Quote', ''],
+        ['list', 'List', 'Bulleted list', ''], ['decode', 'Decode…', 'Decode or encode', '']];
+    }
+    const lang = codeedit.language(note.lang);
+    const specs = [];
+    if (lang && (lang.lineComment || lang.blockComment)) specs.push(['comment', 'Comment', 'Comment or uncomment', '']);
+    specs.push(['indent', 'Indent', 'Indent', ''], ['outdent', 'Outdent', 'Outdent', ''], ['decode', 'Decode…', 'Decode or encode', '']);
+    return specs;
+  }
+
+  function seltoolsWanted(inToolbarOk) {
+    const ed = els.editor;
+    const focused = document.activeElement === ed || (inToolbarOk && els.seltools.contains(document.activeElement));
+    return S.settings.selectionToolbar && isEditable(active()) && !ed.hidden && !selMouseDown && focused
+      && ed.selectionStart !== ed.selectionEnd && !els.modal.open && !els.palette.open && !S.slash.open;
+  }
+
+  function hideSeltools() {
+    clearTimeout(selTimer);
+    const box = els.seltools;
+    if (!box || (box.hidden && !box.firstChild)) return;
+    box.hidden = true;
+    box.replaceChildren();
+    selBuiltFor = '';
+    selSnapshot = null;
+  }
+
+  function scheduleSeltools(delay = 0) {
+    clearTimeout(selTimer);
+    selTimer = setTimeout(showSeltools, delay);
+  }
+
+  function showSeltools() {
+    clearTimeout(selTimer);
+    if (!seltoolsWanted(true)) { hideSeltools(); return; }
+    const box = els.seltools;
+    const note = active();
+    const specs = seltoolSpecs(note);
+    const built = specs.map((x) => x[0]).join();
+    if (selBuiltFor !== built) {
+      box.replaceChildren(...specs.map(([act, label, name, cls], i) => h('button', {
+        type: 'button', class: `seltool ${cls}`.trim(), tabindex: i === 0 ? '0' : '-1', title: name, 'aria-label': name, 'data-act': act,
+      }, label)));
+      selBuiltFor = built;
+    }
+    box.hidden = false;
+    placeSeltools();
+  }
+
+  function placeSeltools() {
+    const box = els.seltools;
+    if (narrow.matches) { // phones: a full-width row just above the status bar
+      box.style.left = '';
+      box.style.top = '';
+      box.style.bottom = `${Math.max(0, Math.ceil(window.innerHeight - els.statusbar.getBoundingClientRect().top))}px`;
+      return;
+    }
+    box.style.bottom = '';
+    const ed = els.editor;
+    const r = ed.getBoundingClientRect();
+    const w = box.offsetWidth;
+    const hgt = box.offsetHeight;
+    const a = caret.coords(ed, ed.selectionStart);
+    let top = r.top + a.top - hgt - 6;
+    if (top < Math.max(8, r.top)) { // no room above the selection's start: go below its end
+      const b = caret.coords(ed, ed.selectionEnd);
+      top = r.top + b.top + b.height + 6;
+    }
+    top = Math.max(8, Math.min(top, window.innerHeight - hgt - 8));
+    const left = Math.max(8, Math.min(r.left + a.left, window.innerWidth - w - 8));
+    box.style.top = `${Math.floor(top)}px`;
+    box.style.left = `${Math.floor(left)}px`;
+  }
+
+  function focusSeltoolButton(btns, i) {
+    btns.forEach((b, k) => b.setAttribute('tabindex', k === i ? '0' : '-1'));
+    btns[i].focus();
+  }
+
+  /** Alt+F10: focus moves to the first button. Returns false when the toolbar is not showing. */
+  function focusSeltools() {
+    const btns = [...els.seltools.querySelectorAll('button')];
+    if (els.seltools.hidden || !btns.length) return false;
+    selSnapshot = saveEditorSelection();
+    focusSeltoolButton(btns, 0);
+    return true;
+  }
+
+  /** Esc or Tab inside the toolbar: focus returns to the editor with its selection intact. */
+  function leaveSeltools() {
+    const sel = selSnapshot || saveEditorSelection();
+    els.editor.focus();
+    restoreEditorSelection(sel);
+    selQuietUntil = performance.now() + 300;
+    showSeltools();
+  }
+
+  function runSeltool(act, btn) {
+    const ed = els.editor;
+    const inToolbar = els.seltools.contains(document.activeElement);
+    if (act === 'decode') {
+      const text = ed.value.slice(ed.selectionStart, ed.selectionEnd);
+      if (inToolbar) { const sel = saveEditorSelection(); ed.focus(); restoreEditorSelection(sel); } // a dialog gives focus back to the editor
+      hideSeltools();
+      openDecodeDialog(text);
+      return;
+    }
+    formatAction(act);
+    selQuietUntil = performance.now() + 300;
+    if (inToolbar && btn.isConnected) btn.focus({ preventScroll: true });
+    selSnapshot = saveEditorSelection();
+    showSeltools(); // follow the new selection; the toolbar stays for the next button
+  }
+
+  function wireSeltools() {
+    const ed = els.editor;
+    const box = els.seltools;
+    ed.addEventListener('mousedown', () => { selMouseDown = true; hideSeltools(); });
+    document.addEventListener('mouseup', () => {
+      if (!selMouseDown) return;
+      selMouseDown = false;
+      scheduleSeltools();
+    });
+    ed.addEventListener('keydown', (e) => { if (selKeyDown(e)) selKeyHeld = e.key.toLowerCase(); });
+    ed.addEventListener('keyup', (e) => {
+      if (selKeyHeld && e.key.toLowerCase() === selKeyHeld) { selKeyHeld = ''; scheduleSeltools(); return; }
+      if (ed.selectionStart === ed.selectionEnd) hideSeltools();
+    });
+    ed.addEventListener('select', () => {
+      if (selMouseDown || selKeyHeld || performance.now() - selProgAt < 300) return;
+      scheduleSeltools(120);
+    });
+    ed.addEventListener('input', () => { if (!programmaticInsert) hideSeltools(); });
+    ed.addEventListener('blur', (e) => {
+      if (e.relatedTarget && box.contains(e.relatedTarget)) return;
+      hideSeltools();
+    });
+    document.addEventListener('selectionchange', () => {
+      if (!box.hidden && document.activeElement === ed && ed.selectionStart === ed.selectionEnd) hideSeltools();
+    });
+    window.addEventListener('resize', hideSeltools);
+
+    box.addEventListener('mousedown', (e) => e.preventDefault()); // the editor keeps focus and its selection
+    box.addEventListener('click', (e) => {
+      const b = e.target instanceof Element ? e.target.closest('button[data-act]') : null;
+      if (b) runSeltool(b.dataset.act, b);
+    });
+    box.addEventListener('focusout', (e) => {
+      if (e.relatedTarget && (box.contains(e.relatedTarget) || e.relatedTarget === ed)) return;
+      hideSeltools();
+    });
+    box.addEventListener('keydown', (e) => {
+      const btns = [...box.querySelectorAll('button')];
+      const i = btns.indexOf(document.activeElement);
+      if (i < 0) return;
+      const n = btns.length;
+      let to = -1;
+      if (e.key === 'ArrowRight') to = (i + 1) % n;
+      else if (e.key === 'ArrowLeft') to = (i - 1 + n) % n;
+      else if (e.key === 'Home') to = 0;
+      else if (e.key === 'End') to = n - 1;
+      if (to >= 0) { e.preventDefault(); focusSeltoolButton(btns, to); return; }
+      if (e.key === 'Escape' || e.key === 'Tab') { e.preventDefault(); e.stopPropagation(); leaveSeltools(); }
+    });
   }
 
   // ------------------------------------------------------------ slash menu
@@ -2396,6 +2646,7 @@
     els.slash.replaceChildren(...sl.items.map((c, i) => h('div', {
       class: 'slash-item', role: 'option', 'data-idx': i, 'aria-selected': String(i === sl.idx), id: `slash-${c.name}`,
     }, h('span', { class: 'name' }, `/${c.name}`), h('span', { class: 'desc' }, c.desc))));
+    hideSeltools();
     els.slash.hidden = false;
     els.editor.setAttribute('aria-activedescendant', `slash-${sl.items[sl.idx].name}`);
     const c = caret.coords(els.editor, sl.start);
@@ -2578,6 +2829,7 @@
   function commandList() {
     const note = active();
     const editable = isEditable(note);
+    const markdownEditable = editable && !isScript(note);
     const C = (group, title, run, keys, when = true) => ({ group, title, run, keys, when });
     const tf = (title, key) => C('Transform', title, () => applyTransform(T.TRANSFORMS[key], title), null, editable);
     const sx = (title, key) => C('Security', title, () => applyTransform(secops.TRANSFORMS[key], title), null, editable);
@@ -2588,7 +2840,6 @@
       C('Note', 'Duplicate note', duplicateNote, null, editable && !note.cipher),
       C('Note', 'Show version history', showHistory, null, editable),
       C('Note', 'Go to heading', () => setTimeout(() => openPalette('@'), 0), '@', editable && !isScript(note)),
-      C('Note', 'Go to line…', gotoLineDialog, 'Ctrl G', editable),
       C('Note', 'Script mode: choose a language…', chooseLanguage, null, editable),
       C('Note', 'Back to a Markdown note', () => setNoteLang(active(), '', true), null, editable && isScript(note)),
       C('Note', 'Move to folder…', moveToFolder, null, !!note),
@@ -2607,19 +2858,33 @@
       C('File', 'Export backup of all notes', exportBackup),
       C('File', 'Export encrypted backup of all notes', exportEncryptedBackup),
       C('File', 'Import a file', () => els.fileInput.click()),
+      C('Edit', 'Find and replace', () => openFind(), 'Ctrl F', editable),
+      C('Edit', 'Go to line…', gotoLineDialog, 'Ctrl G', editable),
+      C('Edit', 'Comment or uncomment lines', () => applyLineEdit('comment'), 'Ctrl /', editable && isScript(note)),
+      C('Edit', 'Duplicate line', () => applyLineEdit('duplicate'), 'Ctrl Shift D', editable),
+      C('Edit', 'Move line up', () => applyLineEdit('move', -1), 'Alt ↑', editable),
+      C('Edit', 'Move line down', () => applyLineEdit('move', 1), 'Alt ↓', editable),
+      C('Format', 'Bold', () => formatAction('bold'), null, markdownEditable),
+      C('Format', 'Italic', () => formatAction('italic'), null, markdownEditable),
+      C('Format', 'Strikethrough', () => formatAction('strike'), null, markdownEditable),
+      C('Format', 'Highlight', () => formatAction('mark'), null, markdownEditable),
+      C('Format', 'Code', () => formatAction('code'), null, markdownEditable),
+      C('Format', 'Link', () => formatAction('link'), null, markdownEditable),
+      C('Format', 'Quote', () => formatAction('quote'), null, markdownEditable),
+      C('Format', 'Bulleted list', () => formatAction('list'), null, markdownEditable),
       C('View', 'Layout: Write only', () => setView('edit'), null, S.settings.view !== 'edit'),
       C('View', 'Layout: Split', () => setView('split'), null, S.settings.view !== 'split'),
       C('View', 'Layout: Read only', () => setView('preview'), null, S.settings.view !== 'preview'),
       C('View', 'Show or hide note list', toggleSidebar, 'Ctrl B'),
       C('View', 'Zen mode', toggleZen, 'Alt Z'),
-      C('View', 'Find and replace', () => openFind(), 'Ctrl F', editable),
       ...store.THEMES.filter((t) => t !== S.settings.theme).map((t) => C('Theme', `Theme: ${THEME_NAMES[t]}`, () => setTheme(t))),
-      C('View', S.settings.crt ? 'Turn off CRT effect' : 'Turn on CRT effect', toggleCrt),
-      C('View', S.settings.sound ? 'Turn off typing sounds' : 'Turn on typing sounds', toggleSound),
-      C('View', S.settings.arrows ? 'Turn off arrow replacement' : 'Turn on arrow replacement', toggleArrows),
-      C('View', lineNumbersTitle(), cycleLineNumbers),
-      C('View', S.settings.syntaxColors ? 'Turn off syntax colouring' : 'Turn on syntax colouring', toggleSyntaxColors),
-      C('View', S.settings.boot ? 'Skip the boot screen on start' : 'Show the boot screen on start', toggleBoot),
+      C('Settings', S.settings.crt ? 'Turn off CRT effect' : 'Turn on CRT effect', toggleCrt),
+      C('Settings', S.settings.sound ? 'Turn off typing sounds' : 'Turn on typing sounds', toggleSound),
+      C('Settings', S.settings.arrows ? 'Turn off arrow replacement' : 'Turn on arrow replacement', toggleArrows),
+      C('Settings', lineNumbersTitle(), cycleLineNumbers),
+      C('Settings', S.settings.syntaxColors ? 'Turn off syntax colouring' : 'Turn on syntax colouring', toggleSyntaxColors),
+      C('Settings', S.settings.boot ? 'Skip the boot screen on start' : 'Show the boot screen on start', toggleBoot),
+      C('Settings', S.settings.selectionToolbar ? 'Turn off the selection toolbar' : 'Turn on the selection toolbar', toggleSelectionToolbar),
       C('View', 'Keyboard shortcuts', showShortcuts, 'F1'),
       C('View', 'About CyberPad', showAbout, null, platform.isDesktop),
       C('Insert', 'Insert date', () => insertText(T.ymd(new Date())), '/date', editable),
@@ -2630,10 +2895,6 @@
       C('Templates', 'Insert incident timeline (UTC)', () => insertSlash('timeline'), '/timeline', editable),
       C('Templates', 'Insert UTC timestamp', () => insertSlash('utc'), '/utc', editable),
       C('Templates', 'New encrypted credentials note', newCredentialsNote, '/credentials'),
-      C('Text', 'Comment or uncomment lines', () => applyLineEdit('comment'), 'Ctrl /', editable && isScript(note)),
-      C('Text', 'Duplicate line', () => applyLineEdit('duplicate'), 'Ctrl Shift D', editable),
-      C('Text', 'Move line up', () => applyLineEdit('move', -1), 'Alt ↑', editable),
-      C('Text', 'Move line down', () => applyLineEdit('move', 1), 'Alt ↓', editable),
       tf('UPPERCASE', 'upper'),
       tf('lowercase', 'lower'),
       tf('Title Case', 'title'),
@@ -2711,12 +2972,13 @@
 
   function restoreEditorSelection(sel) {
     if (!sel || els.editor.hidden) return;
-    els.editor.setSelectionRange(sel.start, sel.end, sel.dir);
+    setSel(sel.start, sel.end, sel.dir);
     els.editor.scrollTop = sel.top;
   }
 
   function openPalette(prefill = '') {
     closeSlash();
+    hideSeltools();
     if (els.modal.open) return;
     if (!els.palette.open) {
       S.paletteSel = saveEditorSelection();
@@ -3488,6 +3750,7 @@
 
   function showDialog({ title, body = [], actions, className = '', initialFocus, onSubmit }) {
     return new Promise((resolve) => {
+      hideSeltools();
       if (els.palette.open) { S.paletteSel = null; els.palette.close(); }
       if (finishCurrentDialog) finishCurrentDialog(null); // cancel a dialog that is still open
       const dlg = els.modal;
@@ -3605,7 +3868,7 @@
       ['Ctrl Enter', 'Make a task, or tick it'], ['Tab / Shift Tab', 'Indent / outdent'], ['Esc, then Tab', 'Move focus out of the editor'],
       ['Ctrl /', 'Comment or uncomment lines (script notes)'], ['Ctrl Shift D', 'Duplicate the line or selected lines'],
       ['Alt ↑ / Alt ↓', 'Move the line or selected lines'], ['Ctrl G', 'Go to line (next match while the find bar is open)'],
-      ['Paste a URL on a selection', 'Make a link'],
+      ['Paste a URL on a selection', 'Make a link'], ['Alt F10', 'Format toolbar (when text is selected)'],
       ['Delete', 'Delete the focused note in the list'], ['Ctrl Z', 'Undo the last delete (in the note list)'],
     ];
     if (platform.isDesktop) {
@@ -4820,6 +5083,10 @@
     if (e.key === 'F3' || (mod && !e.altKey && k === 'g')) { e.preventDefault(); findStep(e.shiftKey ? -1 : 1); return; }
     if (e.key === 'F1') { e.preventDefault(); showShortcuts(); return; }
 
+    if (e.altKey && !mod && !e.shiftKey && e.key === 'F10') {
+      if (focusSeltools()) e.preventDefault();
+      return;
+    }
     if (e.altKey && !mod && !e.shiftKey) {
       const actions = { KeyN: newNote, KeyT: openDaily, KeyP: togglePin, KeyL: () => lockAll(), KeyZ: toggleZen, KeyI: showIocs };
       const fn = actions[e.code];
@@ -4833,6 +5100,7 @@
     ed.addEventListener('keydown', onEditorKeydown);
     ed.addEventListener('paste', onEditorPaste);
     els.stLang.addEventListener('click', chooseLanguage);
+    wireSeltools();
     ['keyup', 'mouseup', 'select', 'focus'].forEach((t) => ed.addEventListener(t, scheduleStatus));
     ed.addEventListener('blur', () => setTimeout(() => { if (document.activeElement !== ed) closeSlash(); }, 120));
     ed.addEventListener('mousedown', () => { arrowMemo = null; closeSlash(); });
@@ -4846,6 +5114,7 @@
     ed.addEventListener('scroll', () => {
       scheduleGutterDraw();
       onHlScroll();
+      if (performance.now() > selQuietUntil) hideSeltools();
       if (S.slash.open) renderSlash();
       if (S.settings.view !== 'split') return;
       const max = ed.scrollHeight - ed.clientHeight;

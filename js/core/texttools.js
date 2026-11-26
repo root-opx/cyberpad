@@ -369,8 +369,8 @@
 
   // ---- palette sections -------------------------------------------------
 
-  const PALETTE_SECTIONS = Object.freeze(['Recent notes', 'Note', 'File', 'View', 'Insert', 'Text', 'Tools', 'CTF', 'Vault', 'Security']);
-  const SECTION_RENAMES = new Map([['Theme', 'View'], ['Templates', 'Insert'], ['Transform', 'Text']]);
+  const PALETTE_SECTIONS = Object.freeze(['Recent notes', 'Note', 'File', 'Edit', 'Format', 'Text', 'Insert', 'View', 'Settings', 'Tools', 'CTF', 'Vault', 'Security']);
+  const SECTION_RENAMES = new Map([['Theme', 'Settings'], ['Templates', 'Insert'], ['Transform', 'Text']]);
 
   function sectionOf(group) {
     return SECTION_RENAMES.has(group) ? SECTION_RENAMES.get(group) : group;

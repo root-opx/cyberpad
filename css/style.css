@@ -1076,6 +1076,51 @@ svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-width:
 .slash-item[aria-selected="true"] { background: var(--raise); }
 .slash-item[aria-selected="true"] .name { color: var(--cool); }
 
+/* ---------- selection toolbar ---------- */
+.seltools {
+  position: fixed;
+  z-index: 40;
+  display: flex;
+  gap: 0.15rem;
+  padding: 0.2rem;
+  border: 1px solid var(--line);
+  border-top: 2px solid var(--cool);
+  background: var(--panel);
+  box-shadow: 0 10px 30px rgb(0 0 0 / 0.45);
+  font-size: var(--fs-s);
+}
+
+.seltools[hidden] { display: none; }
+
+.seltool {
+  flex: none;
+  min-width: 2rem;
+  min-height: 2rem;
+  padding: 0 0.6rem;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  white-space: nowrap;
+}
+
+.seltool:hover { background: var(--raise); color: var(--cool); }
+.seltool:focus-visible { outline: 2px solid var(--cool); outline-offset: -2px; background: var(--raise); }
+.seltool-bold { font-weight: 700; }
+.seltool-italic { font-style: italic; }
+.seltool-strike { text-decoration: line-through; }
+
+@media (max-width: 760px) {
+  .seltools {
+    left: 0;
+    right: 0;
+    border-right: 0;
+    border-left: 0;
+    overflow-x: auto;
+  }
+  .seltool { min-height: 2.75rem; }
+}
+
 /* ---------- dialogs ---------- */
 dialog {
   padding: 0;
@@ -1575,7 +1620,7 @@ button.sev:hover { box-shadow: 0 0 0 1px currentColor; }
   }
 
   .titlebar, .sidebar, .scrim, .statusbar, .findbar, .alertbar, .pane-editor, .backlinks,
-  .copy-btn, .toasts, .boot, .dropzone, .slash, .gutter, .gutter-mirror, .hl, dialog { display: none !important; }
+  .copy-btn, .toasts, .boot, .dropzone, .slash, .seltools, .gutter, .gutter-mirror, .hl, dialog { display: none !important; }
   body.crt::after { display: none; }
 
   .workspace[data-view] .pane-preview { display: block; border: 0; }
