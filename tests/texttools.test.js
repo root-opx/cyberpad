@@ -74,6 +74,15 @@ test('slash expansions', () => {
   assert.ok(T.SLASH.some((c) => c.name === 'credentials' && c.desc === 'New encrypted credentials note'));
 });
 
+test('slash list: /ctf and /writeup are listed, and the page (not texttools) expands them', () => {
+  const ctx = { now: new Date(2026, 10, 23, 9, 5), uuid: () => 'fixed-uuid' };
+  assert.ok(T.SLASH.some((c) => c.name === 'ctf' && c.desc === 'CTF challenge template'));
+  assert.ok(T.SLASH.some((c) => c.name === 'writeup' && c.desc === 'CTF writeup template'));
+  assert.equal(T.expandSlash('ctf', ctx), null);
+  assert.equal(T.expandSlash('writeup', ctx), null);
+  assert.equal(new Set(T.SLASH.map((c) => c.name)).size, T.SLASH.length);
+});
+
 test('fuzzyScore ranks substring and subsequence matches', () => {
   assert.ok(T.fuzzyScore('new', 'New note') > T.fuzzyScore('new', 'Renew everything'));
   assert.ok(T.fuzzyScore('nn', 'New note') > 0);

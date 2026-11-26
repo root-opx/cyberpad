@@ -320,6 +320,9 @@
     { name: 'ioc', desc: 'IOC tracking table', expand: (c) => iocTableTemplate(c.now) },
     { name: 'timeline', desc: 'Incident timeline table (UTC)', expand: (c) => timelineTemplate(c.now) },
     { name: 'credentials', desc: 'New encrypted credentials note', expand: (c) => { const text = credentialsTemplate(c.now); return { text, caret: text.length, block: true }; } },
+    // The two CTF templates come from ctf.js, which loads after this file: the page expands them (name and description only here).
+    { name: 'ctf', desc: 'CTF challenge template' },
+    { name: 'writeup', desc: 'CTF writeup template' },
     { name: 'todo', desc: 'Task item', expand: () => '- [ ] ' },
     { name: 'h1', desc: 'Big heading', expand: () => '# ' },
     { name: 'h2', desc: 'Section heading', expand: () => '## ' },
@@ -339,7 +342,7 @@
 
   function expandSlash(name, ctx) {
     const cmd = SLASH.find((c) => c.name === name);
-    if (!cmd) return null;
+    if (!cmd || typeof cmd.expand !== 'function') return null;
     const r = cmd.expand(ctx);
     return typeof r === 'string' ? { text: r, caret: r.length, block: false } : { block: false, ...r };
   }

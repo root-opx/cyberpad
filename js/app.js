@@ -5,6 +5,7 @@
   const { calc, markdown, text: T, codeedit, vault, store, secops, cvss, netcalc, dom, caret, sound, renderMarkdown } = window.NP;
   const { h } = dom;
   const highlight = window.NP.highlight;
+  const ctf = window.NP.ctf;
   const { PlatformError } = window.NP.platformFactory;
   const platform = window.NP.platformFactory.createPlatform(window);
   const $ = (id) => document.getElementById(id);
@@ -388,7 +389,8 @@
     const n = active();
     // A dialog opened on an unlocked encrypted note may show its plaintext, and
     // its follow-up action must not run against a locked note: cancel it.
-    if (n && n.cipher && finishCurrentDialog) finishCurrentDialog(null);
+    // A dialog that lists text from encrypted notes (flags found in all notes) is marked sensitive and closes on any lock.
+    if (finishCurrentDialog && (dialogSensitive || (n && n.cipher))) finishCurrentDialog(null);
     if (els.palette.open) closePalette();
     S.keys.clear();
     S.plain.clear();
@@ -2398,12 +2400,6 @@
     return (e.shiftKey && !mod && SEL_KEYS.includes(e.key)) || (mod && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'a');
   }
 
-  function openDecodeDialog(selectionText) {
-    // Stub: the CTF step replaces this body. The selected text is passed in; nothing is kept.
-    void selectionText;
-    toast('Decode or encode is not available yet.');
-  }
-
   function toggleSelectionToolbar() {
     S.settings.selectionToolbar = !S.settings.selectionToolbar;
     saveSettings();
@@ -2684,8 +2680,21 @@
     replaceRange(start, end, text, start + at);
   }
 
+  /** texttools expands every quick insert except the two CTF templates, which need ctf.js (loaded after it). */
+  function expandSlashHere(name, ctx) {
+    if (name === 'ctf') {
+      const text = ctf.challengeTemplate({ name: 'Challenge name', event: '', category: 'misc', points: 0 });
+      return { text, caret: text.indexOf('\n'), block: true }; // the caret ends the title line
+    }
+    if (name === 'writeup') {
+      const text = ctf.writeupTemplate({ event: '', team: '', date: ctx.now });
+      return { text, caret: text.indexOf('\n'), block: true };
+    }
+    return T.expandSlash(name, ctx);
+  }
+
   function insertSlash(name) {
-    const ex = T.expandSlash(name, slashCtx());
+    const ex = expandSlashHere(name, slashCtx());
     if (ex) insertExpansion(ex, els.editor.selectionStart, els.editor.selectionEnd);
   }
 
@@ -2693,7 +2702,7 @@
     const sl = S.slash;
     const cmd = sl.items[i];
     if (!cmd) return;
-    const ex = T.expandSlash(cmd.name, slashCtx());
+    const ex = expandSlashHere(cmd.name, slashCtx());
     const start = sl.start;
     const end = els.editor.selectionStart;
     closeSlash();
@@ -2915,6 +2924,15 @@
       C('Tools', 'Start 25-minute focus timer', () => startTimer(25, 'Focus')),
       C('Tools', 'Start 5-minute break timer', () => startTimer(5, 'Break')),
       C('Tools', 'Stop timer', () => stopTimer(false), null, !!S.timer),
+      C('CTF', 'New CTF challenge…', newChallengeDialog),
+      C('CTF', 'Insert challenge template', () => insertSlash('ctf'), '/ctf', markdownEditable),
+      C('CTF', 'Insert writeup template', () => insertSlash('writeup'), '/writeup', markdownEditable),
+      C('CTF', 'Decode or encode…', () => openDecodeDialog()),
+      C('CTF', 'Try common decodings', tryDecodingsCommand, null, editable),
+      C('CTF', 'Find flags in this note', findFlagsHere, null, editable),
+      C('CTF', 'Find flags in all notes', findFlagsEverywhere),
+      C('CTF', 'Flag formats…', flagFormatsDialog),
+      C('CTF', 'Build CTF report from this folder', buildReportCommand, null, !!(note && note.folder)),
       C('Vault', 'Encrypt note', encryptActive, null, editable && !note.cipher),
       C('Vault', 'Remove encryption', decryptActive, null, editable && !!note.cipher),
       C('Vault', 'Lock encrypted notes', () => lockAll(), 'Alt L', S.keys.size > 0),
@@ -3204,6 +3222,494 @@
     } else if (res === 'note') {
       addNote(secops.iocsToMarkdown(iocs, { defanged, source: titleOf(note), when: `${stamp.slice(0, 16).replace('T', ' ')} UTC` }), undefined, active() ? active().folder : '');
     }
+  }
+
+  // CTF helpers -----------------------------------------------------------
+  //
+  // Decoded text and note text reach the page only as text nodes or a form control's value, never as markup.
+  // A dialog that holds text from an encrypted note is marked sensitive (see showDialog), so a lock closes and empties it.
+
+  const CTF_EMPTY = 'Enter some text to convert.';
+  const CTF_TOO_LONG = 'That text is too long to convert (limit 100,000 characters).';
+  const CTF_FLAG_CAP = 200;
+  const CTF_SLICE = 20; // notes searched per timer tick
+  const FLAG_VIA = { plain: 'plain text', reversed: 'reversed', base64: 'inside Base64', base32: 'inside Base32', hex: 'inside hex' };
+
+  /** What a dialog may change in the editor later: the note, its whole text and the range, as they were when it opened. */
+  function ctfTarget() {
+    const note = active();
+    const ed = els.editor;
+    if (!isEditable(note) || ed.hidden) return null;
+    return { id: note.id, value: ed.value, start: ed.selectionStart, end: ed.selectionEnd, text: ed.value.slice(ed.selectionStart, ed.selectionEnd) };
+  }
+
+  /** Replace the saved selection, or add a line below the one it ended on. Refuses when the note or its text is not what it was. */
+  function applyCtfOutput(target, action, output) {
+    const note = active();
+    const ed = els.editor;
+    const done = action === 'replace' ? 'replaced' : 'inserted';
+    if (!target || !note || note.id !== target.id || !isEditable(note) || ed.hidden || ed.value !== target.value) {
+      toast(`The note changed, so nothing was ${done}.`, 'error');
+      return;
+    }
+    const value = target.value;
+    if (action === 'replace') {
+      if (target.start === target.end) return;
+      if (value.length - (target.end - target.start) + output.length > store.LIMITS.body) { toast('The result would be too long for one note.', 'error'); return; }
+      replaceRange(target.start, target.end, output, target.start, target.start + output.length);
+      return;
+    }
+    // A selection that ends right after a line break belongs to the line before it.
+    const at = target.end > target.start && value[target.end - 1] === '\n' ? target.end - 1 : target.end;
+    const { end } = lineBounds(value, at);
+    if (value.length + 1 + output.length > store.LIMITS.body) { toast('The result would be too long for one note.', 'error'); return; }
+    replaceRange(end, end, `\n${output}`, end + 1 + output.length);
+  }
+
+  function ctfCopyRow(label, value, fromEncrypted = false) {
+    const btn = h('button', { type: 'button', class: 'chip', 'aria-label': `Copy ${label}` }, 'Copy');
+    btn.addEventListener('click', () => copyText(value, fromEncrypted));
+    return h('div', { class: 'result-row' }, h('span', { class: 'result-label' }, label), h('pre', { class: 'result-value' }, value), btn);
+  }
+
+  const codecName = (id) => { const c = ctf.CODECS.find((x) => x.id === id); return c ? c.name : id; };
+
+  // Decode or encode… -----------------------------------------------------
+
+  async function openDecodeDialog(selectionText) {
+    void selectionText; // the editor's own selection is read (and kept) by ctfTarget
+    const note = active();
+    const target = ctfTarget();
+    const initial = target ? target.text : '';
+    const input = h('textarea', { id: 'decode-input', maxlength: ctf.LIMITS.input, autocomplete: 'off' });
+    input.rows = 5;
+    input.spellcheck = false;
+    input.value = initial;
+    const out = h('textarea', { id: 'decode-output', class: 'ctf-out' });
+    out.rows = 5;
+    out.readOnly = true;
+    out.spellcheck = false;
+    const status = h('p', { role: 'status', class: 'ctf-status' });
+    const results = h('div', { class: 'result-list ctf-results', hidden: true });
+    const outBox = h('label', { class: 'field' }, h('span', null, 'Output'), out);
+
+    const st = { codec: ctf.CODECS[0], dir: 'decode', view: 'output' };
+    const values = {}; // codec id -> { param id -> text typed }
+    let overflow = false;
+    let closed = false;
+    let timer = 0;
+    let output = '';
+
+    const codecSelect = h('select', { id: 'decode-codec' }, ctf.CODECS.map((c) => h('option', { value: c.id }, `${c.group}: ${c.name}`)));
+    const dirButtons = {};
+    for (const [dir, label] of [['decode', 'Decode'], ['encode', 'Encode']]) {
+      dirButtons[dir] = h('button', { type: 'button', class: 'chip', 'aria-pressed': 'false' }, label);
+      dirButtons[dir].addEventListener('click', () => { st.dir = dir; refresh(); });
+    }
+    const dirRow = h('div', { class: 'decode-dir', role: 'group', 'aria-label': 'Direction' }, dirButtons.decode, dirButtons.encode);
+    const codecRow = h('div', { class: 'decode-row' }, h('label', { class: 'field' }, h('span', null, 'Codec'), codecSelect), dirRow);
+    const paramBox = h('div', { class: 'decode-params' });
+
+    const paramsFor = (codec) => {
+      const vals = values[codec.id] || {};
+      const p = {};
+      for (const def of codec.params || []) {
+        const raw = vals[def.id] === undefined ? String(def.default) : vals[def.id];
+        // A number the module checks itself: anything that is not a whole number becomes NaN and gets its message.
+        p[def.id] = def.type === 'int' ? (/^-?\d{1,9}$/.test(raw.trim()) ? Number(raw.trim()) : NaN) : raw;
+      }
+      return p;
+    };
+
+    const buildParams = () => {
+      const fields = (st.codec.params || []).map((def) => {
+        const saved = (values[st.codec.id] || {})[def.id];
+        const text = saved === undefined ? String(def.default) : saved;
+        let control;
+        if (def.type === 'choice') {
+          control = h('select', { id: `decode-p-${def.id}` }, def.choices.map((c) => h('option', { value: c }, c === 'hex' ? 'Hex' : 'Text')));
+          control.value = text;
+        } else {
+          control = h('input', { id: `decode-p-${def.id}`, type: def.type === 'int' ? 'number' : 'text', autocomplete: 'off' });
+          if (def.type === 'int') {
+            // Fixed numbers from the codec table, set as properties: SAFE_ATTR does not list min, max or step.
+            control.min = String(def.min);
+            control.max = String(def.max);
+            control.step = '1';
+            control.inputMode = 'numeric';
+          } else {
+            control.maxLength = def.max;
+            control.spellcheck = false;
+          }
+          control.value = text;
+        }
+        const remember = () => {
+          const v = values[st.codec.id] || (values[st.codec.id] = {});
+          v[def.id] = control.value;
+          schedule();
+        };
+        control.addEventListener(def.type === 'choice' ? 'change' : 'input', remember);
+        return h('label', { class: 'field' }, h('span', null, def.label), control);
+      });
+      paramBox.replaceChildren(...fields);
+      paramBox.hidden = !fields.length || st.view !== 'output';
+    };
+
+    const toolBtn = (label, onClick) => {
+      const b = h('button', { type: 'button', class: 'btn' }, label);
+      b.addEventListener('click', onClick);
+      return b;
+    };
+    const copyBtn = toolBtn('Copy', () => { if (output) copyText(output); });
+    const replaceBtn = target && target.text ? toolBtn('Replace selection', () => { if (output && finishCurrentDialog) finishCurrentDialog({ action: 'replace', output }); }) : null;
+    const insertBtn = target ? toolBtn('Insert below', () => { if (output && finishCurrentDialog) finishCurrentDialog({ action: 'insert', output }); }) : null;
+    const bruteBtns = {};
+    for (const [view, label] of [['caesar', 'Caesar brute force'], ['xor', 'XOR brute force']]) {
+      bruteBtns[view] = h('button', { type: 'button', class: 'btn', 'aria-pressed': 'false' }, label);
+      bruteBtns[view].addEventListener('click', () => { st.view = st.view === view ? 'output' : view; refresh(); });
+    }
+    const tools = h('div', { class: 'decode-tools' }, copyBtn, replaceBtn, insertBtn, bruteBtns.caesar, bruteBtns.xor);
+
+    function renderBrute(text) {
+      let rows = [];
+      let message = '';
+      if (text === '') message = CTF_EMPTY;
+      else if (text.length > ctf.LIMITS.input) message = CTF_TOO_LONG;
+      else if (st.view === 'caesar') rows = ctf.caesarBruteForce(text).map((r) => [`Shift ${r.shift}`, r.output]);
+      else rows = ctf.xorBruteForce(text).map((r) => [`Key 0x${r.keyHex}`, r.output]);
+      results.replaceChildren(...rows.slice(0, ctf.LIMITS.results).map(([label, value]) => ctfCopyRow(label, value)));
+      status.textContent = message || (rows.length ? '' : 'No results.');
+    }
+
+    function compute() {
+      timer = 0;
+      if (closed) return;
+      const text = input.value;
+      if (st.view !== 'output') { output = ''; renderBrute(text); updateTools(); return; }
+      const fn = st.dir === 'decode' ? st.codec.decode : st.codec.encode;
+      const res = fn ? fn(text, paramsFor(st.codec)) : { ok: false, message: 'This codec does not work that way.' };
+      if (res.ok) {
+        output = res.output;
+        out.value = output;
+        status.textContent = overflow ? `${CTF_TOO_LONG} The extra text was cut off.` : '';
+      } else {
+        output = '';
+        out.value = '';
+        status.textContent = res.message;
+      }
+      updateTools();
+    }
+
+    function schedule() {
+      clearTimeout(timer);
+      timer = setTimeout(compute, 150);
+    }
+
+    function updateTools() {
+      const ready = st.view === 'output' && output !== '';
+      copyBtn.disabled = !ready;
+      if (replaceBtn) replaceBtn.disabled = !ready;
+      if (insertBtn) insertBtn.disabled = !ready;
+    }
+
+    // Everything that depends on the codec, direction or view; then a fresh result.
+    function refresh() {
+      const c = st.codec;
+      if (!c[st.dir]) st.dir = st.dir === 'decode' ? 'encode' : 'decode';
+      for (const dir of ['decode', 'encode']) {
+        dirButtons[dir].setAttribute('aria-pressed', String(st.dir === dir));
+        dirButtons[dir].disabled = !c[dir];
+      }
+      for (const view of ['caesar', 'xor']) bruteBtns[view].setAttribute('aria-pressed', String(st.view === view));
+      const brute = st.view !== 'output';
+      outBox.hidden = brute;
+      results.hidden = !brute;
+      codecRow.hidden = brute;
+      buildParams();
+      clearTimeout(timer);
+      compute();
+    }
+
+    codecSelect.addEventListener('change', () => {
+      const c = ctf.CODECS.find((x) => x.id === codecSelect.value);
+      if (!c) return;
+      st.codec = c;
+      refresh();
+    });
+    input.addEventListener('paste', (e) => {
+      const pasted = e.clipboardData ? e.clipboardData.getData('text/plain') : '';
+      if (input.value.length - (input.selectionEnd - input.selectionStart) + pasted.length > ctf.LIMITS.input) overflow = true;
+    });
+    input.addEventListener('input', () => {
+      if (input.value.length < ctf.LIMITS.input) overflow = false;
+      schedule();
+    });
+
+    refresh();
+    const res = await showDialog({
+      title: 'Decode or encode',
+      className: 'wide ctf',
+      initialFocus: '#decode-input',
+      sensitive: !!(note && note.cipher),
+      body: [
+        h('label', { class: 'field' }, h('span', null, 'Input'), input),
+        codecRow, paramBox, outBox, results, status, tools,
+      ],
+      actions: [{ label: 'Close', value: null, className: 'btn-primary' }],
+      onSubmit: () => undefined, // Enter in a field never closes this dialog
+    });
+    closed = true;
+    clearTimeout(timer);
+    if (res && (res.action === 'replace' || res.action === 'insert') && typeof res.output === 'string') applyCtfOutput(target, res.action, res.output);
+  }
+
+  // Try common decodings ---------------------------------------------------
+
+  async function tryDecodingsCommand() {
+    const target = ctfTarget();
+    if (!target) return;
+    let text = target.text;
+    if (text === '') {
+      const { start, end } = lineBounds(target.value, target.start);
+      text = target.value.slice(start, end).trim();
+    }
+    if (!text.trim()) { toast('Select some text, or put the cursor on the line to decode.'); return; }
+    if (text.length > ctf.LIMITS.input) { toast(CTF_TOO_LONG, 'error'); return; }
+    const note = active();
+    const status = h('p', { role: 'status', class: 'ctf-status' }, 'Decoding…');
+    const list = h('div', { class: 'result-list ctf-results' });
+    let closed = false;
+    const pending = showDialog({
+      title: 'Common decodings',
+      className: 'wide ctf',
+      sensitive: !!note.cipher,
+      body: [status, list],
+      actions: [{ label: 'Close', value: null, className: 'btn-primary' }],
+    });
+    // Let the dialog paint first: the search is bounded but can take a moment.
+    setTimeout(() => {
+      if (closed) return;
+      let found = [];
+      try {
+        found = ctf.tryDecodings(text, S.settings.flagPrefixes);
+      } catch (err) {
+        console.error('decoding failed');
+      }
+      if (closed) return;
+      const rows = found.slice(0, ctf.LIMITS.results);
+      if (!rows.length) { status.textContent = 'Nothing readable came out of the common decodings.'; return; }
+      status.textContent = `${plural(rows.length, 'result')}, best first.`;
+      list.replaceChildren(...rows.map((r) => {
+        const way = r.path.map(codecName).join(' → ') + (r.detail ? ` (${r.detail})` : '');
+        const btns = h('div', { class: 'ctf-btns' });
+        const add = (label, onClick) => { const b = h('button', { type: 'button', class: 'chip' }, label); b.addEventListener('click', onClick); btns.append(b); };
+        add('Copy', () => copyText(r.output));
+        if (target.text) add('Replace selection', () => { if (finishCurrentDialog) finishCurrentDialog({ action: 'replace', output: r.output }); });
+        add('Insert below', () => { if (finishCurrentDialog) finishCurrentDialog({ action: 'insert', output: r.output }); });
+        return h('div', { class: 'result-row' },
+          h('span', { class: 'result-label' }, `${way}, ${Math.round(r.score * 100)}%`),
+          h('pre', { class: 'result-value' }, r.output), btns);
+      }));
+    }, 0);
+    const res = await pending;
+    closed = true;
+    if (res && (res.action === 'replace' || res.action === 'insert') && typeof res.output === 'string') applyCtfOutput(target, res.action, res.output);
+  }
+
+  // Flags ------------------------------------------------------------------
+
+  function flagRow(f, id, fromEncrypted) {
+    const line = h('button', { type: 'button', class: 'chip' }, `Line ${f.line}`);
+    line.addEventListener('click', () => { if (finishCurrentDialog) finishCurrentDialog({ id, line: f.line }); });
+    const copy = h('button', { type: 'button', class: 'chip', 'aria-label': `Copy flag on line ${f.line}` }, 'Copy');
+    copy.addEventListener('click', () => copyText(f.flag, fromEncrypted));
+    return h('div', { class: 'flag-row' }, h('code', { class: 'flag-code' }, f.flag), h('span', { class: 'flag-via' }, FLAG_VIA[f.via] || f.via), line, copy);
+  }
+
+  const NO_FLAGS = 'No flags found. Check Flag formats… if your CTF uses another prefix.';
+
+  async function findFlagsHere() {
+    const note = active();
+    if (!isEditable(note) || els.editor.hidden) return;
+    const body = bodyOf(note);
+    if (typeof body !== 'string') return;
+    const flags = ctf.findFlags(body, S.settings.flagPrefixes);
+    const res = await showDialog({
+      title: 'Flags in this note',
+      className: 'wide ctf',
+      sensitive: !!note.cipher,
+      body: [
+        h('p', { role: 'status', class: 'ctf-status' }, flags.length ? `${plural(flags.length, 'flag')} found` : NO_FLAGS),
+        h('div', { class: 'result-list ctf-results' }, flags.map((f) => flagRow(f, note.id, false))),
+      ],
+      actions: [{ label: 'Close', value: null, className: 'btn-primary' }],
+    });
+    if (res && typeof res.line === 'number' && active() === note && isEditable(note)) gotoLine(res.line - 1);
+  }
+
+  async function findFlagsEverywhere() {
+    const prefixes = S.settings.flagPrefixes;
+    const all = sortedNotes();
+    const skipped = all.filter(isLocked).length;
+    const todo = all.filter((n) => !isLocked(n));
+    const status = h('p', { role: 'status', class: 'ctf-status' }, 'Searching…');
+    const groups = h('div', { class: 'result-list ctf-results' });
+    const foot = h('p', { class: 'ctf-status' });
+    let closed = false;
+    // It lists titles and flags from unlocked encrypted notes: any lock closes and empties it.
+    const pending = showDialog({
+      title: 'Flags in all notes',
+      className: 'wide ctf',
+      sensitive: true,
+      body: [status, groups, foot],
+      actions: [{ label: 'Close', value: null, className: 'btn-primary' }],
+    });
+    let i = 0;
+    let total = 0;
+    let noteCount = 0;
+    let capped = false;
+    const finishSearch = () => {
+      status.textContent = total ? `${plural(total, 'flag')} found in ${plural(noteCount, 'note')}` : NO_FLAGS;
+      const bits = [];
+      if (capped) bits.push(`Showing the first ${CTF_FLAG_CAP} flags.`);
+      if (skipped) bits.push(`${skipped} locked note${skipped === 1 ? ' was' : 's were'} not searched.`);
+      foot.textContent = bits.join(' ');
+    };
+    const step = () => {
+      if (closed) return;
+      const stop = Math.min(todo.length, i + CTF_SLICE);
+      while (i < stop && !capped) {
+        const n = todo[i++];
+        const body = bodyOf(n);
+        if (typeof body !== 'string' || body === '') continue;
+        const flags = ctf.findFlags(body, prefixes);
+        if (!flags.length) continue;
+        const shown = flags.slice(0, CTF_FLAG_CAP - total);
+        total += shown.length;
+        noteCount++;
+        if (total >= CTF_FLAG_CAP && (flags.length > shown.length || i < todo.length)) capped = true;
+        const open = h('button', { type: 'button', class: 'chip flag-note' }, titleOf(n));
+        open.addEventListener('click', () => { if (finishCurrentDialog) finishCurrentDialog({ id: n.id, line: 0 }); });
+        groups.append(h('div', { class: 'flag-group' }, open, shown.map((f) => flagRow(f, n.id, !!n.cipher))));
+      }
+      if (i < todo.length && !capped) setTimeout(step, 0);
+      else finishSearch();
+    };
+    setTimeout(step, 0);
+    const res = await pending;
+    closed = true;
+    if (res && typeof res.id === 'string' && noteById(res.id)) {
+      openNote(res.id);
+      const n = active();
+      if (res.line > 0 && n && n.id === res.id && isEditable(n)) gotoLine(res.line - 1);
+    }
+  }
+
+  // Flag formats… ----------------------------------------------------------
+
+  const PREFIX_RE = /^[A-Za-z0-9_]{1,20}$/;
+
+  async function flagFormatsDialog() {
+    const area = h('textarea', { id: 'flag-prefixes', maxlength: 1000, autocomplete: 'off' });
+    area.rows = 8;
+    area.spellcheck = false;
+    area.value = S.settings.flagPrefixes.join('\n');
+    const err = h('p', { class: 'form-error', role: 'alert' });
+    const res = await showDialog({
+      title: 'Flag formats',
+      initialFocus: '#flag-prefixes',
+      body: [
+        h('label', { class: 'field' }, h('span', null, 'Flag prefixes, one per line'), area),
+        h('p', null, 'A flag looks like prefix{...}. Letters, digits and underscores, up to 20 characters each, at most 30 prefixes.'),
+        err,
+      ],
+      actions: [
+        { label: 'Cancel', value: null },
+        { label: 'Reset to defaults', value: 'reset' },
+        { label: 'Save', submit: true, className: 'btn-primary' },
+      ],
+      onSubmit: () => {
+        const list = area.value.split(/\r\n|\r|\n/).map((l) => l.trim()).filter((l) => l !== '');
+        if (list.some((l) => !PREFIX_RE.test(l))) { err.textContent = 'Each prefix can only contain letters, digits and underscores, up to 20 characters.'; area.focus(); return undefined; }
+        if (list.length > ctf.LIMITS.prefixes) { err.textContent = 'Keep it to 30 prefixes at most.'; area.focus(); return undefined; }
+        return { list };
+      },
+    });
+    if (res === 'reset') {
+      S.settings.flagPrefixes = ctf.DEFAULT_PREFIXES.slice();
+      saveSettings();
+      toast('Flag formats reset to defaults.');
+    } else if (res && Array.isArray(res.list)) {
+      S.settings.flagPrefixes = ctf.validatePrefixes(res.list);
+      saveSettings();
+      toast('Flag formats saved.');
+    }
+  }
+
+  // New CTF challenge… -----------------------------------------------------
+
+  async function newChallengeDialog() {
+    const open = active();
+    const event = h('input', { type: 'text', id: 'ctf-event', maxlength: store.LIMITS.folderName, autocomplete: 'off', value: open ? open.folder : '' });
+    const name = h('input', { type: 'text', id: 'ctf-name', maxlength: 120, autocomplete: 'off' });
+    const category = h('select', { id: 'ctf-category' }, ctf.CATEGORIES.map((c) => h('option', { value: c }, c)));
+    const points = h('input', { type: 'number', id: 'ctf-points', autocomplete: 'off', value: '100' });
+    // Fixed values, set as properties: SAFE_ATTR does not list min, max, step or inputmode.
+    points.min = '0';
+    points.max = '100000';
+    points.step = '1';
+    points.inputMode = 'numeric';
+    const err = h('p', { class: 'form-error', role: 'alert' });
+    const pending = showDialog({
+      title: 'New CTF challenge',
+      initialFocus: '#ctf-event',
+      body: [
+        h('label', { class: 'field' }, h('span', null, 'Event'), event),
+        h('label', { class: 'field' }, h('span', null, 'Challenge name'), name),
+        h('label', { class: 'field' }, h('span', null, 'Category'), category),
+        h('label', { class: 'field' }, h('span', null, 'Points'), points),
+        err,
+      ],
+      actions: [{ label: 'Cancel', value: null }, { label: 'Create challenge', submit: true, className: 'btn-primary' }],
+      onSubmit: () => {
+        const folder = store.cleanFolder(event.value);
+        const folders = store.folderList(S.notes);
+        if (!folder) { err.textContent = FOLDER_NAME_MSG; event.focus(); return undefined; }
+        if (!folders.some((f) => f.name === folder) && folders.length >= store.LIMITS.folders) { err.textContent = FOLDER_LIMIT_MSG; event.focus(); return undefined; }
+        const title = name.value.trim();
+        if (!title) { err.textContent = 'Enter a challenge name.'; name.focus(); return undefined; }
+        const raw = points.value.trim();
+        const pts = /^\d{1,6}$/.test(raw) ? Number(raw) : NaN;
+        if (!(pts >= 0 && pts <= 100000)) { err.textContent = 'Enter the points as a whole number from 0 to 100000.'; points.focus(); return undefined; }
+        const cat = ctf.CATEGORIES.includes(category.value) ? category.value : 'misc';
+        return { folder, title, cat, pts };
+      },
+    });
+    // The page checks the numbers itself and shows its own messages; the browser's built-in bubble would replace them.
+    if (points.form) points.form.noValidate = true;
+    const res = await pending;
+    if (!res) return;
+    const created = addNote(ctf.challengeTemplate({ name: res.title, event: res.folder, category: res.cat, points: res.pts }), undefined, res.folder);
+    if (created) toast(`Challenge note created in ${res.folder}.`);
+  }
+
+  // Build CTF report from this folder --------------------------------------
+
+  function buildReportCommand() {
+    const open = active();
+    if (!open || !open.folder) return;
+    const folder = open.folder;
+    // An encrypted note, locked or not, is passed as a bare marker: its title, text and language are never read.
+    const notes = sortedNotes().filter((n) => n.folder === folder).map((n) => (n.cipher
+      ? { encrypted: true }
+      : { title: titleOf(n), body: bodyOf(n), lang: n.lang || '', encrypted: false }));
+    const rep = ctf.buildReport({ folder, notes, now: new Date() });
+    const created = addNote(rep.body, undefined, folder);
+    if (!created) return;
+    const left = rep.leftOut.length;
+    toast(`Report created with ${plural(rep.included, 'note')}.`
+      + (rep.skippedEncrypted > 0 ? ` ${rep.skippedEncrypted} encrypted note${rep.skippedEncrypted === 1 ? ' was' : 's were'} left out.` : '')
+      + (left > 0 ? ` ${left} note${left === 1 ? '' : 's'} did not fit.` : ''));
   }
 
   // Secret scanner -------------------------------------------------------
@@ -3747,8 +4253,9 @@
   // ------------------------------------------------------------- dialogs
 
   let finishCurrentDialog = null;
+  let dialogSensitive = false; // the open dialog may show text from an encrypted note: any lock closes and empties it
 
-  function showDialog({ title, body = [], actions, className = '', initialFocus, onSubmit }) {
+  function showDialog({ title, body = [], actions, className = '', initialFocus, onSubmit, sensitive = false }) {
     return new Promise((resolve) => {
       hideSeltools();
       if (els.palette.open) { S.paletteSel = null; els.palette.close(); }
@@ -3770,7 +4277,7 @@
       const finish = (value) => {
         if (settled) return;
         settled = true;
-        if (finishCurrentDialog === finish) finishCurrentDialog = null;
+        if (finishCurrentDialog === finish) { finishCurrentDialog = null; dialogSensitive = false; }
         dlg.removeEventListener('close', onClose);
         if (dlg.open) dlg.close();
         dlg.replaceChildren();
@@ -3793,6 +4300,7 @@
       dlg.replaceChildren(form);
       dlg.addEventListener('close', onClose);
       finishCurrentDialog = finish;
+      dialogSensitive = !!sensitive;
       dlg.showModal();
       const first = (initialFocus && form.querySelector(initialFocus)) || form.querySelector('input, button[type="submit"]') || form.querySelector('button');
       if (first) first.focus();
@@ -4940,10 +5448,11 @@
     return t;
   }
 
-  function copyText(text) {
+  /** `fromEncrypted`: the text came from an encrypted note other than the open one, so the clipboard is cleared all the same. */
+  function copyText(text, fromEncrypted = false) {
     if (!navigator.clipboard) { toast('Copying is not available here. Select the text and press Ctrl+C.', 'error'); return; }
     navigator.clipboard.writeText(text).then(
-      () => { if (!noteSensitiveCopy()) toast('Copied to the clipboard.'); },
+      () => { if (!noteSensitiveCopy(fromEncrypted)) toast('Copied to the clipboard.'); },
       (err) => { console.error(err); toast('Copy failed. Select the text and press Ctrl+C.', 'error'); },
     );
   }
@@ -4957,9 +5466,10 @@
   const clip = { pending: false, timer: 0 };
 
   /** Call after any copy. Returns true when a clear was scheduled (and announced). */
-  function noteSensitiveCopy() {
+  function noteSensitiveCopy(force = false) {
     const note = active();
-    if (!S.settings.clearClipboard || !note || !note.cipher || isLocked(note)) return false;
+    if (!S.settings.clearClipboard) return false;
+    if (!force && (!note || !note.cipher || isLocked(note))) return false;
     const first = !clip.pending;
     clip.pending = true;
     clearTimeout(clip.timer);

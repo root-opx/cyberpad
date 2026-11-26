@@ -49,3 +49,9 @@ test('highlight.js loads after codeedit.js, and the colouring layer is hidden fr
   assert.ok(html.indexOf('js/core/highlight.js') < html.indexOf('js/app.js'));
   assert.match(html, /<pre class="hl" id="hl" aria-hidden="true" inert><\/pre>/);
 });
+
+test('ctf.js is loaded once, after highlight.js and before app.js', () => {
+  assert.equal(html.split('js/core/ctf.js').length - 1, 1);
+  assert.ok(html.indexOf('js/core/highlight.js') < html.indexOf('js/core/ctf.js'));
+  assert.ok(html.indexOf('js/core/ctf.js') < html.indexOf('js/app.js'));
+});
