@@ -39,7 +39,8 @@
   }
   const VIEWS = Object.freeze(['edit', 'split', 'preview']);
   // Script-mode languages (same ids, same order as js/core/codeedit.js; a test checks it). '' is an ordinary Markdown note.
-  const LANGS = Object.freeze(['bash', 'c', 'cpp', 'csharp', 'css', 'go', 'html', 'java', 'javascript', 'json', 'powershell', 'python', 'rust', 'sql', 'typescript', 'yaml']);
+  const LANGS = Object.freeze(['bash', 'c', 'cpp', 'csharp', 'css', 'go', 'html', 'java', 'javascript', 'json', 'powershell', 'python', 'rust', 'sql', 'typescript', 'yaml',
+    'batch', 'ruby', 'php', 'lua', 'perl', 'xml', 'ini', 'plain']);
   const LINE_NUMBERS = Object.freeze(['script', 'all', 'off']);
   const AUTOLOCK = Object.freeze([1, 5, 10, 30, 60]);
 
@@ -55,13 +56,76 @@
     clearClipboard: true,
     arrows: true,
     lineNumbers: 'script',
+    syntaxColors: true,
+    selectionToolbar: true,
+    flagPrefixes: Object.freeze(['flag', 'ctf', 'HTB', 'picoCTF', 'THM', 'DUCTF']),
     collapsedFolders: Object.freeze([]),
   });
 
-  const IMPORT_EXTENSIONS = Object.freeze(['txt', 'md', 'markdown', 'json']);
+  const FLAG_PREFIX_RE = /^[A-Za-z0-9_]{1,20}$/;
+  const MAX_FLAG_PREFIXES = 30;
+
+  // The file types CyberPad opens and saves: lower-case extension, the language id it opens as ('' = Markdown
+  // note or encrypted note) and its group. Order matters: the first extension of a language is its default.
+  const typeRows = (group, lang, exts) => exts.map((ext) => Object.freeze({ ext, lang, group }));
+  const FILE_TYPES = Object.freeze([
+    ...typeRows('Notes', '', ['txt']),
+    ...typeRows('Notes', '', ['md', 'markdown']),
+    ...typeRows('Encrypted', '', ['cpnote']),
+    ...typeRows('Python', 'python', ['py', 'pyw']),
+    ...typeRows('JavaScript', 'javascript', ['js', 'mjs', 'cjs', 'jsx']),
+    ...typeRows('TypeScript', 'typescript', ['ts', 'tsx']),
+    ...typeRows('Shell', 'bash', ['sh', 'bash', 'zsh']),
+    ...typeRows('PowerShell', 'powershell', ['ps1', 'psm1', 'psd1']),
+    ...typeRows('Batch', 'batch', ['bat', 'cmd']),
+    ...typeRows('C', 'c', ['c', 'h']),
+    ...typeRows('C++', 'cpp', ['cpp', 'cc', 'cxx', 'hpp']),
+    ...typeRows('C#', 'csharp', ['cs']),
+    ...typeRows('Java', 'java', ['java']),
+    ...typeRows('Go', 'go', ['go']),
+    ...typeRows('Rust', 'rust', ['rs']),
+    ...typeRows('Ruby', 'ruby', ['rb']),
+    ...typeRows('PHP', 'php', ['php']),
+    ...typeRows('Lua', 'lua', ['lua']),
+    ...typeRows('Perl', 'perl', ['pl']),
+    ...typeRows('SQL', 'sql', ['sql']),
+    ...typeRows('HTML', 'html', ['html', 'htm']),
+    ...typeRows('XML', 'xml', ['xml', 'xsd', 'xsl', 'svg']),
+    ...typeRows('CSS', 'css', ['css', 'scss']),
+    ...typeRows('JSON', 'json', ['json', 'jsonl']),
+    ...typeRows('YAML', 'yaml', ['yaml', 'yml']),
+    ...typeRows('TOML and INI', 'ini', ['toml', 'ini', 'cfg', 'conf', 'properties', 'env']),
+    ...typeRows('Plain text', 'plain', ['log', 'csv', 'tsv', 'diff', 'patch', 'nfo', 'lst', 'rules', 'yar', 'yara', 'nse', 'asm', 's', 'tex', 'rst', 'gitignore']),
+  ]);
+  const FILE_FORMATS = Object.freeze(FILE_TYPES.map((t) => t.ext));
+  const IMPORT_EXTENSIONS = Object.freeze(FILE_FORMATS.filter((e) => e !== 'cpnote'));
+
+  /** The FILE_TYPES entry for an extension (exact, lower-case), else null. */
+  function fileTypeOf(ext) {
+    if (typeof ext !== 'string') return null;
+    for (const t of FILE_TYPES) if (t.ext === ext) return t;
+    return null;
+  }
+
+  /** The extensions that open as a language id, in table order. */
+  function extensionsFor(lang) {
+    if (typeof lang !== 'string') return [];
+    return FILE_TYPES.filter((t) => t.lang === lang).map((t) => t.ext);
+  }
+
+  /** The extension "Save as file" offers first: cpnote for an encrypted note, else the language's first. */
+  function defaultExtFor(note) {
+    if (!note || typeof note !== 'object') return 'txt';
+    if (note.cipher) return 'cpnote';
+    if (note.lang === 'plain') return 'txt';
+    if (typeof note.lang === 'string' && note.lang !== '') {
+      const t = FILE_TYPES.find((x) => x.lang === note.lang);
+      if (t) return t.ext;
+    }
+    return 'md';
+  }
   const RISKY_INNER_EXTENSIONS = new Set(['exe', 'dll', 'bat', 'cmd', 'com', 'ps1', 'sh', 'js', 'mjs', 'html', 'htm', 'svg', 'php', 'phtml', 'jar', 'msi', 'scr', 'vbs', 'hta']);
 
-  const FILE_FORMATS = Object.freeze(['txt', 'md', 'cpnote']);
   const LINK_ID_RE = /^[0-9a-f]{32}$/;
   // eslint-disable-next-line no-control-regex
   const BAD_FILE_NAME_RE = /[\u0000-\u001f\u007f/\\]/;
@@ -178,7 +242,7 @@
 
   /** A fresh copy of the defaults: the collapsedFolders array is never shared between callers. */
   function defaultSettings() {
-    return { ...DEFAULT_SETTINGS, collapsedFolders: [] };
+    return { ...DEFAULT_SETTINGS, flagPrefixes: [...DEFAULT_SETTINGS.flagPrefixes], collapsedFolders: [] };
   }
 
   function validateCollapsed(v) {
@@ -189,6 +253,24 @@
       if (out.size >= LIMITS.folders) break;
     }
     return [...out];
+  }
+
+  /** Flag prefixes: strings of 1-20 letters, digits or underscores, unique ignoring case, at most 30; else the defaults. */
+  function validateFlagPrefixes(v) {
+    if (Array.isArray(v)) {
+      const seen = new Set();
+      const out = [];
+      for (const x of v.slice(0, 1000)) {
+        if (typeof x !== 'string' || !FLAG_PREFIX_RE.test(x)) continue;
+        const key = x.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push(x);
+        if (out.length >= MAX_FLAG_PREFIXES) break;
+      }
+      if (out.length) return out;
+    }
+    return [...DEFAULT_SETTINGS.flagPrefixes];
   }
 
   function validateSettings(s) {
@@ -208,6 +290,9 @@
       clearClipboard: bool(s.clearClipboard, d.clearClipboard),
       arrows: bool(s.arrows, d.arrows),
       lineNumbers: LINE_NUMBERS.includes(s.lineNumbers) ? s.lineNumbers : d.lineNumbers,
+      syntaxColors: bool(s.syntaxColors, d.syntaxColors),
+      selectionToolbar: bool(s.selectionToolbar, d.selectionToolbar),
+      flagPrefixes: validateFlagPrefixes(s.flagPrefixes),
       collapsedFolders: validateCollapsed(s.collapsedFolders),
     };
   }
@@ -382,9 +467,9 @@
   function checkImportFile(name, size) {
     if (typeof name !== 'string' || name.length === 0 || name.length > 255) throw new StoreError('That file name is not supported.');
     const parts = name.toLowerCase().split('.');
-    if (parts.length < 2) throw new StoreError('Only .txt, .md and backup .json files can be imported.');
+    if (parts.length < 2) throw new StoreError('CyberPad cannot import that file type.');
     const ext = parts.pop();
-    if (!IMPORT_EXTENSIONS.includes(ext)) throw new StoreError('Only .txt, .md and backup .json files can be imported.');
+    if (!IMPORT_EXTENSIONS.includes(ext)) throw new StoreError('CyberPad cannot import that file type.');
     if (parts.slice(1).some((p) => RISKY_INNER_EXTENSIONS.has(p))) throw new StoreError('That file has a suspicious double extension and was not imported.');
     const max = ext === 'json' ? LIMITS.backupBytes : LIMITS.importBytes;
     if (!Number.isSafeInteger(size) || size < 0 || size > max) {
@@ -407,7 +492,7 @@
   }
 
   return {
-    STORAGE_KEY, LEGACY_STORAGE_KEYS, FILE_FORMATS, SCHEMA, LIMITS, THEMES, SCREEN_THEMES, LANGS, LINE_NUMBERS, resolveTheme, VIEWS, AUTOLOCK, DEFAULT_SETTINGS, StoreError,
+    STORAGE_KEY, LEGACY_STORAGE_KEYS, FILE_FORMATS, FILE_TYPES, IMPORT_EXTENSIONS, fileTypeOf, extensionsFor, defaultExtFor, SCHEMA, LIMITS, THEMES, SCREEN_THEMES, LANGS, LINE_NUMBERS, resolveTheme, VIEWS, AUTOLOCK, DEFAULT_SETTINGS, StoreError,
     newId, cleanFolder, folderList, validateEnvelope, validateNote, validateNotes, validateSettings, validateState, parseStored, pickState, serialize, createNote, addSnapshot,
     makeBackup, parseBackup, makeEncryptedBackup, parseEncryptedBackup, mergeNotes, checkImportFile, decodeImportBytes,
   };

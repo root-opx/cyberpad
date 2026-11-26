@@ -80,6 +80,14 @@ test('LANGUAGES: the spec table, row by row', () => {
     ['sql', 'SQL', '    ', '(', ')'],
     ['typescript', 'TypeScript', '  ', '{ ( [', '} ) ]'],
     ['yaml', 'YAML', '  ', ':', ''],
+    ['batch', 'Batch', '    ', '(', ')'],
+    ['ruby', 'Ruby', '  ', 'then do else begin { ( [', '} ) ]'],
+    ['php', 'PHP', '    ', '{ ( [ :', '} ) ]'],
+    ['lua', 'Lua', '  ', 'then do else repeat { (', '} )'],
+    ['perl', 'Perl', '    ', '{ ( [', '} ) ]'],
+    ['xml', 'XML', '  ', '', ''],
+    ['ini', 'INI and TOML', '  ', '', ''],
+    ['plain', 'Plain text', '    ', '', ''],
   ]);
 });
 
@@ -719,4 +727,332 @@ test('Enter on a 200,000-line text with the caret near the end returns quickly (
   C.backspace(text, caret, caret, 'python');
   C.closer(text, caret, caret, 'javascript', '}');
   assert.ok(Number(process.hrtime.bigint() - t1) / 1e6 < 50, 'the others are quick too');
+});
+
+// ---- the eight added languages and the comment markers ----
+
+test('LANGUAGES: comment markers for all 24 languages', () => {
+  const line = { python: '#', bash: '#', powershell: '#', yaml: '#', ruby: '#', perl: '#', ini: '#', c: '//', cpp: '//', csharp: '//', go: '//', java: '//', javascript: '//', typescript: '//', rust: '//', php: '//', sql: '--', lua: '--', batch: 'REM ' };
+  const cb = ['/*', '*/'];
+  const block = { css: cb, c: cb, cpp: cb, csharp: cb, go: cb, java: cb, javascript: cb, typescript: cb, rust: cb, html: ['<!--', '-->'], xml: ['<!--', '-->'] };
+  assert.equal(C.LANGUAGES.length, 24);
+  for (const l of C.LANGUAGES) {
+    assert.equal(l.lineComment, line[l.id] === undefined ? null : line[l.id], l.id);
+    assert.deepEqual(l.blockComment === null ? null : [...l.blockComment], block[l.id] || null, l.id);
+    if (l.blockComment) assert.equal(Object.isFrozen(l.blockComment), true, l.id);
+  }
+  for (const id of ['json', 'plain']) assert.ok(C.language(id).lineComment === null && C.language(id).blockComment === null, id);
+});
+
+table('enter', 'ruby', enter, [
+  ['def f¦', 'def f\n¦'],
+  ['if x then¦', 'if x then\n  ¦'],
+  ['x.each do¦', 'x.each do\n  ¦'],
+  ['begin¦', 'begin\n  ¦'],
+  ['else¦', 'else\n  ¦'],
+  ['redo¦', 'redo\n¦'],
+  ['h = {¦', 'h = {\n  ¦'],
+  ['a = [¦]', 'a = [\n  ¦\n]'],
+  ['  foo # then¦', '  foo # then\n  ¦'],
+]);
+table('enter', 'php', enter, [
+  ['if ($a) {¦', 'if ($a) {\n    ¦'],
+  ['if ($a):¦', 'if ($a):\n    ¦'],
+  ['$a = [¦', '$a = [\n    ¦'],
+  ['echo 1; // {¦', 'echo 1; // {\n¦'],
+]);
+table('enter', 'lua', enter, [
+  ['if x then¦', 'if x then\n  ¦'],
+  ['for i=1,2 do¦', 'for i=1,2 do\n  ¦'],
+  ['repeat¦', 'repeat\n  ¦'],
+  ['else¦', 'else\n  ¦'],
+  ['t = {¦', 't = {\n  ¦'],
+  ['x = 1 -- do¦', 'x = 1 -- do\n¦'],
+  ['function f()¦', 'function f()\n¦'],
+]);
+table('enter', 'perl', enter, [
+  ['sub f {¦', 'sub f {\n    ¦'],
+  ['my @a = (¦)', 'my @a = (\n    ¦\n)'],
+  ['print 1; # {¦', 'print 1; # {\n¦'],
+]);
+table('enter', 'batch', enter, [
+  ['if x (¦', 'if x (\n    ¦'],
+  ['echo hi¦', 'echo hi\n¦'],
+  ['    echo (¦', '    echo (\n        ¦'],
+]);
+table('enter', 'xml', enter, [['<a>¦', '<a>\n¦'], ['  <a>¦', '  <a>\n  ¦']]);
+table('enter', 'ini', enter, [['[sec]¦', '[sec]\n¦'], ['  k = v¦', '  k = v\n  ¦'], ['a = {¦', 'a = {\n¦']]);
+table('enter', 'plain', enter, [['    hello {¦', '    hello {\n    ¦'], ['x:¦', 'x:\n¦']]);
+
+test('closers: brackets for ruby, php, lua, perl; ) for batch; none for xml, ini, plain', () => {
+  assert.equal(closer('  ¦', 'ruby', '}'), '}¦');
+  assert.equal(closer('    ¦', 'php', ')'), ')¦');
+  assert.equal(closer('  ¦', 'lua', '}'), '}¦');
+  assert.equal(closer('    ¦', 'perl', ']'), ']¦');
+  assert.equal(closer('    ¦', 'batch', ')'), ')¦');
+  assert.equal(closer('    ¦', 'lua', ']'), null);
+  assert.equal(closer('    ¦', 'batch', '}'), null);
+  for (const id of ['xml', 'ini', 'plain']) for (const ch of ['}', ')', ']']) assert.equal(closer('    ¦', id, ch), null, `${id} ${ch}`);
+});
+
+test('units: the new languages indent with their unit on Tab', () => {
+  const units = { batch: 4, ruby: 2, php: 4, lua: 2, perl: 4, xml: 2, ini: 2, plain: 4 };
+  for (const [id, n] of Object.entries(units)) assert.equal(tab('¦x', id), `${' '.repeat(n)}¦x`, id);
+});
+
+// ---- toggleComment, duplicateLines, moveLines ----
+
+const tc = (marked, id) => run(C.toggleComment, marked, id);
+const dup = (marked, id = '') => run(C.duplicateLines, marked, id);
+const mv = (marked, id, d) => run(C.moveLines, marked, id, d);
+const applyRaw = (text, r) => text.slice(0, r.start) + r.insert + text.slice(r.end);
+
+table('toggleComment', 'python', tc, [
+  ['x = 1¦', '# x = 1¦'],
+  ['«x = 1»', '# «x = 1»'],
+  ['    ¦x = 1', '    # ¦x = 1'],
+  ['# x = 1¦', 'x = 1¦'],
+  ['#x = 1¦', 'x = 1¦'],
+  ['    # x = 1¦', '    x = 1¦'],
+  ['«a\nb»', '# «a\n# b»'],
+  ['«a\n\nb»', '# «a\n\n# b»'],
+  ['«# a\n\n# b»', '«a\n\nb»'],
+  ['«# a\nb»', '# «# a\n# b»'],
+  ['«    a\n  b»', '«  #   a\n  # b»'],
+  ['«a\nb\n»', '# «a\n# b\n»'],
+  ['a\n«b»\nc', 'a\n# «b»\nc'],
+  ['¦', '¦'],
+  ['  ¦  ', '  ¦  '],
+  ['«\n\n»', '«\n\n»'],
+]);
+table('toggleComment', 'javascript', tc, [
+  ['¦foo()', '// ¦foo()'],
+  ['// foo()¦', 'foo()¦'],
+  ['//foo¦', 'foo¦'],
+  ['«a\n  b»', '// «a\n//   b»'],
+  ['  «a\n  b»', '  // «a\n  // b»'],
+]);
+table('toggleComment', 'sql', tc, [['«select 1»', '-- «select 1»'], ['-- select 1¦', 'select 1¦'], ['--select 1¦', 'select 1¦']]);
+table('toggleComment', 'lua', tc, [['x = 1¦', '-- x = 1¦'], ['-- x = 1¦', 'x = 1¦']]);
+table('toggleComment', 'batch', tc, [
+  ['echo hi¦', 'REM echo hi¦'],
+  ['REM echo hi¦', 'echo hi¦'],
+  ['rem echo hi¦', 'echo hi¦'],
+  ['Rem echo hi¦', 'echo hi¦'],
+  [':: echo hi¦', 'echo hi¦'],
+  ['  ::x¦', '  x¦'],
+  ['REM¦', '¦'],
+  ['REMARK x¦', 'REM REMARK x¦'],
+  ['«echo a\n  echo b»', 'REM «echo a\nREM   echo b»'],
+]);
+table('toggleComment', 'ini', tc, [
+  ['k = v¦', '# k = v¦'],
+  ['; k = v¦', 'k = v¦'],
+  ['# k = v¦', 'k = v¦'],
+  ['«; a\n# b»', '«a\nb»'],
+  ['«; a\nb»', '# «; a\n# b»'],
+]);
+table('toggleComment', 'html', tc, [
+  ['«<p>x</p>»', '«<!-- <p>x</p> -->»'],
+  ['<!-- <p>x</p> -->¦', '<p>x</p>¦'],
+  ['  ¦<p>x</p>', '  <!-- ¦<p>x</p> -->'],
+  ['<p>¦x</p>', '<!-- <p>¦x</p> -->'],
+  ['<!-- «x» -->', '«x»'],
+  ['<!--x-->¦', 'x¦'],
+  ['«a\nb»', '«<!-- a\nb -->»'],
+  ['«  a  »', '«  <!-- a -->  »'],
+  ['¦', '¦'],
+  ['  ¦', '  ¦'],
+  ['«   »', '«   »'],
+]);
+table('toggleComment', 'xml', tc, [['«<a/>»', '«<!-- <a/> -->»'], ['<!-- <a/> -->¦', '<a/>¦']]);
+table('toggleComment', 'css', tc, [['«a{}»', '«/* a{} */»'], ['/* a{} */¦', 'a{}¦'], ['  ¦color: red;', '  /* ¦color: red; */']]);
+for (const id of ['json', 'plain']) {
+  table('toggleComment', id, tc, [['«a»', '«a»'], ['x¦', 'x¦'], ['«a\nb»', '«a\nb»']]);
+}
+
+test('toggleComment: a language with neither marker gives a no-op result, not null', () => {
+  const r = C.toggleComment('abc', 1, 2, 'json');
+  assert.deepEqual(r, { start: 1, end: 1, insert: '', selStart: 1, selEnd: 2 });
+});
+
+test('toggleComment: only the lines involved are replaced', () => {
+  const text = 'one\ntwo\nthree\nfour';
+  const r = C.toggleComment(text, 5, 6, 'python');
+  assert.deepEqual([r.start, r.end, r.insert], [4, 7, '# two']);
+  assert.equal(applyRaw(text, r), 'one\n# two\nthree\nfour');
+});
+
+test('toggleComment: CRLF text keeps its line ends and blank CRLF lines are left alone', () => {
+  const text = 'a\r\n\r\nb\r\n';
+  const r = C.toggleComment(text, 0, text.length - 1, 'python');
+  assert.equal(applyRaw(text, r), '# a\r\n\r\n# b\r\n');
+  const back = C.toggleComment('# a\r\n\r\n# b\r\n', r.selStart, r.selEnd, 'python');
+  assert.equal(applyRaw('# a\r\n\r\n# b\r\n', back), text);
+});
+
+test('toggleComment: round trips restore text and selection exactly', () => {
+  const samples = [
+    'x = 1¦', '«x = 1»', '    ¦x', '«a\n  b»', '«a\n\nb»', '«  a\n    b»', '«\ta\n\tb»', '«a\nb\n»', '¦a\nb', 'x\n«  y\n  z»\nw',
+    '«a  »', 'p\n  ¦q\nr', '«# a\nb»', '«a\n\n»', '«  \n  a\n  »', '«  a\n\n    b\n  c»', '¦', '«é😀a»',
+  ];
+  for (const { id } of C.LANGUAGES) {
+    for (const marked of samples) {
+      const { text, start, end } = parse(marked);
+      const r1 = C.toggleComment(text, start, end, id);
+      assert.ok(r1, `${id} ${JSON.stringify(marked)}`);
+      const t1 = applyRaw(text, r1);
+      const r2 = C.toggleComment(t1, r1.selStart, r1.selEnd, id);
+      assert.ok(r2, `${id} ${JSON.stringify(marked)} second`);
+      const t2 = applyRaw(t1, r2);
+      const label = `${id} ${JSON.stringify(marked)}`;
+      assert.equal(t2, text, label);
+      assert.equal(r2.selStart, start, `${label} selStart`);
+      assert.equal(r2.selEnd, end, `${label} selEnd`);
+      if (id !== 'json' && id !== 'plain' && /\S/.test(text.replace(/[\n\r]/g, ''))) assert.notEqual(t1, text, label);
+    }
+  }
+});
+
+test('toggleComment: a selection ending at column 0 of the next line leaves that line alone', () => {
+  for (const id of ['python', 'javascript', 'sql', 'batch', 'ini']) {
+    const text = 'a\nb\nc';
+    const r = C.toggleComment(text, 0, 4, id); // covers "a\nb\n"
+    const out = applyRaw(text, r);
+    assert.ok(out.endsWith('\nc'), id);
+    assert.equal(out.split('\n').length, 3, id);
+    assert.notEqual(out.split('\n')[1], 'b', id);
+  }
+});
+
+test('toggleComment: hostile ids and bad arguments give null and never throw', () => {
+  for (const id of ['__proto__', 'constructor', 'toString', 'Python', 'PYTHON', ' python', '', null, 5, undefined, {}, [], ['python']]) {
+    assert.equal(C.toggleComment('a', 0, 1, id), null, JSON.stringify(id));
+  }
+  const pairText = 'a😀b';
+  const bad = [
+    [null, 0, 0], [5, 0, 0], [undefined, 0, 0], ['ab', NaN, 1], ['ab', 0.5, 1], ['ab', '0', '1'], ['ab', -1, 0], ['ab', 0, 3],
+    ['ab', 3, 3], ['ab', 2, 1], ['ab', 0, Infinity], ['ab'], [pairText, 2, 2], [pairText, 1, 2], [pairText, 0, 2], [{}, 0, 0], [['a'], 0, 0],
+  ];
+  for (const [t, s, e] of bad) {
+    for (const id of ['python', 'html', 'json']) assert.equal(C.toggleComment(t, s, e, id), null, `${JSON.stringify([t, s, e])} ${id}`);
+  }
+});
+
+// duplicateLines
+
+table('duplicateLines', 'python', dup, [
+  ['a¦\nb', 'a\na¦\nb'],
+  ['«a\nb»\nc', 'a\nb\n«a\nb»\nc'],
+  ['a\nb¦', 'a\nb\nb¦'],
+  ['a¦\n', 'a\na¦\n'],
+  ['«a\n»b', 'a\n«a\n»b'],
+  ['¦\nb', '\n¦\nb'],
+  ['x\n  ¦y\nz', 'x\n  y\n  ¦y\nz'],
+  ['a\n«b\nc»', 'a\nb\nc\n«b\nc»'],
+  ['¦', '\n¦'],
+]);
+test('duplicateLines: works with any language id including plain, and with an empty id for a Markdown note', () => {
+  for (const id of ['', ...store.LANGS]) assert.equal(dup('a¦\nb', id), 'a\na¦\nb', id);
+});
+test('duplicateLines: CRLF lines are copied whole and only the lines involved change', () => {
+  const text = 'a\r\nb\r\nc';
+  const r = C.duplicateLines(text, 4, 4, 'plain');
+  assert.equal(applyRaw(text, r), 'a\r\nb\r\nb\r\nc');
+  assert.deepEqual([r.start, r.end, r.insert], [5, 5, '\nb\r']);
+});
+test('duplicateLines: hostile ids, positions and surrogate splits give null', () => {
+  for (const id of ['__proto__', 'Python', null, 5, undefined, {}, []]) assert.equal(C.duplicateLines('a', 0, 0, id), null, JSON.stringify(id));
+  for (const [t, s, e] of [[null, 0, 0], ['ab', -1, 0], ['ab', 2, 1], ['ab', 0, 3], ['ab', 0.5, 1], ['ab', '0', 0], ['a😀', 2, 2], ['a😀', 1, 2]]) {
+    assert.equal(C.duplicateLines(t, s, e, 'plain'), null, JSON.stringify([t, s, e]));
+  }
+});
+
+// moveLines
+
+table('moveLines', 'python', (m, id) => mv(m, id, 1), [
+  ['a\n¦b\nc', 'a\nc\n¦b'],
+  ['a¦\nb\n', 'b\na¦\n'],
+  ['a\n¦b\n', 'a\n¦b\n'], // b is the last real line
+  ['a\nb\nc¦', 'a\nb\nc¦'],
+  ['a¦\nb', 'b\na¦'],
+  ['«a\nb»\nc\nd', 'c\n«a\nb»\nd'],
+  ['«a\nb\n»c\nd', 'c\n«a\nb\n»d'],
+  ['a\nb\n¦', 'a\nb\n¦'],
+  ['¦', '¦'],
+  ['a\n  ¦b\n    c', 'a\n    c\n  ¦b'],
+]);
+table('moveLines', 'python', (m, id) => mv(m, id, -1), [
+  ['a\n¦b\nc', '¦b\na\nc'],
+  ['¦a\nb', '¦a\nb'],
+  ['a\nb¦', 'b¦\na'],
+  ['a\nb\n¦', 'a\nb\n¦'],
+  ['a\n«b\nc\n»d', '«b\nc\n»a\nd'],
+  ['a\n«b\nc»', '«b\nc»\na'],
+  ['a\nb\nc¦\n', 'a\nc¦\nb\n'],
+]);
+test('moveLines: up then down (and down then up) restores text and selection; the final newline is kept or absent as before', () => {
+  const samples = ['a\n¦b\nc', 'a\n«b\nc»\nd', 'a\nb\n¦c', 'x\n«y»\nz\n', 'a\n«b\nc\n»d\n', '\n¦\n\n', 'a\n  ¦b\n\n  c', 'é😀\n¦b😀\nc', 'a\r\n¦b\r\nc', 'a\r\n«b\r\nc»'];
+  for (const marked of samples) {
+    const { text, start, end } = parse(marked);
+    for (const [d1, d2] of [[-1, 1], [1, -1]]) {
+      const r1 = C.moveLines(text, start, end, 'plain', d1);
+      const t1 = applyRaw(text, r1);
+      assert.equal(t1.length, text.length, marked);
+      assert.equal(t1.endsWith('\n'), text.endsWith('\n'), marked);
+      assert.equal(t1.split('\n').length, text.split('\n').length, marked);
+      if (t1 === text) continue; // a move past the end: nothing to undo
+      const r2 = C.moveLines(t1, r1.selStart, r1.selEnd, 'plain', d2);
+      assert.equal(applyRaw(t1, r2), text, `${marked} ${d1}`);
+      if (t1 !== text) {
+        assert.equal(r2.selStart, start, `${marked} ${d1} selStart`);
+        assert.equal(r2.selEnd, end, `${marked} ${d1} selEnd`);
+      }
+    }
+  }
+});
+test('moveLines: a move past the first or last line is a no-op result, not null', () => {
+  assert.deepEqual(C.moveLines('a\nb', 0, 0, 'plain', -1), { start: 0, end: 0, insert: '', selStart: 0, selEnd: 0 });
+  assert.deepEqual(C.moveLines('a\nb', 2, 3, 'plain', 1), { start: 2, end: 2, insert: '', selStart: 2, selEnd: 3 });
+});
+test('moveLines: CRLF text keeps its line ends, also when the final line has none', () => {
+  assert.equal(applyRaw('a\r\nb', C.moveLines('a\r\nb', 0, 0, 'plain', 1)), 'b\r\na');
+  assert.equal(applyRaw('a\r\nb', C.moveLines('a\r\nb', 3, 3, 'plain', -1)), 'b\r\na');
+  assert.equal(applyRaw('a\r\nb\r\nc\r\n', C.moveLines('a\r\nb\r\nc\r\n', 3, 3, 'plain', 1)), 'a\r\nc\r\nb\r\n');
+});
+test('moveLines: only the lines involved are replaced', () => {
+  const text = 'one\ntwo\nthree\nfour';
+  const r = C.moveLines(text, 5, 5, 'plain', 1);
+  assert.deepEqual([r.start, r.end, r.insert], [4, 13, 'three\ntwo']);
+});
+test('moveLines: any language id and the empty id work', () => {
+  for (const id of ['', ...store.LANGS]) assert.equal(mv('a¦\nb', id, 1), 'b\na¦', id);
+});
+test('moveLines: direction must be exactly -1 or 1; hostile ids and positions give null', () => {
+  for (const d of [0, 2, -2, '1', '-1', null, undefined, NaN, 1.5, true, [], {}, Infinity]) assert.equal(C.moveLines('a\nb', 0, 0, 'plain', d), null, String(d));
+  for (const id of ['__proto__', 'Python', null, 5, undefined, {}, []]) assert.equal(C.moveLines('a\nb', 0, 0, id, 1), null, JSON.stringify(id));
+  for (const [t, s, e] of [[null, 0, 0], [5, 0, 0], ['ab', -1, 0], ['ab', 2, 1], ['ab', 0, 3], ['ab', 0.5, 1], ['ab', '0', 0], ['a😀\nb', 2, 2], ['a😀\nb', 1, 2], ['ab', NaN, 0]]) {
+    assert.equal(C.moveLines(t, s, e, 'plain', 1), null, JSON.stringify([t, s, e]));
+  }
+});
+
+test('performance: each new function on 200,000 lines with the caret near the end is under 50 ms', () => {
+  const text = Array.from({ length: 200000 }, (_, i) => `    line ${i} of some code`).join('\n');
+  const p = text.length - 30;
+  const jobs = {
+    toggleComment: () => C.toggleComment(text, p, p, 'python'),
+    toggleCommentBlock: () => C.toggleComment(text, p, p, 'html'),
+    duplicateLines: () => C.duplicateLines(text, p, p, 'plain'),
+    moveUp: () => C.moveLines(text, p, p, 'plain', -1),
+    moveDown: () => C.moveLines(text, p, p, 'plain', 1),
+    moveDownFromTheMiddle: () => C.moveLines(text, text.length >> 1, text.length >> 1, 'plain', 1),
+  };
+  for (const [name, job] of Object.entries(jobs)) {
+    job(); // warm up
+    const t0 = process.hrtime.bigint();
+    const r = job();
+    const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+    assert.ok(r, name);
+    assert.ok(ms < 50, `${name} took ${ms} ms`);
+  }
 });

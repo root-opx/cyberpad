@@ -369,7 +369,7 @@
 
   // ---- palette sections -------------------------------------------------
 
-  const PALETTE_SECTIONS = Object.freeze(['Recent notes', 'Note', 'File', 'View', 'Insert', 'Text', 'Tools', 'Vault', 'Security']);
+  const PALETTE_SECTIONS = Object.freeze(['Recent notes', 'Note', 'File', 'View', 'Insert', 'Text', 'Tools', 'CTF', 'Vault', 'Security']);
   const SECTION_RENAMES = new Map([['Theme', 'View'], ['Templates', 'Insert'], ['Transform', 'Text']]);
 
   function sectionOf(group) {
@@ -405,8 +405,260 @@
     return ymd(new Date(ts));
   }
 
+  // ---- selection formatting (the selection toolbar) -----------------------------------------------
+  // Each function returns null for unusable arguments, else { start, end, insert, selStart, selEnd }: replace
+  // [start, end) of the text with `insert`, then select [selStart, selEnd) in the result. Never throws.
+
+  const WRAP_MARKERS = Object.freeze(['**', '*', '~~', '==', '`']);
+  const LINE_PREFIXES = Object.freeze(['> ', '- ']);
+
+  function posOk(text, start, end) {
+    if (typeof text !== 'string' || !Number.isInteger(start) || !Number.isInteger(end)) return false;
+    if (start < 0 || start > end || end > text.length) return false;
+    const splits = (p) => {
+      if (p <= 0 || p >= text.length) return false;
+      const hi = text.charCodeAt(p - 1);
+      const lo = text.charCodeAt(p);
+      return hi >= 0xD800 && hi <= 0xDBFF && lo >= 0xDC00 && lo <= 0xDFFF;
+    };
+    return !(splits(start) || splits(end));
+  }
+
+  const isSpaceCh = (c) => c === ' ' || c === '\t' || c === '\n' || c === '\r';
+  const noEdit = (start, end) => ({ start, end: start, insert: '', selStart: start, selEnd: end });
+  const lineStartOf = (text, pos) => (pos === 0 ? 0 : text.lastIndexOf('\n', pos - 1) + 1);
+  const lineEndOf = (text, pos) => {
+    const i = text.indexOf('\n', pos);
+    return i === -1 ? text.length : i;
+  };
+
+  /** Where a position goes after the edits [{ at, del, ins }] (ascending, not overlapping). */
+  function mapPos(p, edits) {
+    let r = p;
+    for (const ed of edits) {
+      if (p >= ed.at + ed.del) r += ed.ins - ed.del;
+      else if (p > ed.at) r -= p - ed.at;
+    }
+    return r;
+  }
+
+  /** Length of the run of ch ending just before `to` (going left) or starting at `from` (going right). */
+  function runLeft(text, to, ch) {
+    let n = 0;
+    while (to - n - 1 >= 0 && text[to - n - 1] === ch) n += 1;
+    return n;
+  }
+  function runRight(text, from, ch) {
+    let n = 0;
+    while (from + n < text.length && text[from + n] === ch) n += 1;
+    return n;
+  }
+
+  /** True when [a, b) itself starts and ends with the marker (a single '*' must not be half of '**'). */
+  function wrappedInside(text, a, b, m) {
+    if (b - a < 2 * m.length || !text.startsWith(m, a) || !text.startsWith(m, b - m.length)) return false;
+    if (m !== '*') return true;
+    const l = runRight(text, a, '*');
+    const r = runLeft(text, b, '*');
+    return l < b - a && Math.min(l, r) % 2 === 1;
+  }
+
+  /** True when the marker sits immediately left of a and right of b. */
+  function wrappedOutside(text, a, b, m) {
+    if (a < m.length || !text.startsWith(m, a - m.length) || !text.startsWith(m, b)) return false;
+    if (m !== '*') return true;
+    return Math.min(runLeft(text, a, '*'), runRight(text, b, '*')) % 2 === 1;
+  }
+
+  function longestRun(s, ch) {
+    let best = 0;
+    let cur = 0;
+    for (let i = 0; i < s.length; i += 1) {
+      cur = s[i] === ch ? cur + 1 : 0;
+      if (cur > best) best = cur;
+    }
+    return best;
+  }
+
+  /** A fenced block around the whole lines touched by [a, b), or the fence removed when it is already there. */
+  function toggleFence(text, start, end, a, b) {
+    const ls = lineStartOf(text, a);
+    const le = lineEndOf(text, b);
+    const isFence = (from, to) => {
+      let f = from;
+      let t = to;
+      while (f < t && isSpaceCh(text[f])) f += 1;
+      while (t > f && isSpaceCh(text[t - 1])) t -= 1;
+      if (t - f < 3) return 0;
+      for (let i = f; i < t; i += 1) if (text[i] !== '`') return 0;
+      return t - f;
+    };
+    // Inside: first and last line of the range are fences. Outside: the lines just above and below are.
+    const firstEnd = lineEndOf(text, ls);
+    const lastStart = lineStartOf(text, le);
+    let ua = -1;
+    let ub = -1;
+    let innerA = 0;
+    let innerB = 0;
+    if (firstEnd < lastStart && isFence(ls, firstEnd) && isFence(lastStart, le) >= isFence(ls, firstEnd)) {
+      ua = ls; ub = le; innerA = firstEnd + 1; innerB = lastStart - 1;
+    } else if (ls > 0 && le < text.length) {
+      const pls = lineStartOf(text, ls - 1);
+      const nle = lineEndOf(text, le + 1);
+      const f1 = isFence(pls, ls - 1);
+      if (f1 && isFence(le + 1, nle) >= f1) { ua = pls; ub = nle; innerA = ls; innerB = le; }
+    }
+    if (ua !== -1) {
+      const edits = [{ at: ua, del: innerA - ua, ins: 0 }, { at: innerB, del: ub - innerB, ins: 0 }];
+      return {
+        start: ua, end: ub, insert: text.slice(innerA, innerB),
+        selStart: mapPos(start, edits), selEnd: mapPos(end, edits),
+      };
+    }
+    const inner = text.slice(ls, le);
+    const fence = '`'.repeat(Math.max(3, longestRun(inner, '`') + 1));
+    const insert = `${fence}\n${inner}\n${fence}`;
+    return { start: ls, end: le, insert, selStart: ls, selEnd: ls + insert.length };
+  }
+
+  /**
+   * Wraps the selection in a marker (** * ~~ == `), or removes the marker when it is already there (inside the
+   * selection or just outside it). Whitespace at the selection's edges stays outside. Several lines: each
+   * non-blank line is wrapped on its own, except for ` which makes a fenced block.
+   */
+  function toggleWrap(text, start, end, marker) {
+    if (!posOk(text, start, end) || typeof marker !== 'string' || !WRAP_MARKERS.includes(marker)) return null;
+    const m = marker;
+    if (start === end) {
+      const caret = start + m.length;
+      return { start, end, insert: m + m, selStart: caret, selEnd: caret };
+    }
+    let a = start;
+    let b = end;
+    while (a < b && isSpaceCh(text[a])) a += 1;
+    while (b > a && isSpaceCh(text[b - 1])) b -= 1;
+    if (a >= b) return noEdit(start, end);
+    const multi = text.indexOf('\n', a) !== -1 && text.indexOf('\n', a) < b;
+    if (multi && m === '`') return toggleFence(text, start, end, a, b);
+    if (!multi) {
+      if (wrappedInside(text, a, b, m)) {
+        const edits = [{ at: a, del: m.length, ins: 0 }, { at: b - m.length, del: m.length, ins: 0 }];
+        return { start: a, end: b, insert: text.slice(a + m.length, b - m.length), selStart: mapPos(start, edits), selEnd: mapPos(end, edits) };
+      }
+      if (wrappedOutside(text, a, b, m)) {
+        const ra = a - m.length;
+        const rb = b + m.length;
+        const edits = [{ at: ra, del: m.length, ins: 0 }, { at: b, del: m.length, ins: 0 }];
+        return { start: ra, end: rb, insert: text.slice(a, b), selStart: mapPos(start, edits), selEnd: mapPos(end, edits) };
+      }
+      return { start: a, end: b, insert: m + text.slice(a, b) + m, selStart: start, selEnd: end + 2 * m.length };
+    }
+    // several lines: the covered part of each non-blank line, trimmed
+    const segs = [];
+    let ls = a;
+    for (;;) {
+      const nl = text.indexOf('\n', ls);
+      let sa = ls;
+      let sb = nl === -1 || nl > b ? b : nl;
+      while (sa < sb && isSpaceCh(text[sa])) sa += 1;
+      while (sb > sa && isSpaceCh(text[sb - 1])) sb -= 1;
+      if (sa < sb) segs.push({ a: sa, b: sb });
+      if (nl === -1 || nl >= b) break;
+      ls = nl + 1;
+    }
+    const allWrapped = segs.every((s) => wrappedInside(text, s.a, s.b, m));
+    const edits = [];
+    let out = '';
+    let at = a;
+    let added = 0;
+    for (const s of segs) {
+      out += text.slice(at, s.a);
+      if (allWrapped) {
+        edits.push({ at: s.a, del: m.length, ins: 0 }, { at: s.b - m.length, del: m.length, ins: 0 });
+        out += text.slice(s.a + m.length, s.b - m.length);
+      } else if (wrappedInside(text, s.a, s.b, m)) {
+        out += text.slice(s.a, s.b); // already wrapped: left as it is, never doubled
+      } else {
+        added += 2 * m.length;
+        out += m + text.slice(s.a, s.b) + m;
+      }
+      at = s.b;
+    }
+    out += text.slice(at, b);
+    if (allWrapped) return { start: a, end: b, insert: out, selStart: mapPos(start, edits), selEnd: mapPos(end, edits) };
+    return { start: a, end: b, insert: out, selStart: start, selEnd: end + added };
+  }
+
+  /** Adds `prefix` ('> ' or '- ') to every touched line, or removes it when every non-blank touched line has it. */
+  function toggleLinePrefix(text, start, end, prefix) {
+    if (!posOk(text, start, end) || typeof prefix !== 'string' || !LINE_PREFIXES.includes(prefix)) return null;
+    const first = lineStartOf(text, start);
+    let lastStart = lineStartOf(text, end);
+    if (end > start && lastStart === end) lastStart = lineStartOf(text, end - 1);
+    const lines = [];
+    let ls = first;
+    for (;;) {
+      const le = lineEndOf(text, ls);
+      let w = 0;
+      while (ls + w < le && (text[ls + w] === ' ' || text[ls + w] === '\t')) w += 1;
+      const blank = ls + w === le || (ls + w === le - 1 && text[le - 1] === '\r');
+      lines.push({ ls, le, w, blank, has: !blank && text.startsWith(prefix, ls + w) });
+      if (ls >= lastStart || le >= text.length) break;
+      ls = le + 1;
+    }
+    const lived = lines.filter((l) => !l.blank);
+    const remove = lived.length > 0 && lived.every((l) => l.has);
+    if (lived.length === 0 && lines.length > 1) return noEdit(start, end);
+    const edits = [];
+    const out = lines.map((l) => {
+      if (remove) {
+        if (l.blank) return text.slice(l.ls, l.le);
+        const at = l.ls + l.w;
+        edits.push({ at, del: prefix.length, ins: 0 });
+        return text.slice(l.ls, at) + text.slice(at + prefix.length, l.le);
+      }
+      if (l.blank && lines.length > 1) return text.slice(l.ls, l.le); // blank lines in a block stay blank
+      edits.push({ at: l.ls, del: 0, ins: prefix.length });
+      return prefix + text.slice(l.ls, l.le);
+    });
+    return { start: first, end: lines[lines.length - 1].le, insert: out.join('\n'), selStart: mapPos(start, edits), selEnd: mapPos(end, edits) };
+  }
+
+  function isHttpUrl(s) {
+    if (s.length < 8 || s.length > 2000) return false;
+    const head = s.slice(0, 8).toLowerCase();
+    if (!(head.startsWith('http://') || head === 'https://')) return false;
+    for (let i = 0; i < s.length; i += 1) {
+      const c = s.charCodeAt(i);
+      if (c <= 0x20 || c === 0x7f || s[i] === '(' || s[i] === ')') return false;
+    }
+    return s.length > (head === 'https://' ? 8 : 7);
+  }
+
+  /** `sel` becomes [sel](url) with url selected; an empty selection gives [text](url); a URL becomes [text](URL). */
+  function makeLink(text, start, end) {
+    if (!posOk(text, start, end)) return null;
+    let a = start;
+    let b = end;
+    while (a < b && isSpaceCh(text[a])) a += 1;
+    while (b > a && isSpaceCh(text[b - 1])) b -= 1;
+    if (a === b) a = b = start;
+    const sel = text.slice(a, b);
+    if (sel.includes('\n') || sel.includes('[') || sel.includes(']')) return noEdit(start, end); // not a valid link label
+    if (sel === '') {
+      // nothing but (at most) whitespace selected: the whitespace stays, the link goes after it
+      return { start: end, end, insert: '[text](url)', selStart: end + 1, selEnd: end + 5 };
+    }
+    if (isHttpUrl(sel)) {
+      return { start: a, end: b, insert: `[text](${sel})`, selStart: a + 1, selEnd: a + 5 };
+    }
+    const from = a + sel.length + 3;
+    return { start: a, end: b, insert: `[${sel}](url)`, selStart: from, selEnd: from + 3 };
+  }
+
   return {
     TransformError, TRANSFORMS, SLASH,
+    toggleWrap, toggleLinePrefix, makeLink,
     ymd, hm, utcStamp, isoWeek, stats, position, deriveTitle, extractTags, extractWikiLinks, headings,
     inCodeAt, arrowReplacement, credentialsTemplate, listContinuation, isTask, toggleTask, numberStats, slugify, expandSlash, fuzzyScore, relativeTime,
     PALETTE_SECTIONS, sectionOf, paletteSections, paletteScore,
