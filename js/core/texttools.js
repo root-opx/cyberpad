@@ -320,6 +320,9 @@
     { name: 'ioc', desc: 'IOC tracking table', expand: (c) => iocTableTemplate(c.now) },
     { name: 'timeline', desc: 'Incident timeline table (UTC)', expand: (c) => timelineTemplate(c.now) },
     { name: 'credentials', desc: 'New encrypted credentials note', expand: (c) => { const text = credentialsTemplate(c.now); return { text, caret: text.length, block: true }; } },
+    // The two CTF templates come from ctf.js, which loads after this file: the page expands them (name and description only here).
+    { name: 'ctf', desc: 'CTF challenge template' },
+    { name: 'writeup', desc: 'CTF writeup template' },
     { name: 'todo', desc: 'Task item', expand: () => '- [ ] ' },
     { name: 'h1', desc: 'Big heading', expand: () => '# ' },
     { name: 'h2', desc: 'Section heading', expand: () => '## ' },
@@ -339,7 +342,7 @@
 
   function expandSlash(name, ctx) {
     const cmd = SLASH.find((c) => c.name === name);
-    if (!cmd) return null;
+    if (!cmd || typeof cmd.expand !== 'function') return null;
     const r = cmd.expand(ctx);
     return typeof r === 'string' ? { text: r, caret: r.length, block: false } : { block: false, ...r };
   }
@@ -369,8 +372,8 @@
 
   // ---- palette sections -------------------------------------------------
 
-  const PALETTE_SECTIONS = Object.freeze(['Recent notes', 'Note', 'File', 'View', 'Insert', 'Text', 'Tools', 'Vault', 'Security']);
-  const SECTION_RENAMES = new Map([['Theme', 'View'], ['Templates', 'Insert'], ['Transform', 'Text']]);
+  const PALETTE_SECTIONS = Object.freeze(['Recent notes', 'Note', 'File', 'Edit', 'Format', 'Text', 'Insert', 'View', 'Settings', 'Tools', 'CTF', 'Vault', 'Security']);
+  const SECTION_RENAMES = new Map([['Theme', 'Settings'], ['Templates', 'Insert'], ['Transform', 'Text']]);
 
   function sectionOf(group) {
     return SECTION_RENAMES.has(group) ? SECTION_RENAMES.get(group) : group;
@@ -405,8 +408,515 @@
     return ymd(new Date(ts));
   }
 
+  // ---- selection formatting (the selection toolbar) -----------------------------------------------
+  // Each function returns null for unusable arguments, else { start, end, insert, selStart, selEnd }: replace
+  // [start, end) of the text with `insert`, then select [selStart, selEnd) in the result. Never throws.
+
+  const WRAP_MARKERS = Object.freeze(['**', '*', '~~', '==', '`']);
+  const LINE_PREFIXES = Object.freeze(['> ', '- ']);
+
+  function posOk(text, start, end) {
+    if (typeof text !== 'string' || !Number.isInteger(start) || !Number.isInteger(end)) return false;
+    if (start < 0 || start > end || end > text.length) return false;
+    const splits = (p) => {
+      if (p <= 0 || p >= text.length) return false;
+      const hi = text.charCodeAt(p - 1);
+      const lo = text.charCodeAt(p);
+      return hi >= 0xD800 && hi <= 0xDBFF && lo >= 0xDC00 && lo <= 0xDFFF;
+    };
+    return !(splits(start) || splits(end));
+  }
+
+  const isSpaceCh = (c) => c === ' ' || c === '\t' || c === '\n' || c === '\r';
+  const noEdit = (start, end) => ({ start, end: start, insert: '', selStart: start, selEnd: end });
+  const lineStartOf = (text, pos) => (pos === 0 ? 0 : text.lastIndexOf('\n', pos - 1) + 1);
+  const lineEndOf = (text, pos) => {
+    const i = text.indexOf('\n', pos);
+    return i === -1 ? text.length : i;
+  };
+
+  /** Where a position goes after the edits [{ at, del, ins }] (ascending, not overlapping). */
+  function mapPos(p, edits) {
+    let r = p;
+    for (const ed of edits) {
+      if (p >= ed.at + ed.del) r += ed.ins - ed.del;
+      else if (p > ed.at) r -= p - ed.at;
+    }
+    return r;
+  }
+
+  /** Length of the run of ch ending just before `to` (going left) or starting at `from` (going right). */
+  function runLeft(text, to, ch) {
+    let n = 0;
+    while (to - n - 1 >= 0 && text[to - n - 1] === ch) n += 1;
+    return n;
+  }
+  function runRight(text, from, ch) {
+    let n = 0;
+    while (from + n < text.length && text[from + n] === ch) n += 1;
+    return n;
+  }
+
+  /** True when [a, b) itself starts and ends with the marker (a single '*' must not be half of '**'). */
+  function wrappedInside(text, a, b, m) {
+    if (b - a < 2 * m.length || !text.startsWith(m, a) || !text.startsWith(m, b - m.length)) return false;
+    if (m !== '*') return true;
+    const l = runRight(text, a, '*');
+    const r = runLeft(text, b, '*');
+    return l < b - a && Math.min(l, r) % 2 === 1;
+  }
+
+  /** True when the marker sits immediately left of a and right of b. */
+  function wrappedOutside(text, a, b, m) {
+    if (a < m.length || !text.startsWith(m, a - m.length) || !text.startsWith(m, b)) return false;
+    if (m !== '*') return true;
+    return Math.min(runLeft(text, a, '*'), runRight(text, b, '*')) % 2 === 1;
+  }
+
+  /**
+   * True when [from, to) holds a further occurrence of the marker, which means an opener and a closer around it
+   * may belong to different spans. For '*' that is a run of an odd length (a lone '*', or the '*' of '***').
+   */
+  function innerHasMarker(text, from, to, m) {
+    if (m === '*') {
+      let i = from;
+      while (i < to) {
+        if (text[i] !== '*') { i += 1; continue; }
+        let j = i;
+        while (j < to && text[j] === '*') j += 1;
+        if ((j - i) % 2 === 1) return true;
+        i = j;
+      }
+      return false;
+    }
+    return text.slice(from, to).includes(m);
+  }
+
+  /** 'wrapped' (starts and ends with one span), 'ambiguous' (opener and closer of different spans) or 'plain'. */
+  function wrapState(text, a, b, m) {
+    if (!wrappedInside(text, a, b, m)) return 'plain';
+    return innerHasMarker(text, a + m.length, b - m.length, m) ? 'ambiguous' : 'wrapped';
+  }
+
+  /** True when [a, b) is made only of the character ch. */
+  function onlyChar(text, a, b, ch) {
+    for (let i = a; i < b; i += 1) if (text[i] !== ch) return false;
+    return b > a;
+  }
+
+  function longestRun(s, ch) {
+    let best = 0;
+    let cur = 0;
+    for (let i = 0; i < s.length; i += 1) {
+      cur = s[i] === ch ? cur + 1 : 0;
+      if (cur > best) best = cur;
+    }
+    return best;
+  }
+
+  // ---- Markdown block syntax: what a wrap must keep out of its way -----------------------------------
+
+  const FENCE_SCAN_LIMIT = 2000000; // text before the selection longer than this is assumed not to be inside a fence
+  const isIndentCh = (c) => c === ' ' || c === '\t';
+
+  /** The fence character (` or ~) when the line is a fence line: up to three spaces, then ``` or ~~~; else ''. */
+  function fenceChar(text, ls, le) {
+    let p = ls;
+    while (p < le && p < ls + 3 && text[p] === ' ') p += 1;
+    if (p + 3 > le) return '';
+    if (text.startsWith('```', p)) return '`';
+    return text.startsWith('~~~', p) ? '~' : '';
+  }
+
+  /** The state after one more line: '' outside a fenced block, else the fence character that opened it. */
+  function fenceStep(text, ls, le, state) {
+    const c = fenceChar(text, ls, le);
+    if (c === '') return state;
+    if (state === '') return c;
+    if (c !== state) return state; // the other kind of fence is just content
+    let p = ls;
+    while (p < le && text[p] === ' ') p += 1;
+    while (p < le && text[p] === c) p += 1;
+    while (p < le && isIndentCh(text[p])) p += 1;
+    return p >= le || text[p] === '\r' ? '' : state; // a closing fence has nothing after the fence characters
+  }
+
+  /** The fence state at position `upTo` (a line start): one pass over the text before it, bounded. */
+  function fenceStateBefore(text, upTo) {
+    if (upTo > FENCE_SCAN_LIMIT) return '';
+    let state = '';
+    let ls = 0;
+    while (ls < upTo) {
+      const nl = text.indexOf('\n', ls);
+      const le = nl === -1 ? text.length : nl;
+      state = fenceStep(text, ls, le, state);
+      ls = le + 1;
+    }
+    return state;
+  }
+
+  function isBlankSpan(text, ls, le) {
+    for (let i = ls; i < le; i += 1) if (!isSpaceCh(text[i])) return false;
+    return true;
+  }
+
+  /** A horizontal rule: three or more of one of - * _, with spaces allowed between. */
+  function isRuleLine(text, ls, le) {
+    let c = '';
+    let n = 0;
+    for (let i = ls; i < le; i += 1) {
+      const ch = text[i];
+      if (ch === ' ' || ch === '\t' || ch === '\r') continue;
+      if (c === '') {
+        if (ch !== '-' && ch !== '*' && ch !== '_') return false;
+        c = ch;
+      } else if (ch !== c) return false;
+      n += 1;
+    }
+    return n >= 3;
+  }
+
+  /** A table separator row: only | - : and spaces, with at least one | and one -. */
+  function isTableSepLine(text, ls, le) {
+    let bar = false;
+    let dash = false;
+    for (let i = ls; i < le; i += 1) {
+      const ch = text[i];
+      if (ch === ' ' || ch === '\t' || ch === '\r') continue;
+      if (ch === '|') bar = true;
+      else if (ch === '-') dash = true;
+      else if (ch !== ':') return false;
+    }
+    return bar && dash;
+  }
+
+  /**
+   * The end of the block prefix of the line [ls, le): indentation, any number of "> " quote markers, then at
+   * most one heading marker, bullet or ordered marker, optionally followed by a task box.
+   */
+  function blockPrefixEnd(text, ls, le) {
+    let p = ls;
+    while (p < le && isIndentCh(text[p])) p += 1;
+    while (p + 1 < le && text[p] === '>' && text[p + 1] === ' ') {
+      p += 2;
+      while (p < le && isIndentCh(text[p])) p += 1;
+    }
+    const c = text[p];
+    let q = p;
+    if (c === '#') {
+      let k = 0;
+      while (k < 7 && text[p + k] === '#') k += 1;
+      if (k <= 6 && p + k < le && text[p + k] === ' ') q = p + k + 1;
+    } else if ((c === '-' || c === '*' || c === '+') && p + 1 < le && text[p + 1] === ' ') {
+      q = p + 2;
+    } else if (c >= '0' && c <= '9') {
+      let d = 0;
+      while (d < 10 && text[p + d] >= '0' && text[p + d] <= '9') d += 1;
+      if (d <= 9 && (text[p + d] === '.' || text[p + d] === ')') && p + d + 1 < le && text[p + d + 1] === ' ') q = p + d + 2;
+    }
+    if (q > p && text[q] === '[' && (text[q + 1] === ' ' || text[q + 1] === 'x' || text[q + 1] === 'X') && text[q + 2] === ']') {
+      if (q + 3 >= le || text[q + 3] === '\r') q = Math.min(q + 3, le);
+      else if (text[q + 3] === ' ') q += 4;
+    }
+    return q;
+  }
+
+  /**
+   * The parts of the lines touched by [a, b) that a marker may wrap: { a, b } per line, after the block prefix,
+   * trimmed. With `classify`, fence lines, lines inside a fenced block, rules, table separators and blank lines
+   * give no part (the fence state is counted from the top of the text, once).
+   */
+  function wrapSegments(text, a, b, classify) {
+    const segs = [];
+    let ls = lineStartOf(text, a);
+    let fence = classify ? fenceStateBefore(text, ls) : '';
+    for (;;) {
+      const le = lineEndOf(text, ls);
+      let skip = false;
+      if (classify) {
+        const was = fence;
+        fence = fenceStep(text, ls, le, fence);
+        skip = was !== '' || fence !== '' || fenceChar(text, ls, le) !== ''
+          || isBlankSpan(text, ls, le) || isRuleLine(text, ls, le) || isTableSepLine(text, ls, le);
+      }
+      if (!skip) {
+        let sa = Math.max(a, blockPrefixEnd(text, ls, le));
+        let sb = Math.min(le, b);
+        while (sa < sb && isSpaceCh(text[sa])) sa += 1;
+        while (sb > sa && isSpaceCh(text[sb - 1])) sb -= 1;
+        if (sa < sb) segs.push({ a: sa, b: sb });
+      }
+      if (le >= b) break;
+      ls = le + 1;
+    }
+    return segs;
+  }
+
+  // ---- fenced blocks ---------------------------------------------------------------------------------
+
+  /** The length of a line that is only backticks (three or more, surrounding whitespace ignored), else 0. */
+  function backtickFence(text, from, to) {
+    let f = from;
+    let t = to;
+    while (f < t && isSpaceCh(text[f])) f += 1;
+    while (t > f && isSpaceCh(text[t - 1])) t -= 1;
+    if (t - f < 3) return 0;
+    for (let i = f; i < t; i += 1) if (text[i] !== '`') return 0;
+    return t - f;
+  }
+
+  /** True when a line of [from, to) is a backtick fence of at least `len`, which would end a block of that length. */
+  function closesEarly(text, from, to, len) {
+    let ls = from;
+    while (ls < to) {
+      const le = Math.min(lineEndOf(text, ls), to);
+      if (backtickFence(text, ls, le) >= len) return true;
+      ls = le + 1;
+    }
+    return false;
+  }
+
+  /**
+   * A fenced block around the whole lines touched by [a, b), or the fence removed when it is already there: the
+   * first and last touched lines are the fences, or the lines just above and below are. A fence only counts when
+   * it is an opening fence (not inside a fenced block, counted from the top of the text) and its
+   * closing fence is the one that follows, so two neighbouring blocks are never merged.
+   */
+  function toggleFence(text, start, end, a, b) {
+    const ls = lineStartOf(text, a);
+    const le = lineEndOf(text, b);
+    const firstEnd = lineEndOf(text, ls);
+    const lastStart = lineStartOf(text, le);
+    let ua = -1;
+    let ub = -1;
+    let innerA = 0;
+    let innerB = 0;
+    const f1 = firstEnd < lastStart ? backtickFence(text, ls, firstEnd) : 0;
+    if (f1 && backtickFence(text, lastStart, le) >= f1 && !closesEarly(text, firstEnd + 1, lastStart, f1) && fenceStateBefore(text, ls) === '') {
+      ua = ls; ub = le; innerA = firstEnd + 1; innerB = lastStart - 1;
+    } else if (ls > 0 && le < text.length) {
+      const pls = lineStartOf(text, ls - 1);
+      const nle = lineEndOf(text, le + 1);
+      const above = backtickFence(text, pls, ls - 1);
+      if (above && backtickFence(text, le + 1, nle) >= above && !closesEarly(text, ls, le + 1, above) && fenceStateBefore(text, pls) === '') {
+        ua = pls; ub = nle; innerA = ls; innerB = le;
+      }
+    }
+    if (ua !== -1) {
+      const edits = [{ at: ua, del: innerA - ua, ins: 0 }, { at: innerB, del: ub - innerB, ins: 0 }];
+      return {
+        start: ua, end: ub, insert: text.slice(innerA, innerB),
+        selStart: mapPos(start, edits), selEnd: mapPos(end, edits),
+      };
+    }
+    const inner = text.slice(ls, le);
+    const fence = '`'.repeat(Math.max(3, longestRun(inner, '`') + 1));
+    const insert = `${fence}\n${inner}\n${fence}`;
+    return { start: ls, end: le, insert, selStart: ls, selEnd: ls + insert.length };
+  }
+
+  // ---- inline code -----------------------------------------------------------------------------------
+
+  /** True when [from, to) holds a run of exactly n backticks. */
+  function hasBacktickRun(text, from, to, n) {
+    let i = from;
+    while (i < to) {
+      if (text[i] !== '`') { i += 1; continue; }
+      let j = i;
+      while (j < to && text[j] === '`') j += 1;
+      if (j - i === n) return true;
+      i = j;
+    }
+    return false;
+  }
+
+  /** Toggles an inline code span on [a, b): the run of backticks is one longer than the longest inside. */
+  function toggleCode(text, start, end, a, b) {
+    const len = b - a;
+    // The span is inside the selection: equal runs at both ends, one padding space when the content needs it.
+    const l = Math.min(runRight(text, a, '`'), len);
+    const r = Math.min(runLeft(text, b, '`'), len);
+    if (l > 0 && l < len && l === r) {
+      let i0 = a + l;
+      let i1 = b - r;
+      let open = l;
+      let close = r;
+      if (i1 - i0 >= 3 && text[i0] === ' ' && text[i1 - 1] === ' ' && (text[i0 + 1] === '`' || text[i1 - 2] === '`')) {
+        open += 1; close += 1; i0 += 1; i1 -= 1;
+      }
+      if (hasBacktickRun(text, i0, i1, l)) return noEdit(start, end); // two spans, not one
+      const edits = [{ at: a, del: open, ins: 0 }, { at: b - close, del: close, ins: 0 }];
+      return { start: a, end: b, insert: text.slice(a + open, b - close), selStart: mapPos(start, edits), selEnd: mapPos(end, edits) };
+    }
+    // The span is just outside the selection.
+    const lo = runLeft(text, a, '`');
+    const ro = runRight(text, b, '`');
+    if (lo > 0 && lo === ro) {
+      if (hasBacktickRun(text, a, b, lo)) return noEdit(start, end);
+      const edits = [{ at: a - lo, del: lo, ins: 0 }, { at: b, del: ro, ins: 0 }];
+      return { start: a - lo, end: b + ro, insert: text.slice(a, b), selStart: mapPos(start, edits), selEnd: mapPos(end, edits) };
+    }
+    const s = text.slice(a, b);
+    const fence = '`'.repeat(longestRun(s, '`') + 1);
+    const padded = s[0] === '`' || s[s.length - 1] === '`';
+    const pad = padded ? ' ' : '';
+    return { start: a, end: b, insert: fence + pad + s + pad + fence, selStart: start, selEnd: end + 2 * (fence.length + pad.length) };
+  }
+
+  /**
+   * Wraps the selection in a marker (** * ~~ == `), or removes the marker when it is already there (inside the
+   * selection or just outside it). Whitespace at the selection's edges stays outside. Several lines: each
+   * non-blank line is wrapped on its own, after its block prefix (indentation, quote markers, heading, list or task
+   * marker); fence lines, fenced content, rules and table separators stay as they are; ` makes a fenced block.
+   * With several lines the direction is decided once: all wrapped -> unwrap all, else wrap those that are not.
+   * A selection whose ends belong to different spans, or that is only marker characters, gives a no-op result.
+   */
+  function toggleWrap(text, start, end, marker) {
+    if (!posOk(text, start, end) || typeof marker !== 'string' || !WRAP_MARKERS.includes(marker)) return null;
+    const m = marker;
+    if (start === end) {
+      const caret = start + m.length;
+      return { start, end, insert: m + m, selStart: caret, selEnd: caret };
+    }
+    let a = start;
+    let b = end;
+    while (a < b && isSpaceCh(text[a])) a += 1;
+    while (b > a && isSpaceCh(text[b - 1])) b -= 1;
+    if (a >= b) return noEdit(start, end);
+    const nl = text.indexOf('\n', a);
+    const multi = nl !== -1 && nl < b;
+    if (multi && m === '`') return toggleFence(text, start, end, a, b);
+    // One line: the block prefix and the fence state only matter when the selection starts at the line's first
+    // non-blank character; a selection inside a line is wrapped as it is.
+    let classify = multi;
+    if (!multi) {
+      classify = true;
+      for (let i = lineStartOf(text, a); i < a; i += 1) if (!isIndentCh(text[i])) { classify = false; break; }
+    }
+    let segs = wrapSegments(text, a, b, classify);
+    if (m !== '`') segs = segs.filter((s) => !onlyChar(text, s.a, s.b, m[0]));
+    if (segs.length === 0) return noEdit(start, end);
+    if (!multi) {
+      const { a: sa, b: sb } = segs[0];
+      if (m === '`') return toggleCode(text, start, end, sa, sb);
+      const st = wrapState(text, sa, sb, m);
+      if (st === 'ambiguous') return noEdit(start, end);
+      if (st === 'wrapped') {
+        const edits = [{ at: sa, del: m.length, ins: 0 }, { at: sb - m.length, del: m.length, ins: 0 }];
+        return { start: sa, end: sb, insert: text.slice(sa + m.length, sb - m.length), selStart: mapPos(start, edits), selEnd: mapPos(end, edits) };
+      }
+      if (wrappedOutside(text, sa, sb, m)) {
+        if (innerHasMarker(text, sa, sb, m)) return noEdit(start, end);
+        const edits = [{ at: sa - m.length, del: m.length, ins: 0 }, { at: sb, del: m.length, ins: 0 }];
+        return { start: sa - m.length, end: sb + m.length, insert: text.slice(sa, sb), selStart: mapPos(start, edits), selEnd: mapPos(end, edits) };
+      }
+      return { start: sa, end: sb, insert: m + text.slice(sa, sb) + m, selStart: start, selEnd: end + 2 * m.length };
+    }
+    // Several lines: the direction is decided once.
+    const states = segs.map((s) => wrapState(text, s.a, s.b, m));
+    const unwrap = states.every((s) => s === 'wrapped');
+    if (!unwrap && !states.includes('plain')) return noEdit(start, end);
+    const from = segs[0].a;
+    const to = segs[segs.length - 1].b;
+    const edits = [];
+    let out = '';
+    let at = from;
+    let added = 0;
+    segs.forEach((s, i) => {
+      out += text.slice(at, s.a);
+      if (unwrap) {
+        edits.push({ at: s.a, del: m.length, ins: 0 }, { at: s.b - m.length, del: m.length, ins: 0 });
+        out += text.slice(s.a + m.length, s.b - m.length);
+      } else if (states[i] === 'plain') {
+        added += 2 * m.length;
+        out += m + text.slice(s.a, s.b) + m;
+      } else {
+        out += text.slice(s.a, s.b); // already wrapped (or two spans): left as it is, never doubled
+      }
+      at = s.b;
+    });
+    if (unwrap) return { start: from, end: to, insert: out, selStart: mapPos(start, edits), selEnd: mapPos(end, edits) };
+    return { start: from, end: to, insert: out, selStart: start, selEnd: end + added };
+  }
+
+  /**
+   * Adds `prefix` ('> ' or '- ') to every touched line, after its indentation, or removes it when every non-blank
+   * touched line has it.
+   */
+  function toggleLinePrefix(text, start, end, prefix) {
+    if (!posOk(text, start, end) || typeof prefix !== 'string' || !LINE_PREFIXES.includes(prefix)) return null;
+    const first = lineStartOf(text, start);
+    let lastStart = lineStartOf(text, end);
+    if (end > start && lastStart === end) lastStart = lineStartOf(text, end - 1);
+    const lines = [];
+    let ls = first;
+    for (;;) {
+      const le = lineEndOf(text, ls);
+      let w = 0;
+      while (ls + w < le && (text[ls + w] === ' ' || text[ls + w] === '\t')) w += 1;
+      const blank = ls + w === le || (ls + w === le - 1 && text[le - 1] === '\r');
+      lines.push({ ls, le, w, blank, has: !blank && text.startsWith(prefix, ls + w) });
+      if (ls >= lastStart || le >= text.length) break;
+      ls = le + 1;
+    }
+    const lived = lines.filter((l) => !l.blank);
+    const remove = lived.length > 0 && lived.every((l) => l.has);
+    if (lived.length === 0 && lines.length > 1) return noEdit(start, end);
+    const edits = [];
+    const out = lines.map((l) => {
+      const at = l.ls + l.w;
+      if (remove) {
+        if (l.blank) return text.slice(l.ls, l.le);
+        edits.push({ at, del: prefix.length, ins: 0 });
+        return text.slice(l.ls, at) + text.slice(at + prefix.length, l.le);
+      }
+      if (l.blank && lines.length > 1) return text.slice(l.ls, l.le); // blank lines in a block stay blank
+      edits.push({ at, del: 0, ins: prefix.length });
+      return text.slice(l.ls, at) + prefix + text.slice(at, l.le);
+    });
+    return { start: first, end: lines[lines.length - 1].le, insert: out.join('\n'), selStart: mapPos(start, edits), selEnd: mapPos(end, edits) };
+  }
+
+  function isHttpUrl(s) {
+    if (s.length < 8 || s.length > 2000) return false;
+    const head = s.slice(0, 8).toLowerCase();
+    if (!(head.startsWith('http://') || head === 'https://')) return false;
+    for (let i = 0; i < s.length; i += 1) {
+      const c = s.charCodeAt(i);
+      if (c <= 0x20 || c === 0x7f || s[i] === '(' || s[i] === ')') return false;
+    }
+    if (s[s.length - 1] === '\\') return false; // a final backslash would escape the closing parenthesis
+    return s.length > (head === 'https://' ? 8 : 7);
+  }
+
+  /** `sel` becomes [sel](url) with url selected; an empty selection gives [text](url); a URL becomes [text](URL). */
+  function makeLink(text, start, end) {
+    if (!posOk(text, start, end)) return null;
+    let a = start;
+    let b = end;
+    while (a < b && isSpaceCh(text[a])) a += 1;
+    while (b > a && isSpaceCh(text[b - 1])) b -= 1;
+    if (a === b) a = b = start;
+    const sel = text.slice(a, b);
+    if (sel.includes('\n') || sel.includes('[') || sel.includes(']')) return noEdit(start, end); // not a valid link label
+    if (sel === '') {
+      // nothing but (at most) whitespace selected: the whitespace stays, the link goes after it
+      return { start: end, end, insert: '[text](url)', selStart: end + 1, selEnd: end + 5 };
+    }
+    if (isHttpUrl(sel)) {
+      return { start: a, end: b, insert: `[text](${sel})`, selStart: a + 1, selEnd: a + 5 };
+    }
+    // A label ending in an odd number of backslashes would escape the closing bracket: double the last one.
+    let slashes = 0;
+    while (slashes < sel.length && sel[sel.length - 1 - slashes] === '\\') slashes += 1;
+    const label = slashes % 2 === 1 ? `${sel}\\` : sel;
+    const from = a + label.length + 3;
+    return { start: a, end: b, insert: `[${label}](url)`, selStart: from, selEnd: from + 3 };
+  }
+
   return {
     TransformError, TRANSFORMS, SLASH,
+    toggleWrap, toggleLinePrefix, makeLink,
     ymd, hm, utcStamp, isoWeek, stats, position, deriveTitle, extractTags, extractWikiLinks, headings,
     inCodeAt, arrowReplacement, credentialsTemplate, listContinuation, isTask, toggleTask, numberStats, slugify, expandSlash, fuzzyScore, relativeTime,
     PALETTE_SECTIONS, sectionOf, paletteSections, paletteScore,

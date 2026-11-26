@@ -4,6 +4,8 @@
 
   const { calc, markdown, text: T, codeedit, vault, store, secops, cvss, netcalc, dom, caret, sound, renderMarkdown } = window.NP;
   const { h } = dom;
+  const highlight = window.NP.highlight;
+  const ctf = window.NP.ctf;
   const { PlatformError } = window.NP.platformFactory;
   const platform = window.NP.platformFactory.createPlatform(window);
   const $ = (id) => document.getElementById(id);
@@ -19,12 +21,12 @@
     findRegex: $('find-regex'), findCount: $('find-count'),
     stSave: $('st-save'), stSaveText: $('st-save-text'), stPos: $('st-pos'), stWords: $('st-words'), stLang: $('st-lang'), stSel: $('st-sel'),
     stLock: $('st-lock'), stTimer: $('st-timer'), stClock: $('st-clock'),
-    slash: $('slash'), palette: $('palette'), paletteInput: $('palette-input'), paletteList: $('palette-list'),
+    slash: $('slash'), seltools: $('seltools'), statusbar: $('statusbar'), palette: $('palette'), paletteInput: $('palette-input'), paletteList: $('palette-list'),
     paletteSections: $('palette-sections'), paletteStatus: $('palette-status'), paletteFoot: $('palette-foot'),
     modal: $('modal'), toasts: $('toasts'), boot: $('boot'), bootLog: $('boot-log'), dropzone: $('dropzone'),
     fileInput: $('file-input'), hashFileInput: $('hash-file-input'), wordmark: document.querySelector('.wordmark-text'),
     secretAlert: $('secret-alert'), secretAlertText: $('secret-alert-text'),
-    gutter: $('gutter'), gutterMirror: $('gutter-mirror'),
+    gutter: $('gutter'), gutterMirror: $('gutter-mirror'), hl: $('hl'),
   };
 
   const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -387,12 +389,15 @@
     const n = active();
     // A dialog opened on an unlocked encrypted note may show its plaintext, and
     // its follow-up action must not run against a locked note: cancel it.
-    if (n && n.cipher && finishCurrentDialog) finishCurrentDialog(null);
+    // A dialog that lists text from encrypted notes (flags found in all notes) is marked sensitive and closes on any lock.
+    // A sensitive dialog closes on any lock. Any other closes when the active note (the one now locking) is encrypted.
+    if (finishCurrentDialog && (dialogSensitive || (n && n.cipher && S.keys.has(n.id)))) finishCurrentDialog(null);
     if (els.palette.open) closePalette();
     S.keys.clear();
     S.plain.clear();
     S.meta.clear();
     closeSlash();
+    hideSeltools();
     renderAll();
     if (clip.pending) clearClipboardNow();
     toast(reason || 'Encrypted notes locked.');
@@ -695,11 +700,13 @@
   const EDITOR_PLACEHOLDER = els.editor.placeholder;
 
   function renderEditor() {
+    hideSeltools();
     const note = active();
     const locked = !note || isLocked(note);
     els.lockscreen.hidden = !locked;
     els.editor.hidden = locked;
     if (locked) {
+      clearHl(); // before anything else: a locked note's text must not stay in the layer
       els.editor.value = '';
       els.unlockError.textContent = '';
     } else {
@@ -716,6 +723,7 @@
     document.title = note ? `${titleOf(note)} | CyberPad` : 'CyberPad';
     g.hold = false;
     updateGutter();
+    updateHl();
   }
 
   // ------------------------------------------------------ line-number gutter
@@ -759,6 +767,7 @@
     g.text = [];
     g.tops = null;
     g.key = '';
+    clearHl(); // the colouring layer holds note text too: the two are always emptied together
   }
 
   function clearRows() {
@@ -854,6 +863,21 @@
     g.raf = requestAnimationFrame(drawGutter);
   }
 
+  /**
+   * The real distance between two lines of an unwrapped (script) note. The engine lays lines out on a 1/64 px grid,
+   * so it can differ from the computed line height by a few thousandths of a pixel: over 20,000 lines that is a
+   * whole row. When the text is taller than the box, the pitch is taken from the textarea's own height instead.
+   * The gutter and the colouring layer both use this one measurement.
+   */
+  function scriptPitch(ed, cs, lh, padTop, lines) {
+    const sh = ed.scrollHeight;
+    if (sh > ed.clientHeight && lines > 1) {
+      const p = (sh - padTop - (parseFloat(cs.paddingBottom) || 0)) / lines;
+      if (p > lh * 0.95 && p < lh * 1.05) return p;
+    }
+    return lh;
+  }
+
   /** Draws the numbers that can be seen, plus a little overscan. */
   function drawGutter() {
     g.raf = 0;
@@ -883,15 +907,7 @@
       used++;
     };
     if (!g.wrapped) {
-      // The engine lays lines out on a 1/64 px grid, so its real pitch can differ from the computed line height
-      // by a few thousandths of a pixel: over 20,000 lines that is a whole row. When the text is taller than the
-      // box, the pitch is taken from the textarea's own height instead.
-      let pitch = lh;
-      const sh = ed.scrollHeight;
-      if (sh > view && g.lines > 1) {
-        const p = (sh - padTop - (parseFloat(cs.paddingBottom) || 0)) / g.lines;
-        if (p > lh * 0.95 && p < lh * 1.05) pitch = p;
-      }
+      const pitch = scriptPitch(ed, cs, lh, padTop, g.lines);
       const first = Math.max(0, Math.floor((st - padTop) / pitch) - GUTTER_OVERSCAN);
       const last = Math.min(g.lines - 1, Math.ceil((st + view - padTop) / pitch) + GUTTER_OVERSCAN);
       for (let k = first; k <= last; k++) put(k + 1, padTop + k * pitch - st);
@@ -914,7 +930,7 @@
     const v = els.editor.value;
     const lines = countLines(v);
     const tooLong = isScript(note) ? '' : lines > GUTTER_WRAP_MAX ? 'lines' : v.length > GUTTER_WRAP_CHARS ? 'chars' : '';
-    if (tooLong !== g.tooLong || (g.on && Math.max(2, String(lines).length) !== g.digits)) { updateGutter(); return; }
+    if (tooLong !== g.tooLong || (g.on && Math.max(2, String(lines).length) !== g.digits)) { updateGutter(); updateHl(); return; }
     g.lines = lines;
     g.caret = lineAt(v, els.editor.selectionStart);
     scheduleMeasure();
@@ -929,6 +945,462 @@
     scheduleGutterDraw();
   }
 
+  // ------------------------------------------------------ syntax colouring layer
+  //
+  // A static <pre> behind the editor draws the note's text in colour at the same place as the editor's own text, which
+  // is transparent while the layer shows. Script notes do not wrap, so each line is one row, and only the rows on
+  // screen (plus a little overscan) exist. Everything the layer knows lives in `hl`; clearHl() empties it all, and
+  // clearMirror() calls it, so the layer is emptied on every path the gutter's measuring copy is: lock, note switch,
+  // delete, language change, setting off, printing, editor off screen.
+  //
+  // Tokenizer states are remembered for every 200th line (`sts`) next to those lines' offsets (`offs`). To draw from
+  // line L the nearest remembered line at or before L is tokenized forward (at most 200 lines, a "chunk"). Chunks keep
+  // offsets and tokens only, never the text, which is sliced from the editor's own value when needed. An edit forgets
+  // everything from its first changed line (found from the beforeinput caret; unknown edits forget from line 0).
+  // Catching up to a viewport far past the remembered lines happens in slices of HL_SLICE_CHUNKS chunks (5,000 lines)
+  // per timer tick (about a millisecond of work each); until then those rows are drawn uncoloured.
+  const HL_STEP = 200;
+  const HL_MAX_LINES = 200000;
+  const HL_SLICE_CHUNKS = 25;
+  const HL_SYNC_CHUNKS = 6; // a gap this small is filled before drawing; a bigger one is caught up in slices
+  const HL_OVERSCAN = 3;
+  const HL_CHUNK_CACHE = 48;
+  const HL_TOKEN_TYPES = new Set(['comment', 'string', 'keyword', 'number', 'constant', 'tag', 'attr', 'section', 'variable']);
+  const HL_SIMPLE_EDITS = new Set(['insertText', 'insertLineBreak', 'insertParagraph', 'insertFromPaste', 'insertCompositionText', 'deleteContentBackward', 'deleteContentForward', 'deleteByCut']);
+  const hl = {
+    on: false, lang: '', noteId: null, lines: 1, len: 0,
+    offs: [0], sts: [highlight.initialState()], chunks: new Map(), rows: new Map(),
+    box: null, rowFirst: -1, rowLast: -1, dirtyFrom: Infinity, dirtyLines: new Set(), pending: null,
+    want: 0, buildTimer: 0, matchRaf: 0, match: null, marks: new Map(), key: '', pitch: '', sbw: -1, sbh: -1,
+  };
+
+  /** Clears the layer after a failure and logs the error's name only, never note text. */
+  function hlFailed(err) {
+    clearHl();
+    console.error('highlight failed', err && err.name);
+  }
+
+  /** The class shows the layer and makes the editor's own text transparent, so it is added only once a row is drawn. */
+  function showHl() {
+    if (hl.on && hl.box && hl.box.firstChild) els.editorPane.classList.add('hl-on');
+  }
+
+  /** Empties the layer and forgets everything about the text. Safe to call at any time; it never throws. */
+  function clearHl() {
+    try { els.editorPane.classList.remove('hl-on'); } catch (e) { /* nothing more can be done */ }
+    hl.on = false;
+    try { clearTimeout(hl.buildTimer); cancelAnimationFrame(hl.matchRaf); } catch (e) { /* ignore */ }
+    hl.buildTimer = 0;
+    hl.matchRaf = 0;
+    try { els.hl.replaceChildren(); } catch (e) { /* ignore */ }
+    hl.box = null;
+    hl.rows = new Map();
+    hl.chunks = new Map();
+    hl.offs = [0];
+    hl.sts = [highlight.initialState()];
+    hl.marks = new Map();
+    hl.match = null;
+    hl.dirtyLines = new Set();
+    hl.dirtyFrom = Infinity;
+    hl.pending = null;
+    hl.rowFirst = -1;
+    hl.rowLast = -1;
+    hl.noteId = null;
+    hl.lang = '';
+    hl.key = '';
+    hl.pitch = '';
+    hl.sbw = -1;
+    hl.sbh = -1;
+    hl.len = 0;
+    hl.lines = 1;
+  }
+
+  function hlWanted(note) {
+    return !!note && isEditable(note) && isScript(note) && note.lang !== 'plain' && S.settings.syntaxColors
+      && !g.hold && highlight.LANGUAGE_IDS.includes(note.lang) && !els.editor.hidden
+      && !(window.matchMedia && window.matchMedia('(forced-colors: active)').matches); // CSS hides the layer there
+  }
+
+  /** Forget everything from `line` on (its start offset and state, and so everything before it, stay valid). */
+  function hlInvalidate(line) {
+    const c = Math.floor(line / HL_STEP);
+    if (hl.offs.length > c + 1) hl.offs.length = c + 1;
+    if (hl.sts.length > c + 1) hl.sts.length = c + 1;
+    for (const k of [...hl.chunks.keys()]) if (k >= c) hl.chunks.delete(k);
+    if (line < hl.dirtyFrom) hl.dirtyFrom = line;
+  }
+
+  /** Remembers the offsets of every 200th line up to chunk c. False when the text has fewer lines. */
+  function hlExtendOffs(v, c) {
+    while (hl.offs.length <= c) {
+      let pos = hl.offs[hl.offs.length - 1];
+      for (let i = 0; i < HL_STEP; i++) {
+        const e = v.indexOf('\n', pos);
+        if (e < 0) return false;
+        pos = e + 1;
+      }
+      hl.offs.push(pos);
+    }
+    return true;
+  }
+
+  /** Tokenizes chunk c (its offset and state must be remembered). A full chunk also remembers where the next one starts. */
+  function hlCompute(v, c) {
+    const starts = [];
+    const ends = [];
+    const toks = [];
+    const ins = [];
+    let pos = hl.offs[c];
+    let st = hl.sts[c];
+    let full = true;
+    for (let i = 0; i < HL_STEP; i++) {
+      let e = v.indexOf('\n', pos);
+      const lastLine = e < 0;
+      if (lastLine) e = v.length;
+      const r = highlight.tokenizeLine(hl.lang, v.slice(pos, e), st);
+      starts.push(pos);
+      ends.push(e);
+      toks.push(r.tokens);
+      ins.push(st);
+      st = r.state;
+      if (lastLine) { full = false; break; }
+      pos = e + 1;
+    }
+    if (full) {
+      if (hl.offs.length === c + 1) hl.offs.push(pos);
+      if (hl.sts.length === c + 1) hl.sts.push(st);
+    }
+    return { starts, ends, toks, ins };
+  }
+
+  /** Makes sure the state at the start of chunk c is known, tokenizing at most maxChunks chunks to get there. */
+  function hlEnsureStates(v, c, maxChunks) {
+    if (hl.sts.length > c) return true;
+    if (c - (hl.sts.length - 1) > maxChunks) return false;
+    while (hl.sts.length <= c) {
+      const k = hl.sts.length - 1;
+      if (!hlExtendOffs(v, k)) return false;
+      const before = hl.sts.length;
+      hlCompute(v, k);
+      if (hl.sts.length === before) return false; // the text ended
+    }
+    return true;
+  }
+
+  /** Chunk c with tokens, or null when its state is not known yet (the caller draws it uncoloured). */
+  function hlChunk(v, c) {
+    let ch = hl.chunks.get(c);
+    if (ch) return ch;
+    if (!hlExtendOffs(v, c) || !hlEnsureStates(v, c, HL_SYNC_CHUNKS)) return null;
+    ch = hlCompute(v, c);
+    if (hl.chunks.size >= HL_CHUNK_CACHE) hl.chunks.clear();
+    hl.chunks.set(c, ch);
+    return ch;
+  }
+
+  /** Where the lines of chunk c start and end, without tokens. Null when the text has no such chunk. */
+  function hlPlainChunk(v, c) {
+    if (!hlExtendOffs(v, c)) return null;
+    const starts = [];
+    const ends = [];
+    let pos = hl.offs[c];
+    for (let i = 0; i < HL_STEP; i++) {
+      let e = v.indexOf('\n', pos);
+      const lastLine = e < 0;
+      if (lastLine) e = v.length;
+      starts.push(pos);
+      ends.push(e);
+      if (lastLine) break;
+      pos = e + 1;
+    }
+    return { starts, ends, toks: null, ins: null };
+  }
+
+  /** A lower bound for the line holding offset pos, from the remembered offsets (at most 200 newlines are counted). */
+  function hlLineBound(v, pos) {
+    const offs = hl.offs;
+    let lo = 0;
+    let hi = offs.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (offs[mid] <= pos) lo = mid; else hi = mid - 1;
+    }
+    let line = lo * HL_STEP;
+    let p = offs[lo];
+    for (let i = 0; i < HL_STEP; i++) {
+      const e = v.indexOf('\n', p);
+      if (e < 0 || e >= pos) break;
+      line++;
+      p = e + 1;
+    }
+    return line;
+  }
+
+  /** One row: the line's text as text nodes and <span class="tok-…"> elements, never markup. */
+  function hlRow(text, toks, marks) {
+    const row = h('div', { class: 'hl-row' });
+    const piece = (s, e, type, mark) => {
+      if (e <= s) return;
+      const str = text.slice(s, e);
+      if (!type && !mark) row.appendChild(document.createTextNode(str));
+      else row.appendChild(h('span', { class: [type ? `tok-${type}` : '', mark ? 'hl-match' : ''].filter(Boolean).join(' ') }, str));
+    };
+    const push = (s, e, type) => {
+      let a = s;
+      if (marks) {
+        for (const m of marks) {
+          if (m >= a && m < e) { piece(a, m, type, false); piece(m, m + 1, type, true); a = m + 1; }
+        }
+      }
+      piece(a, e, type, false);
+    };
+    let pos = 0;
+    if (toks) {
+      for (const t of toks) {
+        push(pos, t.start, '');
+        push(t.start, t.end, HL_TOKEN_TYPES.has(t.type) ? t.type : '');
+        pos = t.end;
+      }
+    }
+    push(pos, text.length, '');
+    return row;
+  }
+
+  /** Copies the editor's text metrics to the layer when they change, and keeps it clear of the editor's scrollbars. */
+  function hlSyncStyle(ed, cs, pitch) {
+    const key = [cs.fontFamily, cs.fontSize, cs.fontWeight, cs.fontStyle, cs.letterSpacing, cs.wordSpacing, cs.tabSize, cs.lineHeight].join('|');
+    if (key !== hl.key) {
+      hl.key = key;
+      const st = els.hl.style;
+      for (const p of ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'letterSpacing', 'wordSpacing', 'tabSize', 'lineHeight']) st[p] = cs[p];
+    }
+    const p = `${pitch}px`;
+    if (p !== hl.pitch) { hl.pitch = p; els.hl.style.setProperty('--hl-pitch', p); }
+    const sbw = ed.offsetWidth - ed.clientWidth;
+    const sbh = ed.offsetHeight - ed.clientHeight;
+    if (sbw !== hl.sbw) { hl.sbw = sbw; els.hl.style.right = `${sbw}px`; }
+    if (sbh !== hl.sbh) { hl.sbh = sbh; els.hl.style.bottom = `${sbh}px`; }
+  }
+
+  /** Draws the visible rows. Rows below dirtyFrom (and the dirty ones) are rebuilt; the others are only moved. */
+  function drawHl() {
+    try {
+      drawHlRows();
+      showHl();
+    } catch (err) { hlFailed(err); }
+  }
+
+  function drawHlRows() {
+    if (!hl.on) return;
+    const ed = els.editor;
+    if (!ed.clientHeight || !ed.clientWidth) { clearHl(); return; } // editor not on screen
+    const cs = getComputedStyle(ed);
+    let lh = parseFloat(cs.lineHeight);
+    if (!(lh > 0)) lh = parseFloat(cs.fontSize) * 1.7;
+    const padTop = parseFloat(cs.paddingTop) || 0;
+    const padLeft = parseFloat(cs.paddingLeft) || 0;
+    const pitch = scriptPitch(ed, cs, lh, padTop, hl.lines);
+    hlSyncStyle(ed, cs, pitch);
+    const st = ed.scrollTop;
+    const first = Math.max(0, Math.floor((st - padTop) / pitch) - HL_OVERSCAN);
+    const last = Math.min(hl.lines - 1, Math.ceil((st + ed.clientHeight - padTop) / pitch) + HL_OVERSCAN);
+    if (!hl.box) { hl.box = h('div', { class: 'hl-rows' }); els.hl.appendChild(hl.box); }
+    hl.box.style.top = `${padTop + first * pitch - st}px`;
+    hl.box.style.left = `${padLeft - ed.scrollLeft}px`;
+    const rebuildAll = hl.dirtyFrom !== Infinity || hl.dirtyLines.size > 0;
+    if (!rebuildAll && first === hl.rowFirst && last === hl.rowLast) return; // only moved
+    let v = null;
+    const rows = [];
+    const fresh = new Map();
+    let plain = false;
+    let needChunk = -1;
+    for (let k = first; k <= last; k++) {
+      const old = hl.rows.get(k);
+      if (old && k < hl.dirtyFrom && !hl.dirtyLines.has(k)) { rows.push(old); fresh.set(k, old); continue; }
+      if (v === null) v = ed.value;
+      const c = Math.floor(k / HL_STEP);
+      let ch = hlChunk(v, c);
+      if (!ch) {
+        ch = hlPlainChunk(v, c);
+        if (ch) { plain = true; needChunk = Math.max(needChunk, c); }
+      }
+      const j = k - c * HL_STEP;
+      if (!ch || j >= ch.starts.length) break; // past the end of the text
+      const row = hlRow(v.slice(ch.starts[j], ch.ends[j]), ch.toks ? ch.toks[j] : null, hl.marks.get(k) || null);
+      rows.push(row);
+      fresh.set(k, row);
+    }
+    hl.rows = fresh;
+    hl.box.replaceChildren(...rows);
+    hl.rowFirst = first;
+    hl.rowLast = last;
+    hl.dirtyFrom = Infinity;
+    hl.dirtyLines.clear();
+    if (plain) {
+      hl.want = needChunk;
+      if (!hl.buildTimer) hl.buildTimer = setTimeout(hlBuildStep, 0);
+    }
+  }
+
+  /** One slice of catching up: tokenizes up to 5,000 lines towards the viewport, then redraws or schedules the next slice (a timer, so catching up does not wait for frames). */
+  function hlBuildStep() {
+    hl.buildTimer = 0;
+    try { hlBuildSlice(); } catch (err) { hlFailed(err); }
+  }
+
+  function hlBuildSlice() {
+    if (!hl.on) return;
+    const v = els.editor.value;
+    if (v.length !== hl.len) return; // an edit is about to rebuild everything anyway
+    let n = 0;
+    while (hl.sts.length <= hl.want && n < HL_SLICE_CHUNKS) {
+      const k = hl.sts.length - 1;
+      if (!hlExtendOffs(v, k)) break;
+      const before = hl.sts.length;
+      hlCompute(v, k);
+      if (hl.sts.length === before) break;
+      n++;
+    }
+    if (hl.sts.length > hl.want) {
+      hl.dirtyFrom = 0; // the rows drawn uncoloured are redrawn
+      drawHl();
+    } else if (n === HL_SLICE_CHUNKS) {
+      hl.buildTimer = setTimeout(hlBuildStep, 0);
+    }
+  }
+
+  /** Decides whether the layer shows for the open note, and (re)builds it from scratch when it does. */
+  function updateHl() {
+    try { updateHlNow(); } catch (err) { hlFailed(err); }
+  }
+
+  function updateHlNow() {
+    const note = active();
+    const ed = els.editor;
+    if (!hlWanted(note) || !ed.clientHeight || !ed.clientWidth) { if (hl.on || hl.noteId) clearHl(); return; }
+    const v = ed.value;
+    const lines = g.on && !g.wrapped && g.noteId === note.id ? g.lines : countLines(v);
+    if (lines > HL_MAX_LINES) { if (hl.on || hl.noteId) clearHl(); return; }
+    if (!hl.on || hl.noteId !== note.id || hl.lang !== note.lang) clearHl();
+    hl.noteId = note.id;
+    hl.lang = note.lang;
+    hl.lines = lines;
+    hl.len = v.length;
+    hlInvalidate(0);
+    hl.on = true;
+    drawHl();
+    scheduleBracket();
+  }
+
+  /** The line the edit about to happen starts on is remembered, so its input event forgets only from there. */
+  function onHlBeforeInput(e) {
+    if (!hl.on) return;
+    if (!HL_SIMPLE_EDITS.has(e.inputType)) { hl.pending = 0; return; } // any other (unknown) input type forgets from line 0
+    hl.pending = hlLineBound(els.editor.value, Math.max(0, els.editor.selectionStart - 1));
+  }
+
+  function onHlInput() {
+    try { onHlInputNow(); } catch (err) { hlFailed(err); }
+  }
+
+  function onHlInputNow() {
+    const note = active();
+    if (!hlWanted(note)) { if (hl.on || hl.noteId) clearHl(); return; }
+    if (!hl.on) { updateHl(); return; }
+    const v = els.editor.value;
+    const lines = g.on && !g.wrapped ? g.lines : countLines(v);
+    if (lines > HL_MAX_LINES) { clearHl(); return; }
+    hl.lines = lines;
+    hl.len = v.length;
+    hlInvalidate(hl.pending === null ? 0 : hl.pending);
+    hl.pending = null;
+    drawHl();
+    scheduleBracket();
+  }
+
+  function onHlScroll() {
+    if (hl.on) drawHl();
+  }
+
+  /** The editor was resized or shown again: redraw, or build the layer if it should show and does not. */
+  function hlRefresh() {
+    if (hl.on) drawHl();
+    else if (hlWanted(active())) updateHl();
+  }
+
+  // Matching bracket: the two brackets get an outline in the layer. One search per animation frame.
+  function scheduleBracket() {
+    if (!hl.on || hl.matchRaf) return;
+    hl.matchRaf = requestAnimationFrame(updateBracket);
+  }
+
+  /** The line and column of offset pos, and the chunk its line is in. */
+  function hlLocate(v, pos) {
+    for (;;) {
+      const next = hl.offs.length;
+      if (!hlExtendOffs(v, next) || hl.offs[next] > pos) break;
+    }
+    const line = hlLineBound(v, pos);
+    const c = Math.floor(line / HL_STEP);
+    let start = hl.offs[c];
+    for (let i = c * HL_STEP; i < line; i++) start = v.indexOf('\n', start) + 1;
+    return { line, column: pos - start, c };
+  }
+
+  function hlFindMatch(v, pos) {
+    const bracket = (ch) => ch === '(' || ch === ')' || ch === '[' || ch === ']' || ch === '{' || ch === '}';
+    if (!bracket(v[pos - 1]) && !bracket(v[pos])) return null;
+    const at = hlLocate(v, pos);
+    if (!hlEnsureStates(v, at.c, HL_SYNC_CHUNKS)) return null;
+    const chunkOf = (i) => (i >= 0 && i < hl.lines ? hlChunk(v, Math.floor(i / HL_STEP)) : null);
+    const getLine = (i) => {
+      const ch = chunkOf(i);
+      const j = i - Math.floor(i / HL_STEP) * HL_STEP;
+      return ch && j < ch.starts.length ? v.slice(ch.starts[j], ch.ends[j]) : null;
+    };
+    const stateAt = (i) => {
+      const ch = chunkOf(i);
+      const j = i - Math.floor(i / HL_STEP) * HL_STEP;
+      return ch && j < ch.ins.length ? ch.ins[j] : undefined;
+    };
+    return highlight.matchBracket(getLine, hl.lines, at.line, at.column, hl.lang, stateAt);
+  }
+
+  function updateBracket() {
+    hl.matchRaf = 0;
+    try { updateBracketNow(); } catch (err) { hlFailed(err); }
+  }
+
+  function updateBracketNow() {
+    if (!hl.on) return;
+    const ed = els.editor;
+    let next = null;
+    if (ed.selectionStart === ed.selectionEnd) next = hlFindMatch(ed.value, ed.selectionStart);
+    const old = hl.match;
+    const same = (a, b) => (a === null && b === null) || (a !== null && b !== null
+      && a.open.line === b.open.line && a.open.column === b.open.column && a.close.line === b.close.line && a.close.column === b.close.column);
+    if (same(old, next)) return;
+    for (const m of [old, next]) if (m) { hl.dirtyLines.add(m.open.line); hl.dirtyLines.add(m.close.line); }
+    hl.match = next;
+    hl.marks = new Map();
+    if (next) {
+      for (const p of [next.open, next.close]) {
+        const cols = hl.marks.get(p.line) || [];
+        cols.push(p.column);
+        cols.sort((a, b) => a - b);
+        hl.marks.set(p.line, cols);
+      }
+    }
+    drawHl();
+  }
+
+  function toggleSyntaxColors() {
+    S.settings.syntaxColors = !S.settings.syntaxColors;
+    saveSettings();
+    updateHl();
+    toast(S.settings.syntaxColors ? 'Syntax colouring on.' : 'Syntax colouring off.');
+  }
+
   function lineNumbersTitle() {
     const m = S.settings.lineNumbers;
     const name = m === 'all' ? 'every note' : m === 'off' ? 'off' : 'script notes only';
@@ -941,6 +1413,7 @@
     S.settings.lineNumbers = a[(a.indexOf(S.settings.lineNumbers) + 1) % a.length];
     saveSettings();
     updateGutter();
+    updateHl(); // updateGutter empties the layer of a script note
     const m = S.settings.lineNumbers;
     toast(`Line numbers: ${m === 'all' ? 'every note' : m === 'off' ? 'off' : 'script notes only'}.`);
   }
@@ -1105,20 +1578,29 @@
     });
   }
 
+  // Notes whose language the user picked (language dialog or "Back to a Markdown note"). Saving such a note under another
+  // file type keeps that choice. Kept for this session only, never saved.
+  const langByHand = new Set();
+
+  /** Re-renders everything a language change touches. */
+  function refreshAfterLang(note) {
+    if (note.id !== S.activeId) return;
+    renderEditor();
+    renderList();
+    renderTags();
+    renderPreview();
+    updateStatus();
+  }
+
   /** Switches a note between Markdown (`''`) and a script language. The text, its history and its date are not touched. */
-  function setNoteLang(note, id) {
+  function setNoteLang(note, id, byHand = false) {
     if (!note || !isEditable(note) || (id !== '' && !codeedit.language(id))) return;
     closeSlash();
     arrowMemo = null;
     note.lang = id;
+    if (byHand) langByHand.add(note.id);
     persistNow();
-    if (note.id === S.activeId) {
-      renderEditor();
-      renderList();
-      renderTags();
-      renderPreview();
-      updateStatus();
-    }
+    refreshAfterLang(note);
     toast(id ? `Script mode: ${codeedit.language(id).name}.` : 'Back to a Markdown note.');
   }
 
@@ -1144,7 +1626,7 @@
       actions: [{ label: 'Cancel', value: null }],
     });
     if (!picked || active() !== note) return;
-    setNoteLang(note, picked.id);
+    setNoteLang(note, picked.id, true);
   }
 
   async function moveToFolder() {
@@ -1345,6 +1827,7 @@
   function openNote(id, { focus = true } = {}) {
     if (!noteById(id)) return;
     closeSlash();
+    hideSeltools();
     arrowMemo = null;
     S.activeId = id;
     expandFolder(noteById(id).folder); // opening a note shows the folder it is in
@@ -1562,12 +2045,13 @@
     } finally {
       programmaticInsert = false;
     }
+    followSeltools();
   }
 
   function replaceRangeNow(start, end, text, caretStart, caretEnd) {
     const ed = els.editor;
     ed.focus();
-    ed.setSelectionRange(start, end);
+    setSel(start, end);
     const before = ed.value;
     let ok = false;
     // execCommand acts on whatever has focus, so only use it when the editor really does.
@@ -1580,7 +2064,7 @@
       ed.value = expected;
       ed.dispatchEvent(new Event('input', { bubbles: true }));
     }
-    ed.setSelectionRange(caretStart, caretEnd);
+    setSel(caretStart, caretEnd);
   }
 
   function continueList() {
@@ -1666,7 +2150,7 @@
   function selectRange(start, end, { keepFocusOn } = {}) {
     const ed = els.editor;
     ed.focus();
-    ed.setSelectionRange(start, end);
+    setSel(start, end);
     scrollToOffset(start);
     if (keepFocusOn) keepFocusOn.focus();
     scheduleStatus();
@@ -1768,11 +2252,13 @@
       }
     }
 
-    if (e.key === 'Escape') { S.tabEscape = true; return; }
+    if (e.key === 'Escape') { hideSeltools(); S.tabEscape = true; return; }
+    if (selKeyDown(e)) hideSeltools();
     const escaped = S.tabEscape;
     S.tabEscape = false;
 
     const note = active();
+    if (lineEditKeydown(e, note)) return;
     if (isScript(note)) { scriptKeydown(e, note, escaped); return; }
 
     if (e.key === 'Tab' && !e.ctrlKey && !e.altKey && !e.metaKey) {
@@ -1793,6 +2279,90 @@
     if (e.key === 'Enter' && !e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey && !e.isComposing) {
       if (continueList()) e.preventDefault();
     }
+  }
+
+  // ------------------------------------------------------ line editing (comment, duplicate, move, go to line)
+
+  /**
+   * Runs a codeedit line command on the editor's selection as one undo step. Script notes pass their language; Markdown
+   * notes pass '' (duplicate and move only). Returns false when the command does not apply.
+   */
+  function applyLineEdit(kind, dir = 0) {
+    const note = active();
+    const ed = els.editor;
+    if (!isEditable(note) || ed.hidden) return false;
+    const { selectionStart: s, selectionEnd: t, value } = ed;
+    const id = isScript(note) ? note.lang : '';
+    let r = null;
+    if (kind === 'comment') r = id ? codeedit.toggleComment(value, s, t, id) : null;
+    else if (kind === 'duplicate') r = codeedit.duplicateLines(value, s, t, id);
+    else if (kind === 'move') r = codeedit.moveLines(value, s, t, id, dir);
+    if (!r) return false;
+    // A result that leaves the text as it is only moves the selection: nothing is edited, nothing is dispatched.
+    if (value.slice(r.start, r.end) === r.insert) { setSel(r.selStart, r.selEnd); followSeltools(); return true; }
+    if (value.length - (r.end - r.start) + r.insert.length > store.LIMITS.body) { toast('The result would be too long for one note.', 'error'); return true; }
+    replaceRange(r.start, r.end, r.insert, r.selStart, r.selEnd);
+    return true;
+  }
+
+  /**
+   * Ctrl+/, Ctrl+Shift+D, Alt+Up, Alt+Down and Ctrl+G in the editor. Returns true when the key was used. Ctrl+G stays
+   * "Find next" while the find bar is open.
+   */
+  function lineEditKeydown(e, note) {
+    if (e.isComposing || e.keyCode === 229 || !isEditable(note)) return false;
+    const mod = e.ctrlKey || e.metaKey;
+    let done = false;
+    if (mod && !e.altKey && (e.key === '/' || e.code === 'Slash' || e.code === 'NumpadDivide')) {
+      if (!isScript(note)) return false;
+      applyLineEdit('comment');
+      done = true;
+    } else if (mod && !e.altKey && e.shiftKey && e.key.toLowerCase() === 'd') {
+      applyLineEdit('duplicate');
+      done = true;
+    } else if (e.altKey && !mod && !e.shiftKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+      applyLineEdit('move', e.key === 'ArrowUp' ? -1 : 1);
+      done = true;
+    } else if (mod && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'g' && els.findbar.hidden) {
+      gotoLineDialog();
+      done = true;
+    }
+    if (done) { e.preventDefault(); e.stopPropagation(); }
+    return done;
+  }
+
+  /** Go to line…: a number from 1 to the note's line count. */
+  async function gotoLineDialog() {
+    const note = active();
+    if (!isEditable(note)) return;
+    const total = countLines(els.editor.value);
+    const input = h('input', { type: 'number', id: 'goto-line', autocomplete: 'off' });
+    // Fixed values and a line count (an integer), set as properties: SAFE_ATTR does not list min, max or inputmode.
+    input.min = '1';
+    input.max = String(total);
+    input.inputMode = 'numeric';
+    const err = h('p', { class: 'form-error', role: 'alert' });
+    const pending = showDialog({
+      title: 'Go to line',
+      initialFocus: '#goto-line',
+      body: [h('label', { class: 'field' }, h('span', null, 'Line number'), input), err],
+      actions: [{ label: 'Cancel', value: null }, { label: 'Go', submit: true, className: 'btn-primary' }],
+      onSubmit: () => {
+        const raw = input.value.trim();
+        const n = /^\d{1,9}$/.test(raw) ? Number(raw) : NaN;
+        if (!(n >= 1 && n <= total)) {
+          err.textContent = `Enter a line number from 1 to ${total}.`;
+          input.focus();
+          return undefined;
+        }
+        return n;
+      },
+    });
+    // The page checks the number itself and shows its own message; the browser's built-in bubble would replace it.
+    if (input.form) input.form.noValidate = true;
+    const n = await pending;
+    if (typeof n !== 'number' || active() !== note || !isEditable(note)) return;
+    gotoLine(n - 1);
   }
 
   /**
@@ -1819,7 +2389,7 @@
     if (!r) return;
     e.preventDefault();
     // A result that leaves the text as it is only moves the selection: nothing is edited, nothing is dispatched.
-    if (value.slice(r.start, r.end) === r.insert) { ed.setSelectionRange(r.selStart, r.selEnd); return; }
+    if (value.slice(r.start, r.end) === r.insert) { setSel(r.selStart, r.selEnd); return; }
     replaceRange(r.start, r.end, r.insert, r.selStart, r.selEnd);
   }
 
@@ -1835,6 +2405,263 @@
     if (sel.includes('\n') || sel.length > 300) return;
     e.preventDefault();
     replaceRange(ed.selectionStart, ed.selectionEnd, `[${sel}](${href})`);
+  }
+
+  // ------------------------------------------------------------ selection toolbar
+  //
+  // A row of buttons above a finished selection. It holds labels only, never note text: it is built when it shows
+  // and emptied when it hides. It never takes focus by itself (mousedown on it is cancelled); Alt+F10 moves focus in.
+
+  const SEL_KEYS = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown'];
+  let selMouseDown = false;  // the mouse button went down in the editor and is not up yet
+  let selKeyHeld = '';       // a selection key (Shift+arrow, Ctrl+A) is down: show the toolbar when it comes up
+  let selSnapshot = null;    // the editor selection, kept while focus is inside the toolbar
+  let selQuietUntil = 0;     // our own edits can scroll the editor: its scroll events do not hide the toolbar until then
+  let selProgAt = 0;         // when code last set the selection, so the `select` event it causes is not the user's
+  let selInput = { type: '', at: 0 }; // the last beforeinput or input type: undo and redo must not open the toolbar
+  let selTimer = 0;
+  let selBuiltFor = '';
+
+  /** setSelectionRange for code: its `select` event must not pop the toolbar up. */
+  function setSel(start, end, dir) {
+    selProgAt = performance.now();
+    els.editor.setSelectionRange(start, end, dir);
+  }
+
+  /** After code changed the text or selection: put the toolbar over the new selection, or drop it when nothing is selected. */
+  function followSeltools() {
+    if (els.seltools.hidden) return;
+    selQuietUntil = performance.now() + 300;
+    if (els.editor.selectionStart === els.editor.selectionEnd) hideSeltools();
+    else showSeltools();
+  }
+
+  function selKeyDown(e) {
+    const mod = e.ctrlKey || e.metaKey;
+    return (e.shiftKey && !e.altKey && SEL_KEYS.includes(e.key)) || (mod && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'a');
+  }
+
+  function toggleSelectionToolbar() {
+    S.settings.selectionToolbar = !S.settings.selectionToolbar;
+    saveSettings();
+    if (!S.settings.selectionToolbar) hideSeltools();
+    toast(S.settings.selectionToolbar ? 'Selection toolbar on.' : 'Selection toolbar off.');
+  }
+
+  /** What each formatting action does to the editor text: a texttools or codeedit result, or null. */
+  function formatResult(kind, note, value, s, t) {
+    switch (kind) {
+      case 'bold': return T.toggleWrap(value, s, t, '**');
+      case 'italic': return T.toggleWrap(value, s, t, '*');
+      case 'strike': return T.toggleWrap(value, s, t, '~~');
+      case 'mark': return T.toggleWrap(value, s, t, '==');
+      case 'code': return T.toggleWrap(value, s, t, '`');
+      case 'link': return T.makeLink(value, s, t);
+      case 'quote': return T.toggleLinePrefix(value, s, t, '> ');
+      case 'list': return T.toggleLinePrefix(value, s, t, '- ');
+      case 'comment': return codeedit.toggleComment(value, s, t, note.lang);
+      case 'indent': return codeedit.tab(value, s, t, note.lang, false);
+      case 'outdent': return codeedit.tab(value, s, t, note.lang, true);
+      default: return null;
+    }
+  }
+
+  const SCRIPT_FORMATS = ['comment', 'indent', 'outdent'];
+
+  /**
+   * Applies a formatting action to the editor's current text and selection as one undo step. The Format palette
+   * section and the selection toolbar share it. With an empty selection toggleWrap inserts an empty pair of markers.
+   */
+  function formatAction(kind) {
+    const note = active();
+    const ed = els.editor;
+    if (!isEditable(note) || ed.hidden || isScript(note) !== SCRIPT_FORMATS.includes(kind)) return false;
+    const { selectionStart: s, selectionEnd: t, value } = ed;
+    const r = formatResult(kind, note, value, s, t);
+    if (!r) return false;
+    // A result that leaves the text as it is only moves the selection: nothing is edited, nothing is dispatched.
+    if (value.slice(r.start, r.end) === r.insert) { setSel(r.selStart, r.selEnd); followSeltools(); return true; }
+    if (value.length - (r.end - r.start) + r.insert.length > store.LIMITS.body) { toast('The result would be too long for one note.', 'error'); return true; }
+    replaceRange(r.start, r.end, r.insert, r.selStart, r.selEnd);
+    return true;
+  }
+
+  /** The buttons for a note: [id, visible label, accessible name, extra class]. */
+  function seltoolSpecs(note) {
+    if (!isScript(note)) {
+      return [['bold', 'B', 'Bold', 'seltool-bold'], ['italic', 'I', 'Italic', 'seltool-italic'], ['strike', 'S', 'Strikethrough', 'seltool-strike'],
+        ['mark', 'Mark', 'Highlight', ''], ['code', 'Code', 'Code', ''], ['link', 'Link', 'Link', ''], ['quote', 'Quote', 'Quote', ''],
+        ['list', 'List', 'Bulleted list', ''], ['decode', 'Decode…', 'Decode or encode', '']];
+    }
+    const lang = codeedit.language(note.lang);
+    const specs = [];
+    if (lang && (lang.lineComment || lang.blockComment)) specs.push(['comment', 'Comment', 'Comment or uncomment', '']);
+    specs.push(['indent', 'Indent', 'Indent', ''], ['outdent', 'Outdent', 'Outdent', ''], ['decode', 'Decode…', 'Decode or encode', '']);
+    return specs;
+  }
+
+  function seltoolsWanted(inToolbarOk) {
+    const ed = els.editor;
+    const focused = document.activeElement === ed || (inToolbarOk && els.seltools.contains(document.activeElement));
+    return S.settings.selectionToolbar && isEditable(active()) && !ed.hidden && !selMouseDown && focused
+      && ed.selectionStart !== ed.selectionEnd && !els.modal.open && !els.palette.open && !S.slash.open;
+  }
+
+  function hideSeltools() {
+    clearTimeout(selTimer);
+    const box = els.seltools;
+    if (!box || (box.hidden && !box.firstChild)) return;
+    box.hidden = true;
+    box.replaceChildren();
+    selBuiltFor = '';
+    selSnapshot = null;
+  }
+
+  function scheduleSeltools(delay = 0) {
+    clearTimeout(selTimer);
+    selTimer = setTimeout(showSeltools, delay);
+  }
+
+  function showSeltools() {
+    clearTimeout(selTimer);
+    if (!seltoolsWanted(true)) { hideSeltools(); return; }
+    const box = els.seltools;
+    const note = active();
+    const specs = seltoolSpecs(note);
+    const built = specs.map((x) => x[0]).join();
+    if (selBuiltFor !== built) {
+      box.replaceChildren(...specs.map(([act, label, name, cls], i) => h('button', {
+        type: 'button', class: `seltool ${cls}`.trim(), tabindex: i === 0 ? '0' : '-1', title: name, 'aria-label': name, 'data-act': act,
+      }, label)));
+      selBuiltFor = built;
+    }
+    box.hidden = false;
+    placeSeltools();
+  }
+
+  function placeSeltools() {
+    const box = els.seltools;
+    if (narrow.matches) { // phones: a full-width row just above the status bar
+      box.style.left = '';
+      box.style.top = '';
+      box.style.bottom = `${Math.max(0, Math.ceil(window.innerHeight - els.statusbar.getBoundingClientRect().top))}px`;
+      return;
+    }
+    box.style.bottom = '';
+    const ed = els.editor;
+    const r = ed.getBoundingClientRect();
+    const w = box.offsetWidth;
+    const hgt = box.offsetHeight;
+    const a = caret.coords(ed, ed.selectionStart);
+    let top = r.top + a.top - hgt - 6;
+    if (top < Math.max(8, r.top)) { // no room above the selection's start: go below its end
+      const b = caret.coords(ed, ed.selectionEnd);
+      top = r.top + b.top + b.height + 6;
+    }
+    top = Math.max(8, Math.min(top, window.innerHeight - hgt - 8));
+    const left = Math.max(8, Math.min(r.left + a.left, window.innerWidth - w - 8));
+    box.style.top = `${Math.floor(top)}px`;
+    box.style.left = `${Math.floor(left)}px`;
+  }
+
+  function focusSeltoolButton(btns, i) {
+    btns.forEach((b, k) => b.setAttribute('tabindex', k === i ? '0' : '-1'));
+    btns[i].focus();
+  }
+
+  /** Alt+F10: focus moves to the first button. Returns false when the toolbar is not showing. */
+  function focusSeltools() {
+    const btns = [...els.seltools.querySelectorAll('button')];
+    if (els.seltools.hidden || !btns.length) return false;
+    selSnapshot = saveEditorSelection();
+    focusSeltoolButton(btns, 0);
+    return true;
+  }
+
+  /** Esc or Tab inside the toolbar: focus returns to the editor with its selection intact. */
+  function leaveSeltools() {
+    const sel = selSnapshot || saveEditorSelection();
+    els.editor.focus();
+    restoreEditorSelection(sel);
+    selQuietUntil = performance.now() + 300;
+    showSeltools();
+  }
+
+  function runSeltool(act, btn) {
+    const ed = els.editor;
+    const inToolbar = els.seltools.contains(document.activeElement);
+    if (act === 'decode') {
+      const text = ed.value.slice(ed.selectionStart, ed.selectionEnd);
+      if (inToolbar) { const sel = saveEditorSelection(); ed.focus(); restoreEditorSelection(sel); } // a dialog gives focus back to the editor
+      hideSeltools();
+      openDecodeDialog(text);
+      return;
+    }
+    formatAction(act);
+    selQuietUntil = performance.now() + 300;
+    if (inToolbar && btn.isConnected) btn.focus({ preventScroll: true });
+    selSnapshot = saveEditorSelection();
+    showSeltools(); // follow the new selection; the toolbar stays for the next button
+  }
+
+  function wireSeltools() {
+    const ed = els.editor;
+    const box = els.seltools;
+    ed.addEventListener('mousedown', () => { selMouseDown = true; hideSeltools(); });
+    // A drag can end outside the window or be cancelled: the flag is cleared on every way the button can come up.
+    const endMouse = (show) => {
+      if (!selMouseDown) return;
+      selMouseDown = false;
+      if (show) scheduleSeltools();
+    };
+    window.addEventListener('mouseup', () => endMouse(true));
+    window.addEventListener('pointercancel', () => endMouse(true));
+    window.addEventListener('blur', () => { selKeyHeld = ''; endMouse(false); }); // a key-up can be lost with the focus
+    const noteInput = (e) => { selInput = { type: e.inputType || '', at: performance.now() }; };
+    ed.addEventListener('beforeinput', noteInput);
+    ed.addEventListener('input', noteInput);
+    ed.addEventListener('keydown', (e) => { if (selKeyDown(e)) selKeyHeld = e.key.toLowerCase(); });
+    ed.addEventListener('keyup', (e) => {
+      if (selKeyHeld && e.key.toLowerCase() === selKeyHeld) { selKeyHeld = ''; scheduleSeltools(); return; }
+      if (ed.selectionStart === ed.selectionEnd) hideSeltools();
+    });
+    ed.addEventListener('select', () => {
+      if (selMouseDown || selKeyHeld || performance.now() - selProgAt < 300) return;
+      if (selInput.type.startsWith('history') && performance.now() - selInput.at < 300) return; // undo and redo move the selection too
+      scheduleSeltools(120);
+    });
+    ed.addEventListener('input', () => { if (!programmaticInsert) hideSeltools(); });
+    ed.addEventListener('blur', (e) => {
+      if (e.relatedTarget && box.contains(e.relatedTarget)) return;
+      hideSeltools();
+    });
+    document.addEventListener('selectionchange', () => {
+      if (!box.hidden && document.activeElement === ed && ed.selectionStart === ed.selectionEnd) hideSeltools();
+    });
+    window.addEventListener('resize', hideSeltools);
+
+    box.addEventListener('mousedown', (e) => e.preventDefault()); // the editor keeps focus and its selection
+    box.addEventListener('click', (e) => {
+      const b = e.target instanceof Element ? e.target.closest('button[data-act]') : null;
+      if (b) runSeltool(b.dataset.act, b);
+    });
+    box.addEventListener('focusout', (e) => {
+      if (e.relatedTarget && (box.contains(e.relatedTarget) || e.relatedTarget === ed)) return;
+      hideSeltools();
+    });
+    box.addEventListener('keydown', (e) => {
+      const btns = [...box.querySelectorAll('button')];
+      const i = btns.indexOf(document.activeElement);
+      if (i < 0) return;
+      const n = btns.length;
+      let to = -1;
+      if (e.key === 'ArrowRight') to = (i + 1) % n;
+      else if (e.key === 'ArrowLeft') to = (i - 1 + n) % n;
+      else if (e.key === 'Home') to = 0;
+      else if (e.key === 'End') to = n - 1;
+      if (to >= 0) { e.preventDefault(); focusSeltoolButton(btns, to); return; }
+      if (e.key === 'Escape' || e.key === 'Tab') { e.preventDefault(); e.stopPropagation(); leaveSeltools(); }
+    });
   }
 
   // ------------------------------------------------------------ slash menu
@@ -1864,6 +2691,7 @@
     els.slash.replaceChildren(...sl.items.map((c, i) => h('div', {
       class: 'slash-item', role: 'option', 'data-idx': i, 'aria-selected': String(i === sl.idx), id: `slash-${c.name}`,
     }, h('span', { class: 'name' }, `/${c.name}`), h('span', { class: 'desc' }, c.desc))));
+    hideSeltools();
     els.slash.hidden = false;
     els.editor.setAttribute('aria-activedescendant', `slash-${sl.items[sl.idx].name}`);
     const c = caret.coords(els.editor, sl.start);
@@ -1901,8 +2729,21 @@
     replaceRange(start, end, text, start + at);
   }
 
+  /** texttools expands every quick insert except the two CTF templates, which need ctf.js (loaded after it). */
+  function expandSlashHere(name, ctx) {
+    if (name === 'ctf') {
+      const text = ctf.challengeTemplate({ name: 'Challenge name', event: '', category: 'misc', points: 0 });
+      return { text, caret: text.indexOf('\n'), block: true }; // the caret ends the title line
+    }
+    if (name === 'writeup') {
+      const text = ctf.writeupTemplate({ event: '', team: '', date: ctx.now });
+      return { text, caret: text.indexOf('\n'), block: true };
+    }
+    return T.expandSlash(name, ctx);
+  }
+
   function insertSlash(name) {
-    const ex = T.expandSlash(name, slashCtx());
+    const ex = expandSlashHere(name, slashCtx());
     if (ex) insertExpansion(ex, els.editor.selectionStart, els.editor.selectionEnd);
   }
 
@@ -1910,7 +2751,8 @@
     const sl = S.slash;
     const cmd = sl.items[i];
     if (!cmd) return;
-    const ex = T.expandSlash(cmd.name, slashCtx());
+    const ex = expandSlashHere(cmd.name, slashCtx());
+    if (!ex) { closeSlash(); return; }
     const start = sl.start;
     const end = els.editor.selectionStart;
     closeSlash();
@@ -2046,6 +2888,7 @@
   function commandList() {
     const note = active();
     const editable = isEditable(note);
+    const markdownEditable = editable && !isScript(note);
     const C = (group, title, run, keys, when = true) => ({ group, title, run, keys, when });
     const tf = (title, key) => C('Transform', title, () => applyTransform(T.TRANSFORMS[key], title), null, editable);
     const sx = (title, key) => C('Security', title, () => applyTransform(secops.TRANSFORMS[key], title), null, editable);
@@ -2057,7 +2900,7 @@
       C('Note', 'Show version history', showHistory, null, editable),
       C('Note', 'Go to heading', () => setTimeout(() => openPalette('@'), 0), '@', editable && !isScript(note)),
       C('Note', 'Script mode: choose a language…', chooseLanguage, null, editable),
-      C('Note', 'Back to a Markdown note', () => setNoteLang(active(), ''), null, editable && isScript(note)),
+      C('Note', 'Back to a Markdown note', () => setNoteLang(active(), '', true), null, editable && isScript(note)),
       C('Note', 'Move to folder…', moveToFolder, null, !!note),
       C('Note', 'Remove from folder', removeFromFolder, null, !!(note && note.folder)),
       C('Note', 'Rename folder…', renameFolder, null, !!(note && note.folder)),
@@ -2069,22 +2912,38 @@
       C('File', 'Show file in folder', revealActive, null, platform.isDesktop && !!(note && note.file)),
       C('File', 'Unlink from file', unlinkActive, null, platform.isDesktop && !!(note && note.file)),
       C('File', 'Export note as Markdown', exportNote, null, editable),
+      C('File', 'Export note as file', exportNoteFile, null, editable && isScript(note) && !platform.isDesktop),
       C('File', 'Export note as PDF', exportPdf, null, editable),
       C('File', 'Export backup of all notes', exportBackup),
       C('File', 'Export encrypted backup of all notes', exportEncryptedBackup),
       C('File', 'Import a file', () => els.fileInput.click()),
+      C('Edit', 'Find and replace', () => openFind(), 'Ctrl F', editable),
+      C('Edit', 'Go to line…', gotoLineDialog, 'Ctrl G', editable),
+      C('Edit', 'Comment or uncomment lines', () => applyLineEdit('comment'), 'Ctrl /', editable && isScript(note)),
+      C('Edit', 'Duplicate line', () => applyLineEdit('duplicate'), 'Ctrl Shift D', editable),
+      C('Edit', 'Move line up', () => applyLineEdit('move', -1), 'Alt ↑', editable),
+      C('Edit', 'Move line down', () => applyLineEdit('move', 1), 'Alt ↓', editable),
+      C('Format', 'Bold', () => formatAction('bold'), null, markdownEditable),
+      C('Format', 'Italic', () => formatAction('italic'), null, markdownEditable),
+      C('Format', 'Strikethrough', () => formatAction('strike'), null, markdownEditable),
+      C('Format', 'Highlight', () => formatAction('mark'), null, markdownEditable),
+      C('Format', 'Code', () => formatAction('code'), null, markdownEditable),
+      C('Format', 'Link', () => formatAction('link'), null, markdownEditable),
+      C('Format', 'Quote', () => formatAction('quote'), null, markdownEditable),
+      C('Format', 'Bulleted list', () => formatAction('list'), null, markdownEditable),
       C('View', 'Layout: Write only', () => setView('edit'), null, S.settings.view !== 'edit'),
       C('View', 'Layout: Split', () => setView('split'), null, S.settings.view !== 'split'),
       C('View', 'Layout: Read only', () => setView('preview'), null, S.settings.view !== 'preview'),
       C('View', 'Show or hide note list', toggleSidebar, 'Ctrl B'),
       C('View', 'Zen mode', toggleZen, 'Alt Z'),
-      C('View', 'Find and replace', () => openFind(), 'Ctrl F', editable),
       ...store.THEMES.filter((t) => t !== S.settings.theme).map((t) => C('Theme', `Theme: ${THEME_NAMES[t]}`, () => setTheme(t))),
-      C('View', S.settings.crt ? 'Turn off CRT effect' : 'Turn on CRT effect', toggleCrt),
-      C('View', S.settings.sound ? 'Turn off typing sounds' : 'Turn on typing sounds', toggleSound),
-      C('View', S.settings.arrows ? 'Turn off arrow replacement' : 'Turn on arrow replacement', toggleArrows),
-      C('View', lineNumbersTitle(), cycleLineNumbers),
-      C('View', S.settings.boot ? 'Skip the boot screen on start' : 'Show the boot screen on start', toggleBoot),
+      C('Settings', S.settings.crt ? 'Turn off CRT effect' : 'Turn on CRT effect', toggleCrt),
+      C('Settings', S.settings.sound ? 'Turn off typing sounds' : 'Turn on typing sounds', toggleSound),
+      C('Settings', S.settings.arrows ? 'Turn off arrow replacement' : 'Turn on arrow replacement', toggleArrows),
+      C('Settings', lineNumbersTitle(), cycleLineNumbers),
+      C('Settings', S.settings.syntaxColors ? 'Turn off syntax colouring' : 'Turn on syntax colouring', toggleSyntaxColors),
+      C('Settings', S.settings.boot ? 'Skip the boot screen on start' : 'Show the boot screen on start', toggleBoot),
+      C('Settings', S.settings.selectionToolbar ? 'Turn off the selection toolbar' : 'Turn on the selection toolbar', toggleSelectionToolbar),
       C('View', 'Keyboard shortcuts', showShortcuts, 'F1'),
       C('View', 'About CyberPad', showAbout, null, platform.isDesktop),
       C('Insert', 'Insert date', () => insertText(T.ymd(new Date())), '/date', editable),
@@ -2115,6 +2974,15 @@
       C('Tools', 'Start 25-minute focus timer', () => startTimer(25, 'Focus')),
       C('Tools', 'Start 5-minute break timer', () => startTimer(5, 'Break')),
       C('Tools', 'Stop timer', () => stopTimer(false), null, !!S.timer),
+      C('CTF', 'New CTF challenge…', newChallengeDialog),
+      C('CTF', 'Insert challenge template', () => insertSlash('ctf'), '/ctf', markdownEditable),
+      C('CTF', 'Insert writeup template', () => insertSlash('writeup'), '/writeup', markdownEditable),
+      C('CTF', 'Decode or encode…', () => openDecodeDialog()),
+      C('CTF', 'Try common decodings', tryDecodingsCommand, null, editable),
+      C('CTF', 'Find flags in this note', findFlagsHere, null, editable),
+      C('CTF', 'Find flags in all notes', findFlagsEverywhere),
+      C('CTF', 'Flag formats…', flagFormatsDialog),
+      C('CTF', 'Build CTF report from this folder', buildReportCommand, null, !!(note && note.folder)),
       C('Vault', 'Encrypt note', encryptActive, null, editable && !note.cipher),
       C('Vault', 'Remove encryption', decryptActive, null, editable && !!note.cipher),
       C('Vault', 'Lock encrypted notes', () => lockAll(), 'Alt L', S.keys.size > 0),
@@ -2172,12 +3040,13 @@
 
   function restoreEditorSelection(sel) {
     if (!sel || els.editor.hidden) return;
-    els.editor.setSelectionRange(sel.start, sel.end, sel.dir);
+    setSel(sel.start, sel.end, sel.dir);
     els.editor.scrollTop = sel.top;
   }
 
   function openPalette(prefill = '') {
     closeSlash();
+    hideSeltools();
     if (els.modal.open) return;
     if (!els.palette.open) {
       S.paletteSel = saveEditorSelection();
@@ -2403,6 +3272,495 @@
     } else if (res === 'note') {
       addNote(secops.iocsToMarkdown(iocs, { defanged, source: titleOf(note), when: `${stamp.slice(0, 16).replace('T', ' ')} UTC` }), undefined, active() ? active().folder : '');
     }
+  }
+
+  // CTF helpers -----------------------------------------------------------
+  //
+  // Decoded text and note text reach the page only as text nodes or a form control's value, never as markup.
+  // A dialog that holds text from an encrypted note is marked sensitive (see showDialog), so a lock closes and empties it.
+
+  const CTF_EMPTY = 'Enter some text to convert.';
+  const CTF_TOO_LONG = 'That text is too long to convert (limit 100,000 characters).';
+  const CTF_FLAG_CAP = 200;
+  const CTF_SLICE = 20; // notes searched per timer tick
+  const FLAG_VIA = { plain: 'plain text', reversed: 'reversed', base64: 'inside Base64', base32: 'inside Base32', hex: 'inside hex' };
+
+  /** What a dialog may change in the editor later: the note, its whole text and the range, as they were when it opened. */
+  function ctfTarget() {
+    const note = active();
+    const ed = els.editor;
+    if (!isEditable(note) || ed.hidden) return null;
+    return { id: note.id, value: ed.value, start: ed.selectionStart, end: ed.selectionEnd, text: ed.value.slice(ed.selectionStart, ed.selectionEnd) };
+  }
+
+  /** Replace the saved selection, or add a line below the one it ended on. Refuses when the note or its text is not what it was. */
+  function applyCtfOutput(target, action, output) {
+    const note = active();
+    const ed = els.editor;
+    const done = action === 'replace' ? 'replaced' : 'inserted';
+    if (!target || !note || note.id !== target.id || !isEditable(note) || ed.hidden || ed.value !== target.value) {
+      toast(`The note changed, so nothing was ${done}.`, 'error');
+      return;
+    }
+    const value = target.value;
+    if (action === 'replace') {
+      if (target.start === target.end) return;
+      if (value.length - (target.end - target.start) + output.length > store.LIMITS.body) { toast('The result would be too long for one note.', 'error'); return; }
+      replaceRange(target.start, target.end, output, target.start, target.start + output.length);
+      return;
+    }
+    // A selection that ends right after a line break belongs to the line before it.
+    const at = target.end > target.start && value[target.end - 1] === '\n' ? target.end - 1 : target.end;
+    const { end } = lineBounds(value, at);
+    if (value.length + 1 + output.length > store.LIMITS.body) { toast('The result would be too long for one note.', 'error'); return; }
+    replaceRange(end, end, `\n${output}`, end + 1 + output.length);
+  }
+
+  function ctfCopyRow(label, value, fromEncrypted = false) {
+    const btn = h('button', { type: 'button', class: 'chip', 'aria-label': `Copy ${label}` }, 'Copy');
+    btn.addEventListener('click', () => copyText(value, fromEncrypted));
+    return h('div', { class: 'result-row' }, h('span', { class: 'result-label' }, label), h('pre', { class: 'result-value' }, value), btn);
+  }
+
+  const codecName = (id) => { const c = ctf.CODECS.find((x) => x.id === id); return c ? c.name : id; };
+
+  // Decode or encode… -----------------------------------------------------
+
+  async function openDecodeDialog(selectionText) {
+    void selectionText; // the editor's own selection is read (and kept) by ctfTarget
+    const note = active();
+    const target = ctfTarget();
+    const initial = target ? target.text : '';
+    const input = h('textarea', { id: 'decode-input', maxlength: ctf.LIMITS.input, autocomplete: 'off' });
+    input.rows = 5;
+    input.spellcheck = false;
+    input.value = initial;
+    const out = h('textarea', { id: 'decode-output', class: 'ctf-out' });
+    out.rows = 5;
+    out.readOnly = true;
+    out.spellcheck = false;
+    const status = h('p', { role: 'status', class: 'ctf-status' });
+    const results = h('div', { class: 'result-list ctf-results', hidden: true });
+    const outBox = h('label', { class: 'field' }, h('span', null, 'Output'), out);
+
+    const st = { codec: ctf.CODECS[0], dir: 'decode', view: 'output' };
+    const values = {}; // codec id -> { param id -> text typed }
+    let overflow = false;
+    let closed = false;
+    let timer = 0;
+    let output = '';
+
+    const codecSelect = h('select', { id: 'decode-codec' }, ctf.CODECS.map((c) => h('option', { value: c.id }, `${c.group}: ${c.name}`)));
+    const dirButtons = {};
+    for (const [dir, label] of [['decode', 'Decode'], ['encode', 'Encode']]) {
+      dirButtons[dir] = h('button', { type: 'button', class: 'chip', 'aria-pressed': 'false' }, label);
+      dirButtons[dir].addEventListener('click', () => { st.dir = dir; refresh(); });
+    }
+    const dirRow = h('div', { class: 'decode-dir', role: 'group', 'aria-label': 'Direction' }, dirButtons.decode, dirButtons.encode);
+    const codecRow = h('div', { class: 'decode-row' }, h('label', { class: 'field' }, h('span', null, 'Codec'), codecSelect), dirRow);
+    const paramBox = h('div', { class: 'decode-params' });
+
+    const paramsFor = (codec) => {
+      const vals = values[codec.id] || {};
+      const p = {};
+      for (const def of codec.params || []) {
+        const raw = vals[def.id] === undefined ? String(def.default) : vals[def.id];
+        // A number the module checks itself: anything that is not a whole number becomes NaN and gets its message.
+        p[def.id] = def.type === 'int' ? (/^-?\d{1,9}$/.test(raw.trim()) ? Number(raw.trim()) : NaN) : raw;
+      }
+      return p;
+    };
+
+    const buildParams = () => {
+      const fields = (st.codec.params || []).map((def) => {
+        const saved = (values[st.codec.id] || {})[def.id];
+        const text = saved === undefined ? String(def.default) : saved;
+        let control;
+        if (def.type === 'choice') {
+          control = h('select', { id: `decode-p-${def.id}` }, def.choices.map((c) => h('option', { value: c }, c === 'hex' ? 'Hex' : 'Text')));
+          control.value = text;
+        } else {
+          control = h('input', { id: `decode-p-${def.id}`, type: def.type === 'int' ? 'number' : 'text', autocomplete: 'off' });
+          if (def.type === 'int') {
+            // Fixed numbers from the codec table, set as properties: SAFE_ATTR does not list min, max or step.
+            control.min = String(def.min);
+            control.max = String(def.max);
+            control.step = '1';
+            control.inputMode = 'numeric';
+          } else {
+            control.maxLength = def.max;
+            control.spellcheck = false;
+          }
+          control.value = text;
+        }
+        const remember = () => {
+          const v = values[st.codec.id] || (values[st.codec.id] = {});
+          v[def.id] = control.value;
+          schedule();
+        };
+        control.addEventListener(def.type === 'choice' ? 'change' : 'input', remember);
+        return h('label', { class: 'field' }, h('span', null, def.label), control);
+      });
+      paramBox.replaceChildren(...fields);
+      paramBox.hidden = !fields.length || st.view !== 'output';
+    };
+
+    const toolBtn = (label, onClick) => {
+      const b = h('button', { type: 'button', class: 'btn' }, label);
+      b.addEventListener('click', onClick);
+      return b;
+    };
+    const copyBtn = toolBtn('Copy', () => { if (output) copyText(output); });
+    const replaceBtn = target && target.text ? toolBtn('Replace selection', () => { if (output && finishCurrentDialog) finishCurrentDialog({ action: 'replace', output }); }) : null;
+    const insertBtn = target ? toolBtn('Insert below', () => { if (output && finishCurrentDialog) finishCurrentDialog({ action: 'insert', output }); }) : null;
+    const bruteBtns = {};
+    for (const [view, label] of [['caesar', 'Caesar brute force'], ['xor', 'XOR brute force']]) {
+      bruteBtns[view] = h('button', { type: 'button', class: 'btn', 'aria-pressed': 'false' }, label);
+      bruteBtns[view].addEventListener('click', () => { st.view = st.view === view ? 'output' : view; refresh(); });
+    }
+    const tools = h('div', { class: 'decode-tools' }, copyBtn, replaceBtn, insertBtn, bruteBtns.caesar, bruteBtns.xor);
+
+    function renderBrute(text) {
+      let rows = [];
+      let message = '';
+      if (text === '') message = CTF_EMPTY;
+      else if (text.length > ctf.LIMITS.input) message = CTF_TOO_LONG;
+      else if (st.view === 'caesar') rows = ctf.caesarBruteForce(text).map((r) => [`Shift ${r.shift}`, r.output]);
+      else rows = ctf.xorBruteForce(text, S.settings.flagPrefixes).map((r) => [`Key 0x${r.keyHex}`, r.output]);
+      results.replaceChildren(...rows.slice(0, ctf.LIMITS.results).map(([label, value]) => ctfCopyRow(label, value)));
+      status.textContent = message || (rows.length ? '' : 'No results.');
+    }
+
+    function compute() {
+      timer = 0;
+      if (closed) return;
+      const text = input.value;
+      if (st.view !== 'output') { output = ''; renderBrute(text); updateTools(); return; }
+      const fn = st.dir === 'decode' ? st.codec.decode : st.codec.encode;
+      const res = fn ? fn(text, paramsFor(st.codec)) : { ok: false, message: 'This codec does not work that way.' };
+      if (res.ok) {
+        output = res.output;
+        out.value = output;
+        status.textContent = overflow ? `${CTF_TOO_LONG} The extra text was cut off.` : '';
+      } else {
+        output = '';
+        out.value = '';
+        status.textContent = res.message;
+      }
+      updateTools();
+    }
+
+    function schedule() {
+      clearTimeout(timer);
+      timer = setTimeout(compute, 150);
+    }
+
+    function updateTools() {
+      const ready = st.view === 'output' && output !== '';
+      copyBtn.disabled = !ready;
+      if (replaceBtn) replaceBtn.disabled = !ready;
+      if (insertBtn) insertBtn.disabled = !ready;
+    }
+
+    // Everything that depends on the codec, direction or view; then a fresh result.
+    function refresh() {
+      const c = st.codec;
+      if (!c[st.dir]) st.dir = st.dir === 'decode' ? 'encode' : 'decode';
+      for (const dir of ['decode', 'encode']) {
+        dirButtons[dir].setAttribute('aria-pressed', String(st.dir === dir));
+        dirButtons[dir].disabled = !c[dir];
+      }
+      for (const view of ['caesar', 'xor']) bruteBtns[view].setAttribute('aria-pressed', String(st.view === view));
+      const brute = st.view !== 'output';
+      outBox.hidden = brute;
+      results.hidden = !brute;
+      codecRow.hidden = brute;
+      buildParams();
+      clearTimeout(timer);
+      compute();
+    }
+
+    codecSelect.addEventListener('change', () => {
+      const c = ctf.CODECS.find((x) => x.id === codecSelect.value);
+      if (!c) return;
+      st.codec = c;
+      refresh();
+    });
+    input.addEventListener('paste', (e) => {
+      const pasted = e.clipboardData ? e.clipboardData.getData('text/plain') : '';
+      if (input.value.length - (input.selectionEnd - input.selectionStart) + pasted.length > ctf.LIMITS.input) overflow = true;
+    });
+    input.addEventListener('input', () => {
+      if (input.value.length < ctf.LIMITS.input) overflow = false;
+      schedule();
+    });
+
+    refresh();
+    const res = await showDialog({
+      title: 'Decode or encode',
+      className: 'wide ctf',
+      initialFocus: '#decode-input',
+      sensitive: true, // people paste secrets into CTF dialogs: any lock closes and empties them
+      body: [
+        h('label', { class: 'field' }, h('span', null, 'Input'), input),
+        codecRow, paramBox, outBox, results, status, tools,
+      ],
+      actions: [{ label: 'Close', value: null, className: 'btn-primary' }],
+      onSubmit: () => undefined, // Enter in a field never closes this dialog
+    });
+    closed = true;
+    clearTimeout(timer);
+    if (res && (res.action === 'replace' || res.action === 'insert') && typeof res.output === 'string') applyCtfOutput(target, res.action, res.output);
+  }
+
+  // Try common decodings ---------------------------------------------------
+
+  async function tryDecodingsCommand() {
+    const target = ctfTarget();
+    if (!target) return;
+    let text = target.text;
+    if (text === '') {
+      const { start, end } = lineBounds(target.value, target.start);
+      text = target.value.slice(start, end).trim();
+    }
+    if (!text.trim()) { toast('Select some text, or put the cursor on the line to decode.'); return; }
+    if (text.length > ctf.LIMITS.input) { toast(CTF_TOO_LONG, 'error'); return; }
+    const note = active();
+    const status = h('p', { role: 'status', class: 'ctf-status' }, 'Decoding…');
+    const list = h('div', { class: 'result-list ctf-results' });
+    let closed = false;
+    const pending = showDialog({
+      title: 'Common decodings',
+      className: 'wide ctf',
+      sensitive: true, // people paste secrets into CTF dialogs: any lock closes and empties them
+      body: [status, list],
+      actions: [{ label: 'Close', value: null, className: 'btn-primary' }],
+    });
+    // Let the dialog paint first: the search is bounded but can take a moment.
+    setTimeout(() => {
+      if (closed) return;
+      let found = [];
+      try {
+        found = ctf.tryDecodings(text, S.settings.flagPrefixes);
+      } catch (err) {
+        console.error('decode failed', err && err.name);
+      }
+      if (closed) return;
+      const rows = found.slice(0, ctf.LIMITS.results);
+      if (!rows.length) { status.textContent = 'Nothing readable came out of the common decodings.'; return; }
+      status.textContent = `${plural(rows.length, 'result')}, best first.`;
+      list.replaceChildren(...rows.map((r) => {
+        const way = r.path.map(codecName).join(' → ') + (r.detail ? ` (${r.detail})` : '');
+        const btns = h('div', { class: 'ctf-btns' });
+        const add = (label, onClick) => { const b = h('button', { type: 'button', class: 'chip' }, label); b.addEventListener('click', onClick); btns.append(b); };
+        add('Copy', () => copyText(r.output));
+        if (target.text) add('Replace selection', () => { if (finishCurrentDialog) finishCurrentDialog({ action: 'replace', output: r.output }); });
+        add('Insert below', () => { if (finishCurrentDialog) finishCurrentDialog({ action: 'insert', output: r.output }); });
+        return h('div', { class: 'result-row' },
+          h('span', { class: 'result-label' }, `${way}, ${Math.round(r.score * 100)}%`),
+          h('pre', { class: 'result-value' }, r.output), btns);
+      }));
+    }, 0);
+    const res = await pending;
+    closed = true;
+    if (res && (res.action === 'replace' || res.action === 'insert') && typeof res.output === 'string') applyCtfOutput(target, res.action, res.output);
+  }
+
+  // Flags ------------------------------------------------------------------
+
+  function flagRow(f, id, fromEncrypted) {
+    const line = h('button', { type: 'button', class: 'chip' }, `Line ${f.line}`);
+    line.addEventListener('click', () => { if (finishCurrentDialog) finishCurrentDialog({ id, line: f.line }); });
+    const copy = h('button', { type: 'button', class: 'chip', 'aria-label': `Copy flag on line ${f.line}` }, 'Copy');
+    copy.addEventListener('click', () => copyText(f.flag, fromEncrypted));
+    return h('div', { class: 'flag-row' }, h('code', { class: 'flag-code' }, f.flag), h('span', { class: 'flag-via' }, FLAG_VIA[f.via] || f.via), line, copy);
+  }
+
+  const NO_FLAGS = 'No flags found. Check Flag formats… if your CTF uses another prefix.';
+
+  async function findFlagsHere() {
+    const note = active();
+    if (!isEditable(note) || els.editor.hidden) return;
+    const body = bodyOf(note);
+    if (typeof body !== 'string') return;
+    const flags = ctf.findFlags(body, S.settings.flagPrefixes);
+    const res = await showDialog({
+      title: 'Flags in this note',
+      className: 'wide ctf',
+      sensitive: true, // people paste secrets into CTF dialogs: any lock closes and empties them
+      body: [
+        h('p', { role: 'status', class: 'ctf-status' }, flags.length ? `${plural(flags.length, 'flag')} found` : NO_FLAGS),
+        h('div', { class: 'result-list ctf-results' }, flags.map((f) => flagRow(f, note.id, false))),
+      ],
+      actions: [{ label: 'Close', value: null, className: 'btn-primary' }],
+    });
+    if (res && typeof res.line === 'number' && active() === note && isEditable(note)) gotoLine(res.line - 1);
+  }
+
+  async function findFlagsEverywhere() {
+    const prefixes = S.settings.flagPrefixes;
+    const all = sortedNotes();
+    const skipped = all.filter(isLocked).length;
+    const todo = all.filter((n) => !isLocked(n));
+    const status = h('p', { role: 'status', class: 'ctf-status' }, 'Searching…');
+    const groups = h('div', { class: 'result-list ctf-results' });
+    const foot = h('p', { class: 'ctf-status' });
+    let closed = false;
+    // It lists titles and flags from unlocked encrypted notes: any lock closes and empties it.
+    const pending = showDialog({
+      title: 'Flags in all notes',
+      className: 'wide ctf',
+      sensitive: true,
+      body: [status, groups, foot],
+      actions: [{ label: 'Close', value: null, className: 'btn-primary' }],
+    });
+    let i = 0;
+    let total = 0;
+    let noteCount = 0;
+    let capped = false;
+    const finishSearch = () => {
+      status.textContent = total ? `${plural(total, 'flag')} found in ${plural(noteCount, 'note')}` : NO_FLAGS;
+      const bits = [];
+      if (capped) bits.push(`Showing the first ${CTF_FLAG_CAP} flags.`);
+      if (skipped) bits.push(`${skipped} locked note${skipped === 1 ? ' was' : 's were'} not searched.`);
+      foot.textContent = bits.join(' ');
+    };
+    const step = () => {
+      if (closed) return;
+      const stop = Math.min(todo.length, i + CTF_SLICE);
+      while (i < stop && !capped) {
+        const n = todo[i++];
+        const body = bodyOf(n);
+        if (typeof body !== 'string' || body === '') continue;
+        const flags = ctf.findFlags(body, prefixes);
+        if (!flags.length) continue;
+        const shown = flags.slice(0, CTF_FLAG_CAP - total);
+        total += shown.length;
+        noteCount++;
+        if (total >= CTF_FLAG_CAP && (flags.length > shown.length || i < todo.length)) capped = true;
+        const open = h('button', { type: 'button', class: 'chip flag-note' }, titleOf(n));
+        open.addEventListener('click', () => { if (finishCurrentDialog) finishCurrentDialog({ id: n.id, line: 0 }); });
+        groups.append(h('div', { class: 'flag-group' }, open, shown.map((f) => flagRow(f, n.id, !!n.cipher))));
+      }
+      if (i < todo.length && !capped) setTimeout(step, 0);
+      else finishSearch();
+    };
+    setTimeout(step, 0);
+    const res = await pending;
+    closed = true;
+    if (res && typeof res.id === 'string' && noteById(res.id)) {
+      openNote(res.id);
+      const n = active();
+      if (res.line > 0 && n && n.id === res.id && isEditable(n)) gotoLine(res.line - 1);
+    }
+  }
+
+  // Flag formats… ----------------------------------------------------------
+
+  const PREFIX_RE = /^[A-Za-z0-9_]{1,20}$/;
+
+  async function flagFormatsDialog() {
+    const area = h('textarea', { id: 'flag-prefixes', maxlength: 1000, autocomplete: 'off' });
+    area.rows = 8;
+    area.spellcheck = false;
+    area.value = S.settings.flagPrefixes.join('\n');
+    const err = h('p', { class: 'form-error', role: 'alert' });
+    const res = await showDialog({
+      title: 'Flag formats',
+      initialFocus: '#flag-prefixes',
+      body: [
+        h('label', { class: 'field' }, h('span', null, 'Flag prefixes, one per line'), area),
+        h('p', null, 'A flag looks like prefix{...}. Letters, digits and underscores, up to 20 characters each, at most 30 prefixes.'),
+        err,
+      ],
+      actions: [
+        { label: 'Cancel', value: null },
+        { label: 'Reset to defaults', value: 'reset' },
+        { label: 'Save', submit: true, className: 'btn-primary' },
+      ],
+      onSubmit: () => {
+        const list = area.value.split(/\r\n|\r|\n/).map((l) => l.trim()).filter((l) => l !== '');
+        if (list.some((l) => !PREFIX_RE.test(l))) { err.textContent = 'Each prefix can only contain letters, digits and underscores, up to 20 characters.'; area.focus(); return undefined; }
+        if (!list.length) { err.textContent = 'Enter at least one prefix, or choose Reset to defaults.'; area.focus(); return undefined; }
+        if (list.length > ctf.LIMITS.prefixes) { err.textContent = 'Keep it to 30 prefixes at most.'; area.focus(); return undefined; }
+        return { list };
+      },
+    });
+    if (res === 'reset') {
+      S.settings.flagPrefixes = ctf.DEFAULT_PREFIXES.slice();
+      saveSettings();
+      toast('Flag formats reset to defaults.');
+    } else if (res && Array.isArray(res.list)) {
+      S.settings.flagPrefixes = ctf.validatePrefixes(res.list);
+      saveSettings();
+      toast('Flag formats saved.');
+    }
+  }
+
+  // New CTF challenge… -----------------------------------------------------
+
+  async function newChallengeDialog() {
+    const open = active();
+    const event = h('input', { type: 'text', id: 'ctf-event', maxlength: store.LIMITS.folderName, autocomplete: 'off', value: open ? open.folder : '' });
+    const name = h('input', { type: 'text', id: 'ctf-name', maxlength: 120, autocomplete: 'off' });
+    const category = h('select', { id: 'ctf-category' }, ctf.CATEGORIES.map((c) => h('option', { value: c }, c)));
+    const points = h('input', { type: 'number', id: 'ctf-points', autocomplete: 'off', value: '100' });
+    // Fixed values, set as properties: SAFE_ATTR does not list min, max, step or inputmode.
+    points.min = '0';
+    points.max = '100000';
+    points.step = '1';
+    points.inputMode = 'numeric';
+    const err = h('p', { class: 'form-error', role: 'alert' });
+    const pending = showDialog({
+      title: 'New CTF challenge',
+      initialFocus: '#ctf-event',
+      body: [
+        h('label', { class: 'field' }, h('span', null, 'Event'), event),
+        h('label', { class: 'field' }, h('span', null, 'Challenge name'), name),
+        h('label', { class: 'field' }, h('span', null, 'Category'), category),
+        h('label', { class: 'field' }, h('span', null, 'Points'), points),
+        err,
+      ],
+      actions: [{ label: 'Cancel', value: null }, { label: 'Create challenge', submit: true, className: 'btn-primary' }],
+      onSubmit: () => {
+        const folder = store.cleanFolder(event.value);
+        const folders = store.folderList(S.notes);
+        if (!folder) { err.textContent = FOLDER_NAME_MSG; event.focus(); return undefined; }
+        if (!folders.some((f) => f.name === folder) && folders.length >= store.LIMITS.folders) { err.textContent = FOLDER_LIMIT_MSG; event.focus(); return undefined; }
+        const title = name.value.trim();
+        if (!title) { err.textContent = 'Enter a challenge name.'; name.focus(); return undefined; }
+        const raw = points.value.trim();
+        const pts = /^\d{1,6}$/.test(raw) ? Number(raw) : NaN;
+        if (!(pts >= 0 && pts <= 100000)) { err.textContent = 'Enter the points as a whole number from 0 to 100000.'; points.focus(); return undefined; }
+        const cat = ctf.CATEGORIES.includes(category.value) ? category.value : 'misc';
+        return { folder, title, cat, pts };
+      },
+    });
+    // The page checks the numbers itself and shows its own messages; the browser's built-in bubble would replace them.
+    if (points.form) points.form.noValidate = true;
+    const res = await pending;
+    if (!res) return;
+    const created = addNote(ctf.challengeTemplate({ name: res.title, event: res.folder, category: res.cat, points: res.pts }), undefined, res.folder);
+    if (created) toast(`Challenge note created in ${res.folder}.`);
+  }
+
+  // Build CTF report from this folder --------------------------------------
+
+  function buildReportCommand() {
+    const open = active();
+    if (!open || !open.folder) return;
+    const folder = open.folder;
+    // An encrypted note, locked or not, is passed as a bare marker: its title, text and language are never read.
+    const notes = sortedNotes().filter((n) => n.folder === folder).map((n) => (n.cipher
+      ? { encrypted: true }
+      : { title: titleOf(n), body: bodyOf(n), lang: n.lang || '', encrypted: false }));
+    const rep = ctf.buildReport({ folder, notes, now: new Date() });
+    const created = addNote(rep.body, undefined, folder);
+    if (!created) return;
+    const left = rep.leftOut.length;
+    toast(`Report created with ${plural(rep.included, 'note')}.`
+      + (rep.skippedEncrypted > 0 ? ` ${rep.skippedEncrypted} encrypted note${rep.skippedEncrypted === 1 ? ' was' : 's were'} left out.` : '')
+      + (left > 0 ? ` ${left} note${left === 1 ? '' : 's'} did not fit.` : ''));
   }
 
   // Secret scanner -------------------------------------------------------
@@ -2946,9 +4304,11 @@
   // ------------------------------------------------------------- dialogs
 
   let finishCurrentDialog = null;
+  let dialogSensitive = false; // the open dialog may show text from an encrypted note: any lock closes and empties it
 
-  function showDialog({ title, body = [], actions, className = '', initialFocus, onSubmit }) {
+  function showDialog({ title, body = [], actions, className = '', initialFocus, onSubmit, sensitive = false }) {
     return new Promise((resolve) => {
+      hideSeltools();
       if (els.palette.open) { S.paletteSel = null; els.palette.close(); }
       if (finishCurrentDialog) finishCurrentDialog(null); // cancel a dialog that is still open
       const dlg = els.modal;
@@ -2968,7 +4328,7 @@
       const finish = (value) => {
         if (settled) return;
         settled = true;
-        if (finishCurrentDialog === finish) finishCurrentDialog = null;
+        if (finishCurrentDialog === finish) { finishCurrentDialog = null; dialogSensitive = false; }
         dlg.removeEventListener('close', onClose);
         if (dlg.open) dlg.close();
         dlg.replaceChildren();
@@ -2991,6 +4351,7 @@
       dlg.replaceChildren(form);
       dlg.addEventListener('close', onClose);
       finishCurrentDialog = finish;
+      dialogSensitive = !!sensitive;
       dlg.showModal();
       const first = (initialFocus && form.querySelector(initialFocus)) || form.querySelector('input, button[type="submit"]') || form.querySelector('button');
       if (first) first.focus();
@@ -3064,7 +4425,9 @@
       ['Ctrl F', 'Find'], ['Ctrl H', 'Find and replace'], ['F3 / Shift F3', 'Next / previous match'], ['Alt Z', 'Zen mode'],
       ['Alt L', 'Lock encrypted notes'], ['Alt I', 'Extract IOCs from the note or selection'], ['/', 'Quick inserts (at the start of a word)'], ['Tab after "="', 'Work out the sum on that line'],
       ['Ctrl Enter', 'Make a task, or tick it'], ['Tab / Shift Tab', 'Indent / outdent'], ['Esc, then Tab', 'Move focus out of the editor'],
-      ['Paste a URL on a selection', 'Make a link'],
+      ['Ctrl /', 'Comment or uncomment lines (script notes)'], ['Ctrl Shift D', 'Duplicate the line or selected lines'],
+      ['Alt ↑ / Alt ↓', 'Move the line or selected lines'], ['Ctrl G', 'Go to line (next match while the find bar is open)'],
+      ['Paste a URL on a selection', 'Make a link'], ['Alt F10', 'Format toolbar (when text is selected)'],
       ['Delete', 'Delete the focused note in the list'], ['Ctrl Z', 'Undo the last delete (in the note list)'],
     ];
     if (platform.isDesktop) {
@@ -3117,6 +4480,21 @@
     if (saved) toast(`Saved ${saved}.`);
   }
 
+  /** Browser version: downloads a script note's text as it is, with the extension of its language (.txt for plain text). */
+  async function exportNoteFile() {
+    const note = active();
+    if (!isEditable(note) || !isScript(note)) return;
+    if (note.cipher) {
+      const ok = await confirmDialog('Export without encryption?', 'The exported file will contain the note as plain text.', 'Export plain text', true);
+      if (!ok) return;
+      if (!isEditable(note)) { toast('The note was locked. Unlock it and try again.', 'error'); return; }
+    }
+    // An encrypted note's own extension would be .cpnote; this file is plain text, so it gets its language's extension.
+    const ext = store.defaultExtFor({ lang: note.lang, cipher: null });
+    const saved = await exportOut('note', `${T.slugify(titleOf(note)) || 'note'}.${ext}`, bodyOf(note), 'text/plain;charset=utf-8');
+    if (saved) toast(`Saved ${saved}.`);
+  }
+
   // Printing is the PDF route: the print stylesheet draws the preview on paper and the
   // user picks "Save as PDF" in the print dialog. Nothing is written anywhere new.
   async function exportPdf() {
@@ -3166,6 +4544,7 @@
     printing = false;
     g.hold = false;
     updateGutter();
+    updateHl();
     if (printFocusCleanup) { printFocusCleanup(); printFocusCleanup = null; }
     const note = active();
     document.title = note ? `${titleOf(note)} | CyberPad` : 'CyberPad';
@@ -3271,13 +4650,25 @@
     }
   }
 
+  /** True when the text is JSON whose `app` field names CyberPad (or its old name): it claims to be a backup or note file. */
+  function claimsBackup(text) {
+    let raw;
+    try { raw = JSON.parse(text); } catch (err) {
+      if (err instanceof SyntaxError) return false;
+      throw err;
+    }
+    return raw !== null && typeof raw === 'object' && !Array.isArray(raw) && (raw.app === 'cyberpad' || raw.app === 'neonpad');
+  }
+
   async function importFiles(files) {
     let lastId = null;
     let count = 0;
+    let textNotes = 0;
     for (const file of files.slice(0, 20)) {
       try {
         const ext = store.checkImportFile(file.name, file.size);
-        let text = store.decodeImportBytes(await file.arrayBuffer());
+        const text = store.decodeImportBytes(await file.arrayBuffer());
+        const type = store.fileTypeOf(ext);
         if (ext === 'json') {
           const mergeIn = (incoming) => {
             const merged = store.mergeNotes(S.notes, incoming);
@@ -3305,15 +4696,19 @@
             continue;
           } catch (err) {
             if (!(err instanceof store.StoreError)) throw err;
-            text = `\`\`\`json\n${text}\n\`\`\``; // ordinary JSON file: keep it as a code block
+            // A file that says it is a CyberPad backup but fails validation is reported, never imported as text.
+            if (claimsBackup(text)) throw new store.StoreError('That file says it is a CyberPad backup, but it is damaged or not valid, so it was not imported.');
+            // Any other JSON (or text that does not parse) is an ordinary file: it becomes a JSON note below.
           }
         }
         if (text.length > store.LIMITS.body) throw new store.StoreError('That file is too long for one note.');
         if (S.notes.length >= store.LIMITS.notes) throw new store.StoreError('The note limit has been reached.');
         const n = store.createNote(text);
+        n.lang = type ? type.lang : '';
         S.notes.push(n);
         lastId = n.id;
         count++;
+        textNotes++;
       } catch (err) {
         if (!(err instanceof store.StoreError)) throw err;
         toast(`${file.name}: ${err.message}`, 'error');
@@ -3324,7 +4719,7 @@
     S.meta.clear();
     renderAll();
     if (lastId) openNote(lastId);
-    if (files.length === 1 && !files[0].name.toLowerCase().endsWith('.json')) toast(`Imported ${files[0].name}.`);
+    if (files.length === 1 && textNotes === 1) toast(`Imported ${files[0].name}.`);
   }
 
   // --------------------------------------------------------- linked files
@@ -3547,7 +4942,8 @@
       const sealing = S.sealing.get(note.id);
       if (sealing) await sealing; // a seal finishing later must not overwrite the file's version
       if (!noteById(note.id) || !note.cipher) throw new FL.FileLinkError('The note changed while the file was read.');
-      if (note.id === S.activeId && finishCurrentDialog) finishCurrentDialog(null); // it may show the old plaintext
+      // A sensitive dialog closes on any lock; another one only when it may show this note's old plaintext.
+      if (finishCurrentDialog && (dialogSensitive || note.id === S.activeId)) finishCurrentDialog(null);
       note.cipher = cipher;
       note.body = '';
       note.history = [];
@@ -3758,27 +5154,13 @@
     });
   }
 
-  /** Which format to save in: the only one for encrypted notes, else a choice that defaults to Markdown. */
-  async function chooseFormat(note, title) {
-    const formats = FL.formatsFor(note);
-    if (formats.length === 1) return formats[0];
-    const res = await showDialog({
-      title,
-      body: [h('p', null, 'Both formats hold the note text exactly. Markdown (.md) tells other apps the text uses Markdown.')],
-      actions: [
-        { label: 'Cancel', value: null },
-        { label: 'Text (.txt)', value: 'txt' },
-        { label: 'Markdown (.md)', submit: true, className: 'btn-primary' },
-      ],
-    });
-    if (res === true) return 'md';
-    return res === 'txt' ? 'txt' : null;
-  }
-
   function suggestedNameFor(note, format, copy) {
     const current = note.file && note.file.format === format ? note.file.name : null;
     if (!copy && current && current.length <= 120) return current;
-    return FL.suggestedFileName(copy ? `${titleOf(note)} copy` : titleOf(note), format);
+    const title = titleOf(note);
+    // ".env" or ".gitignore" as a title: keep the leading dot, so the host's dot-file rule gives ".env", not "env.env".
+    if (!copy && title.length > 1 && title[0] === '.' && FL.formatsFor(note).includes(title.slice(1).toLowerCase())) return title.toLowerCase();
+    return FL.suggestedFileName(copy ? `${title} copy` : title, format);
   }
 
   function reportFileError(err, prefix) {
@@ -3799,8 +5181,11 @@
     if (!platform.isDesktop || !note || !noteById(note.id) || files.hold.has(note.id)) return;
     await flushSeals();
     if (S.sealFailed.has(note.id)) { toast('The latest changes could not be encrypted, so they were not saved to a file. Press Ctrl+S to retry.', 'error'); return; }
-    const format = await chooseFormat(note, copy ? 'Save a copy as file' : 'Save as file');
-    if (!format || !noteById(note.id) || !FL.formatsFor(note).includes(format)) return;
+    // The host's dialog offers this type first, then every supported type; the reply says what the user picked.
+    // The type the note is linked to now comes first, when it still fits the note; else the language's own.
+    const linked = note.file && FL.formatsFor(note).includes(note.file.format) ? note.file.format : null;
+    const format = linked || store.defaultExtFor(note);
+    if (!noteById(note.id) || !FL.formatsFor(note).includes(format)) return;
     let relinkId = !copy && note.file ? note.file.linkId : null;
     files.hold.add(note.id);
     try {
@@ -3841,13 +5226,19 @@
       }
       if (!noteById(note.id) || !FL.formatsFor(note).includes(res.format)) { forgetHostLink(res.linkId); return; }
       note.file = { linkId: res.linkId, name: res.name, format: res.format };
+      // Saved under another type than offered: the note's mode follows it, unless the user set the language by hand.
+      const type = store.fileTypeOf(res.format);
+      const modeChanged = res.format !== format && !note.cipher && !langByHand.has(note.id) && !!type && type.lang !== note.lang;
+      if (modeChanged) note.lang = type.lang;
       files.tracker.confirm(note.id, text);
       files.outcome.set(note.id, 'written');
       setFileStatus(note.id, 'saved');
       persistNow();
+      if (modeChanged) refreshAfterLang(note);
       renderList();
       updateStatus();
-      toast(`Saved to ${res.name}. Every change now goes to this file too.`);
+      const now = note.lang === '' ? 'Markdown' : ((codeedit.language(note.lang) || {}).name || note.lang);
+      toast(`Saved to ${res.name}. Every change now goes to this file too.${modeChanged ? ` It is now a ${now} note.` : ''}`);
     } catch (err) {
       if (err instanceof FL.FileLinkError) toast(`Not saved to file: ${err.message}`, 'error');
       else reportFileError(err, 'Not saved to file');
@@ -4115,10 +5506,11 @@
     return t;
   }
 
-  function copyText(text) {
+  /** `fromEncrypted`: the text came from an encrypted note other than the open one, so the clipboard is cleared all the same. */
+  function copyText(text, fromEncrypted = false) {
     if (!navigator.clipboard) { toast('Copying is not available here. Select the text and press Ctrl+C.', 'error'); return; }
     navigator.clipboard.writeText(text).then(
-      () => { if (!noteSensitiveCopy()) toast('Copied to the clipboard.'); },
+      () => { if (!noteSensitiveCopy(fromEncrypted)) toast('Copied to the clipboard.'); },
       (err) => { console.error(err); toast('Copy failed. Select the text and press Ctrl+C.', 'error'); },
     );
   }
@@ -4132,9 +5524,10 @@
   const clip = { pending: false, timer: 0 };
 
   /** Call after any copy. Returns true when a clear was scheduled (and announced). */
-  function noteSensitiveCopy() {
+  function noteSensitiveCopy(force = false) {
     const note = active();
-    if (!S.settings.clearClipboard || !note || !note.cipher || isLocked(note)) return false;
+    if (!S.settings.clearClipboard) return false;
+    if (force !== true && (!note || !note.cipher || isLocked(note))) return false; // only a literal true forces (never an Event)
     const first = !clip.pending;
     clip.pending = true;
     clearTimeout(clip.timer);
@@ -4255,9 +5648,20 @@
     if (mod && !e.altKey && !e.shiftKey && k === 'b') { e.preventDefault(); toggleSidebar(); return; }
     if (mod && !e.altKey && !e.shiftKey && k === 'f') { e.preventDefault(); openFind(); return; }
     if (mod && !e.altKey && !e.shiftKey && k === 'h') { e.preventDefault(); openFind(true); return; }
-    if (e.key === 'F3' || (mod && !e.altKey && k === 'g')) { e.preventDefault(); findStep(e.shiftKey ? -1 : 1); return; }
+    if (e.key === 'F3') { e.preventDefault(); findStep(e.shiftKey ? -1 : 1); return; }
+    if (mod && !e.altKey && k === 'g') {
+      // Same rule as in the editor: Find next while the find bar is open, otherwise Go to line, wherever focus is.
+      e.preventDefault();
+      if (!els.findbar.hidden || e.shiftKey) findStep(e.shiftKey ? -1 : 1);
+      else if (isEditable(active()) && !els.editor.hidden) gotoLineDialog();
+      return;
+    }
     if (e.key === 'F1') { e.preventDefault(); showShortcuts(); return; }
 
+    if (e.altKey && !mod && !e.shiftKey && e.key === 'F10') {
+      if (focusSeltools()) e.preventDefault();
+      return;
+    }
     if (e.altKey && !mod && !e.shiftKey) {
       const actions = { KeyN: newNote, KeyT: openDaily, KeyP: togglePin, KeyL: () => lockAll(), KeyZ: toggleZen, KeyI: showIocs };
       const fn = actions[e.code];
@@ -4271,15 +5675,21 @@
     ed.addEventListener('keydown', onEditorKeydown);
     ed.addEventListener('paste', onEditorPaste);
     els.stLang.addEventListener('click', chooseLanguage);
+    wireSeltools();
     ['keyup', 'mouseup', 'select', 'focus'].forEach((t) => ed.addEventListener(t, scheduleStatus));
     ed.addEventListener('blur', () => setTimeout(() => { if (document.activeElement !== ed) closeSlash(); }, 120));
     ed.addEventListener('mousedown', () => { arrowMemo = null; closeSlash(); });
     ed.addEventListener('input', onGutterInput);
+    ed.addEventListener('beforeinput', onHlBeforeInput);
+    ed.addEventListener('input', onHlInput); // after onGutterInput: the layer reuses the gutter's line count
+    ['keyup', 'mouseup', 'select', 'focus'].forEach((t) => ed.addEventListener(t, scheduleBracket));
     ['keyup', 'mouseup', 'select', 'focus'].forEach((t) => ed.addEventListener(t, onGutterCaret));
-    document.addEventListener('selectionchange', () => { if (document.activeElement === ed) onGutterCaret(); });
-    if (typeof ResizeObserver === 'function') new ResizeObserver(() => { if (g.on) drawGutter(); }).observe(ed);
+    document.addEventListener('selectionchange', () => { if (document.activeElement === ed) { onGutterCaret(); scheduleBracket(); } });
+    if (typeof ResizeObserver === 'function') new ResizeObserver(() => { if (g.on) drawGutter(); hlRefresh(); }).observe(ed);
     ed.addEventListener('scroll', () => {
       scheduleGutterDraw();
+      onHlScroll();
+      if (performance.now() > selQuietUntil) hideSeltools();
       if (S.slash.open) renderSlash();
       if (S.settings.view !== 'split') return;
       const max = ed.scrollHeight - ed.clientHeight;
@@ -4486,8 +5896,8 @@
     });
     window.addEventListener('beforeprint', prepareForPrint);
     window.addEventListener('afterprint', afterPrint);
-    document.addEventListener('copy', noteSensitiveCopy);
-    document.addEventListener('cut', noteSensitiveCopy);
+    document.addEventListener('copy', () => { noteSensitiveCopy(); });
+    document.addEventListener('cut', () => { noteSensitiveCopy(); });
     window.addEventListener('focus', () => { if (clip.pending && !clip.timer) clearClipboardNow(); });
     if (!platform.isDesktop) {
       window.addEventListener('storage', (e) => {

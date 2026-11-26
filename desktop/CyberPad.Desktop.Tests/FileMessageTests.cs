@@ -34,6 +34,44 @@ public class FileMessageTests
     }
 
     [Fact]
+    public async Task SaveAsFile_RepliesTheActualTypeOfTheChosenFile()
+    {
+        var (d, f, _) = Make();
+        f.SaveAsResult = new FileLinkResult(L1, "x.txt", LinkFormat.Txt);
+        var r = Parse(await d.HandleAsync(Src, """{"type":"saveAsFile","id":"a","format":"py","suggestedName":"script","text":"t"}"""));
+        Assert.Equal("py", f.SavedAs!.Value.Format.Wire);
+        Assert.Equal("script.py", f.SavedAs!.Value.Name);
+        Assert.Equal("fileLinked", r.GetProperty("type").GetString());
+        Assert.Equal("x.txt", r.GetProperty("name").GetString());
+        Assert.Equal("txt", r.GetProperty("format").GetString());
+    }
+
+    [Fact]
+    public async Task OpenFile_RepliesTheCanonicalWire()
+    {
+        var (d, f, _) = Make();
+        Assert.True(LinkFormat.TryParse("jsonl", out var jsonl));
+        f.OpenResult = new FileOpenResult(L1, "events.JSONL", jsonl, "{}", false);
+        var r = Parse(await d.HandleAsync(Src, """{"type":"openFile","id":"a"}"""));
+        Assert.Equal("jsonl", r.GetProperty("format").GetString());
+        Assert.Equal("events.JSONL", r.GetProperty("name").GetString());
+    }
+
+    [Theory]
+    [InlineData("PY")]
+    [InlineData(" py")]
+    [InlineData("py ")]
+    [InlineData("exe")]
+    public async Task RelinkFile_NonCanonicalFormat_IsRejectedAsUnknownFormat(string format)
+    {
+        var (d, f, _) = Make();
+        var r = Parse(await d.HandleAsync(Src, $$"""{"type":"relinkFile","id":"a","linkId":"{{L1}}","format":"{{format}}","suggestedName":"n","text":"t"}"""));
+        Assert.Equal("rejected", r.GetProperty("type").GetString());
+        Assert.Equal("unknown format", r.GetProperty("reason").GetString());
+        Assert.Equal(0, f.FileCalls);
+    }
+
+    [Fact]
     public async Task SaveAsFile_Cancelled_RepliesFileCancelled()
     {
         var (d, f, _) = Make();
@@ -46,7 +84,7 @@ public class FileMessageTests
     public async Task RelinkFile_PassesLinkId()
     {
         var (d, f, _) = Make();
-        f.SaveAsResult = new FileLinkResult(L1, "n.cpnote");
+        f.SaveAsResult = new FileLinkResult(L1, "n.cpnote", LinkFormat.CpNote);
         var r = Parse(await d.HandleAsync(Src, $$"""{"type":"relinkFile","id":"a","linkId":"{{L1}}","format":"cpnote","suggestedName":"n","text":"t"}"""));
         Assert.Equal((LinkFormat.CpNote, "n.cpnote", "t", (string?)L1), f.SavedAs);
         Assert.Equal("fileLinked", r.GetProperty("type").GetString());
@@ -236,7 +274,7 @@ public class FileMessageTests
     [InlineData("""{"type":"writeFile","id":"a","linkId":"0123456789abcdef0123456789abcdef","text":"t","force":"no"}""")]
     [InlineData("""{"type":"writeFile","id":"a","linkId":"0123456789ABCDEF0123456789abcdef","text":"t","force":false}""")]
     [InlineData("""{"type":"writeFile","id":"a","linkId":"0123456789abcdef0123456789abcdef","text":5,"force":false}""")]
-    [InlineData("""{"type":"saveAsFile","id":"a","format":"html","suggestedName":"x","text":"t"}""")]
+    [InlineData("""{"type":"saveAsFile","id":"a","format":"exe","suggestedName":"x","text":"t"}""")]
     [InlineData("""{"type":"saveAsFile","id":"a","format":"TXT","suggestedName":"x","text":"t"}""")]
     [InlineData("""{"type":"saveAsFile","id":"a","format":"txt","suggestedName":"x","text":"t","path":"C:\\x"}""")]
     [InlineData("""{"type":"checkFiles","id":"a","linkIds":["0123456789abcdef0123456789abcdef","0123456789abcdef0123456789abcdef"]}""")]

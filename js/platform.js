@@ -18,7 +18,14 @@
   const MAX_FILE_TEXT_CHARS = 4 * 1024 * 1024;
   const MAX_SUGGESTED_NAME_CHARS = 120;
   const MAX_LINK_IDS = 2000;
-  const FILE_FORMATS = ['txt', 'md', 'cpnote'];
+  // The file types the host opens and saves: the same table as store.FILE_FORMATS (a test pins the two copies).
+  const FILE_FORMATS = Object.freeze([
+    'txt', 'md', 'markdown', 'cpnote', 'py', 'pyw', 'js', 'mjs', 'cjs', 'jsx', 'ts', 'tsx', 'sh', 'bash',
+    'zsh', 'ps1', 'psm1', 'psd1', 'bat', 'cmd', 'c', 'h', 'cpp', 'cc', 'cxx', 'hpp', 'cs', 'java', 'go',
+    'rs', 'rb', 'php', 'lua', 'pl', 'sql', 'html', 'htm', 'xml', 'xsd', 'xsl', 'svg', 'css', 'scss', 'json',
+    'jsonl', 'yaml', 'yml', 'toml', 'ini', 'cfg', 'conf', 'properties', 'env', 'log', 'csv', 'tsv', 'diff',
+    'patch', 'nfo', 'lst', 'rules', 'yar', 'yara', 'nse', 'asm', 's', 'tex', 'rst', 'gitignore',
+  ]);
   const FILE_STATUSES = ['ok', 'changed', 'missing', 'unknown'];
   const LINK_ID_RE = /^[0-9a-f]{32}$/;
   // eslint-disable-next-line no-control-regex
@@ -380,5 +387,5 @@
     };
   }
 
-  return { createPlatform, PlatformError };
+  return { createPlatform, PlatformError, FILE_FORMATS };
 });

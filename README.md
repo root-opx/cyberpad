@@ -28,39 +28,98 @@ Then open http://localhost:8787.
 - `Ctrl+Enter` turns a line into a task or ticks it. You can also tick tasks in the preview.
 - Pasting a URL over selected text makes a Markdown link.
 - Select text that contains numbers and the status bar shows their sum and average.
-- Typing `->`, `<-`, `<->` or `=>` gives `→`, `←`, `↔` or `⇒`. It never happens inside a fenced code block or inline code, or for pasted text. Backspace or `Ctrl+Z` right after a replacement puts back what was there before that keystroke, so after `<->` it gives `←>`. Find and replace never makes arrows. Turn it off in the palette under View (**Turn off arrow replacement**).
+- Typing `->`, `<-`, `<->` or `=>` gives `→`, `←`, `↔` or `⇒`. It never happens inside a fenced code block or inline code, or for pasted text. Backspace or `Ctrl+Z` right after a replacement puts back what was there before that keystroke, so after `<->` it gives `←>`. Find and replace never makes arrows. Turn it off in the palette under Settings (**Turn off arrow replacement**).
 
 **Scripts**
 - **Script mode** is set per note. In the palette, Note section, **Script mode: choose a language…** opens a list of languages and **Back to a Markdown note** returns. The status bar shows the language and opens the same list. Switching modes never changes the text.
-- Languages and what one indent is:
+- 24 languages and what one indent is. **Plain text** is a note that is not Markdown and has no colouring: no tags, no preview rendering, numbered lines, and long lines scroll sideways.
 
   | Language | One indent |
   | --- | --- |
   | Bash | 2 spaces |
+  | Batch | 4 spaces |
   | C | 4 spaces |
   | C++ | 4 spaces |
   | C# | 4 spaces |
   | CSS | 2 spaces |
   | Go | 1 tab |
   | HTML | 2 spaces |
+  | INI and TOML | 2 spaces |
   | Java | 4 spaces |
   | JavaScript | 2 spaces |
   | JSON | 2 spaces |
+  | Lua | 2 spaces |
+  | Perl | 4 spaces |
+  | PHP | 4 spaces |
+  | Plain text | 4 spaces |
   | PowerShell | 4 spaces |
   | Python | 4 spaces |
+  | Ruby | 2 spaces |
   | Rust | 4 spaces |
   | SQL | 4 spaces |
   | TypeScript | 2 spaces |
+  | XML | 2 spaces |
   | YAML | 2 spaces |
 
 - `Tab` with no selection inserts spaces up to the next indent stop (a tab in Go); with a whole line or several lines selected it indents them. `Shift+Tab` removes one level from the current line or from every selected line.
 - `Enter` keeps the indentation and adds one level after the language's block openers: `:` in Python, `{` in the C family, `then` or `do` in Bash, `|` in YAML, and so on. This also works when the line ends in a comment. `Enter` between a pair of brackets puts the closing bracket on its own line, but only when the bracket before the caret is one of the language's block openers (so not in Python, YAML or HTML).
 - A closing bracket typed on an empty indented line steps back one level. `Backspace` steps back one level only when everything to the left of the caret on the line is spaces; in Go it deletes one tab as usual. Each of these is one undo step. `Esc`, then `Tab` still leaves the editor.
 - Long lines scroll sideways instead of wrapping.
-- The preview shows the note as one code block with the language name and a Copy button. **Export note as PDF** prints that block, and **Export note as Markdown** writes the code in a fenced block. Linked files and exports keep the `.txt`, `.md` and `.cpnote` extensions.
-- Switched off in a script note: arrow replacement, list continuation, `Ctrl+Enter` tasks, `/` quick inserts, the inline calculator, URL-paste links, and `#tags`, `[[links]]` and "Go to heading", so a `# comment` is not a tag or a heading. The secret scanner stays on. There is no syntax colouring.
+- The preview shows the note as one code block with the language name and a Copy button. **Export note as PDF** prints that block, and **Export note as Markdown** writes the code in a fenced block. In the desktop app, **Save as file** gives a script note its language's extension (see File types below); in the browser, **Export note as file** downloads it the same way.
+- Switched off in a script note: arrow replacement, list continuation, `Ctrl+Enter` tasks, `/` quick inserts, the inline calculator, URL-paste links, and `#tags`, `[[links]]` and "Go to heading", so a `# comment` is not a tag or a heading. The secret scanner stays on.
 - **The language of a script note is not encrypted, even for encrypted notes.**
-- **Line numbers** sit in a gutter at the left of the editor, and the caret's line is brighter. **Line numbers: script notes only (change)** in the palette's View section cycles script notes only (the default), every note, off; the title names the current state. In a Markdown note a wrapped line gets one number, at its first row. Numbers are hidden in a wrapped note of more than 3,000 lines or 200,000 characters.
+- **Syntax colouring** draws a script note in the theme's own colours: comments dim, strings, attribute names and variables cool, keywords and tags hot, numbers, constants and section headings warn, the rest in the normal text colour. It covers comments, strings, numbers, keywords and constants in every language except Plain text, tags and attributes in HTML and XML, selectors and properties in CSS, keys in JSON, YAML and INI, and sections in INI. Turn it off in the palette under Settings (**Turn off syntax colouring**). A note over 200,000 lines, or a line over 20,000 characters, is shown without colour. The colouring is a lightweight tokenizer, not a parser, so some things are not recognised: for example JavaScript regular expressions, shell heredocs and code inside template strings.
+- **Matching bracket:** with the caret next to `(`, `)`, `[`, `]`, `{` or `}`, both brackets of the pair get an outline. Brackets inside strings and comments are ignored, and the search stops after 5,000 lines in each direction.
+- **Comment or uncomment** (`Ctrl+/`, script notes): toggles the language's line comment on the current line or every selected line. HTML, XML and CSS wrap or unwrap the selection in a block comment instead; JSON and Plain text have no comment, so nothing happens.
+- **Duplicate line** (`Ctrl+Shift+D`) copies the current line, or the selected lines, below. **Move line** (`Alt+↑` and `Alt+↓`) moves them up or down. Both work in every kind of note.
+- **Go to line** (`Ctrl+G`, every kind of note) asks for a line number from 1 to the note's last line. While the find bar is open, `Ctrl+G` finds the next match instead.
+- Each of these is one undo step, and each is a command in the palette: Edit section (**Go to line…**, **Comment or uncomment lines**, **Duplicate line**, **Move line up**, **Move line down**) and, for colouring, Settings. They never run code: CyberPad does not execute what you write.
+- **Line numbers** sit in a gutter at the left of the editor, and the caret's line is brighter. **Line numbers: script notes only (change)** in the palette's Settings section cycles script notes only (the default), every note, off; the title names the current state. In a Markdown note a wrapped line gets one number, at its first row. Numbers are hidden in a wrapped note of more than 3,000 lines or 200,000 characters.
+
+**Selection toolbar**
+- Select text in the editor and a small toolbar appears above the selection (below it when there is no room, and as a full-width row above the status bar on a phone). It appears when you release the mouse button or a selection key, not while you drag. It goes away when the selection collapses, when you type, scroll or press `Esc`, and when a dialog opens. It never takes focus by itself.
+- **Markdown notes:** **B** (bold), **I** (italic), **S** (strikethrough), **Mark** (highlight, `==text==`, which the preview shows as marked text), **Code**, **Link**, **Quote**, **List** (bulleted) and **Decode…**, which opens the CTF decode dialog on the selection. **Script notes:** **Comment** (only for languages that have a comment), **Indent**, **Outdent** and **Decode…**.
+- Each button toggles. It wraps the selection and removes the wrapping if it is already there; **Link** turns the selection into `[text](url)` and selects `url`; **Quote** and **List** add or remove `> ` or `- ` on every selected line.
+- On several lines each non-blank line is formatted on its own, after its list, quote or heading marker, and fenced code blocks, rules and table separator rows are skipped. **Code** over several lines makes a fenced block.
+- `Alt+F10` moves focus to the toolbar while it shows. The arrow keys, `Home` and `End` move between buttons, and `Esc` or `Tab` returns to the editor with the selection kept. The Markdown buttons are also in the palette's Format section (**Bold**, **Italic**, **Strikethrough**, **Highlight**, **Code**, **Link**, **Quote**, **Bulleted list**). Turn the toolbar off in the palette under Settings (**Turn off the selection toolbar**).
+
+**File types**
+- CyberPad opens and saves a fixed list of 69 text file types. Opening a file picks the mode from its extension. Any other extension, a file with no extension, and anything that is not text is refused.
+
+  | Group | Extensions | Opens as |
+  | --- | --- | --- |
+  | Notes | `.txt`, `.md`, `.markdown` | Markdown note |
+  | Encrypted | `.cpnote` | encrypted note |
+  | Python | `.py`, `.pyw` | Python |
+  | JavaScript | `.js`, `.mjs`, `.cjs`, `.jsx` | JavaScript |
+  | TypeScript | `.ts`, `.tsx` | TypeScript |
+  | Shell | `.sh`, `.bash`, `.zsh` | Bash |
+  | PowerShell | `.ps1`, `.psm1`, `.psd1` | PowerShell |
+  | Batch | `.bat`, `.cmd` | Batch |
+  | C | `.c`, `.h` | C |
+  | C++ | `.cpp`, `.cc`, `.cxx`, `.hpp` | C++ |
+  | C# | `.cs` | C# |
+  | Java | `.java` | Java |
+  | Go | `.go` | Go |
+  | Rust | `.rs` | Rust |
+  | Ruby | `.rb` | Ruby |
+  | PHP | `.php` | PHP |
+  | Lua | `.lua` | Lua |
+  | Perl | `.pl` | Perl |
+  | SQL | `.sql` | SQL |
+  | HTML | `.html`, `.htm` | HTML |
+  | XML | `.xml`, `.xsd`, `.xsl`, `.svg` | XML |
+  | CSS | `.css`, `.scss` | CSS |
+  | JSON | `.json`, `.jsonl` | JSON |
+  | YAML | `.yaml`, `.yml` | YAML |
+  | TOML and INI | `.toml`, `.ini`, `.cfg`, `.conf`, `.properties`, `.env` | INI and TOML |
+  | Plain text | `.log`, `.csv`, `.tsv`, `.diff`, `.patch`, `.nfo`, `.lst`, `.rules`, `.yar`, `.yara`, `.nse`, `.asm`, `.s`, `.tex`, `.rst`, `.gitignore` | Plain text |
+
+- The text rules are the same for every type: UTF-8 (with or without BOM) or UTF-16 with a BOM, no NUL byte, at most 4 MB on disk and 1,000,000 characters of text. A file's CRLF line endings are kept when you save it.
+- **Save as file** (desktop) offers the note's own type first: `.md` for a Markdown note, its language's first extension for a script note (`.py` for Python, `.sh` for Bash, and so on), `.txt` for a Plain text note, `.cpnote` for an encrypted note. Then comes **All supported types**. The note follows the type you pick: save a Python note as `.txt` and it becomes a Markdown note, unless you chose its language yourself. A note you save under a script or web type (such as `.bat`, `.ps1` or `.html`) is only written to the file you name in the Save dialog; CyberPad never runs it.
+- `.cpnote` is the only type for an encrypted note: a plain note cannot be saved as `.cpnote`, and an encrypted note cannot be saved as anything else.
+- **Open with:** the installer registers CyberPad only for `.md`, `.txt` and `.cpnote`. Every other type opens through **Open file**, the command line, or by dropping it on the window (which imports it as a note that is not linked to the file).
+- **Browser version:** the file picker and the drop zone import the same types except `.cpnote`, up to 2 MB each, and a backup `.json` as before; a `.json` file that is not a CyberPad backup becomes a JSON note. **Export note as file** (palette, File section, for script notes) downloads the note with its language's extension.
 
 **Organising**
 - `[[Note title]]` links notes together. Clicking a missing link creates the note, and each note lists its backlinks.
@@ -72,7 +131,8 @@ Then open http://localhost:8787.
 
 **Command palette (`Ctrl+K`)**
 - Runs every command and jumps to any note. Type `@` to jump to a heading in the current note.
-- Commands are grouped in sections (Note, File, View, Insert, Text, Tools, Vault, Security) listed beside the commands. `Tab` moves to the next section and `Shift+Tab` back, and typing searches all of them.
+- Commands are grouped in 13 sections, in this order: Recent notes, Note, File, Edit, Format, Text, Insert, View, Settings, Tools, CTF, Vault, Security. `Tab` moves to the next section and `Shift+Tab` back, and typing searches all of them.
+- Edit, Format and Settings are new. **Find and replace** moved from View to Edit, next to **Go to line…**, **Comment or uncomment lines**, **Duplicate line** and **Move line up** and **down**. Format holds the Markdown formatting commands. Settings holds the themes and the switches that used to sit in View (CRT, typing sounds, arrow replacement, line numbers, the boot screen), plus **Turn off syntax colouring** and **Turn off the selection toolbar**. View keeps the layout, note list, Zen mode, shortcuts and About.
 - Text transforms on the selection, or on the whole note if nothing is selected: case changes, sort, reverse, dedupe, trim, number lines, Base64, URL encode/decode, and JSON format/minify.
 - 25-minute focus timer and 5-minute break timer.
 
@@ -101,6 +161,23 @@ Then open http://localhost:8787.
 - `/ioc` inserts an IOC tracking table, `/timeline` an incident timeline table that starts with the current UTC time, and `/utc` a UTC timestamp such as `2026-11-23 14:05:12 UTC`.
 - The same templates are in the palette under Insert. Block templates always start on a new line.
 
+**CTF** (palette group "CTF")
+- **New CTF challenge…** asks for an event, a challenge name, a category and the points, then makes a Markdown note from the challenge template in a folder named after the event (the open note's folder is suggested). Categories: web, pwn, crypto, reversing, forensics, stego, osint, misc, mobile, hardware.
+- The challenge template has Event, Category, Points, Status (`unsolved`) and Flag lines, then the headings Description, Files and endpoints, Recon, Solution, Solve script and Notes. **Insert challenge template** (`/ctf`) and **Insert writeup template** (`/writeup`) add the templates to a Markdown note. The writeup template has the event, date and team, a summary, a results table (challenge, category, points, status), and for each challenge Summary, Steps, Flag, Lessons learned and Tools used.
+- **Decode or encode…** opens a dialog with the input (the selection, or typed), a codec list, **Decode** and **Encode** buttons, the output, and **Copy**, **Replace selection** (when there is a selection) and **Insert below**. Codecs, in the groups the list shows:
+  - Base: Base64, Base64 (URL-safe), Base32, Base58, Ascii85, Z85.
+  - Bytes: Hex, Binary, Octal bytes, Decimal bytes.
+  - Text: URL encoding, URL (form, + as space), HTML entities, Unicode escapes.
+  - Ciphers: ROT13, ROT47, Atbash, Caesar (shift 1 to 25), Vigenère (key of letters), Rail fence (2 to 10 rails), XOR (a key as text or hex; decoding reads hex or Base64).
+  - Other: Reverse text, Swap case, Morse code.
+  - **Caesar brute force** lists all 25 shifts. **XOR brute force** lists the ten most readable single-byte keys.
+  - Input is limited to 100,000 characters and output to 1,000,000; the brute-force lists show at most 30 results of 2,000 characters each. Bytes that are not valid UTF-8 are shown as hex. A bad input gives a message, never an error.
+- **Try common decodings** runs the decoders on the selection, or on the cursor's line if nothing is selected, and lists every result that reads as text, best first. It tries up to three layers (for example hex, then Base64), also tries the ciphers, Caesar shifts and single-byte XOR, and shows the route taken (`Base64 → Hex`) and a score for each result. A result with a flag in it comes first. The search is bounded, and a very short result from a cipher has to look almost certain to be listed, so very short words may not be found.
+- **Find flags in this note** lists every flag with how it was found, a **Line** button that jumps to it and a **Copy** button. **Find flags in all notes** does the same across every note that is not locked and shows the first 200 flags; locked notes are skipped and the dialog says how many.
+- A flag is `prefix{...}` with 1 to 200 characters between the braces (no braces or line breaks), the prefix matched without regard to case and not part of a longer word. The default prefixes are `flag`, `ctf`, `HTB`, `picoCTF`, `THM` and `DUCTF`. The finder looks in plain text, in reversed text, and inside Base64, Base32 and hex runs of 12 or more characters. It reports up to 200 flags per search. **Flag formats…** edits the prefix list, one per line: letters, digits and underscores, up to 20 characters each, at most 30 prefixes, with **Reset to defaults**. There is no custom pattern or regular expression.
+- **Build CTF report from this folder** (for a note that is in a folder) creates a new Markdown note, `CTF report: <folder>`, in that folder. It holds a header, the line `Generated by CyberPad CTF report.`, the date, a results table (challenge, category, points, status, flag found), the totals, then the text of every challenge note in the folder (a note with a `- Category:` line from the template) with its headings moved down one level, and a Solve scripts part with every script note in the folder written in a programming language, as fenced code blocks. Plain text, INI, JSON, YAML, XML, HTML and CSS notes are not copied in. An earlier report in the folder is never folded into a new one, and each run makes a new report. The report stops before it would pass the 1,000,000-character note limit and lists the notes left out.
+- **Encrypted notes are never included in a report, and the report does not list their titles.** It only says how many were left out.
+
 **Look and feel**
 - Six theme choices, picked from the menu in the title bar or the palette: System, Light, Dark, Neon, Amber, and Terminal green (classic monochrome green screen). Neon is the default. System follows your operating system's light or dark setting: Light in light mode, Dark in dark mode, and it switches live when the setting changes.
 - The app starts in the colours of the theme that was last on screen, with no flash of another theme. The window and title bar use it too in the desktop app.
@@ -111,9 +188,9 @@ Then open http://localhost:8787.
 
 **Files**
 - **Export note as PDF** opens the print dialog; choose Save as PDF there. The PDF of an encrypted note is not encrypted, so the app asks you to confirm first.
-- Export a note as `.md`, or export a JSON backup of every note. Encrypted notes stay encrypted in the backup, but the others are plain text.
+- Export a note as `.md` (or, for a script note in the browser, as a file with its language's extension), or export a JSON backup of every note. Encrypted notes stay encrypted in the backup, but the others are plain text.
 - **Export encrypted backup** seals the whole backup into one file with AES-256-GCM, under a passphrase you choose (PBKDF2-SHA256 with 600,000 iterations, a fresh salt and IV each time). Notes that were already encrypted keep their own passphrase inside it. Import the file like any other backup and the app asks for the passphrase.
-- Import `.txt`, `.md`, or backup `.json` files with the file picker or by dropping them on the window.
+- Import any of the file types above (except `.cpnote` in the browser), or a backup `.json`, with the file picker or by dropping them on the window.
 
 ## Shortcuts
 
@@ -133,6 +210,11 @@ Then open http://localhost:8787.
 | `Ctrl+Z` in the note list | Undo the last delete |
 | `Alt+I` | Extract IOCs |
 | `Tab` / `Shift+Tab` | Indent / outdent in a script note |
+| `Ctrl+/` | Comment or uncomment lines (script notes) |
+| `Ctrl+Shift+D` | Duplicate the line or selected lines |
+| `Alt+↑` / `Alt+↓` | Move the line or selected lines |
+| `Ctrl+G` | Go to line (next match while the find bar is open) |
+| `Alt+F10` | Format toolbar (when text is selected) |
 | `Esc`, then `Tab` | Move focus out of the editor |
 | `F1` | All shortcuts |
 
@@ -175,14 +257,14 @@ The main app is unchanged: it makes no registry changes itself and has no code t
 
 **Your own files**
 
-A note can be linked to a `.txt`, `.md` or `.cpnote` file you choose. The note stays in CyberPad too; the file is a second copy that CyberPad keeps in step.
+A note can be linked to a file you choose, of any type in the File types table above. The note stays in CyberPad too; the file is a second copy that CyberPad keeps in step.
 
-- **Save as file** (Ctrl+Shift+S, or the palette) asks where to put a new file and links the note to it. Plain notes default to `.md`; new files are UTF-8 without BOM, with LF line endings.
+- **Save as file** (Ctrl+Shift+S, or the palette) asks where to put a new file and links the note to it. The dialog offers the note's own type first (`.md` for a Markdown note, its language's extension for a script note, `.cpnote` for an encrypted note), then **All supported types**; the note follows the type you pick, and an encrypted note can only be saved as `.cpnote`. New files are UTF-8 without BOM, with LF line endings.
 - **Save** (Ctrl+S) writes the note to its linked file now. Linked notes are also written as you type.
-- **Open file** (Ctrl+O) opens a file as a note, linked to it. Opening a file that is already linked jumps to its note.
-- **Open with:** if you used the installer, CyberPad is registered for **Open with** on `.txt`, `.md` and `.cpnote` files. Right-click such a file in Explorer and choose **Open with**: CyberPad may be listed there directly or under **Choose another app** (which of the two lists Windows uses has not been confirmed on a real machine). With the portable zip, pick `CyberPad.exe` through **Choose another app** the first time. To make it the default, choose **Open with**, **Choose another app**, pick `CyberPad.exe` and tick **Always**. The app never makes registry changes itself; the installer registers CyberPad in the **Open with** list (the two keys above), and with the portable zip you add it by hand as described here. You can also run `CyberPad.exe "C:\path\file.md"`. A relative path is resolved against the folder you ran it from. If CyberPad is already running, the file opens in that window; if it cannot be reached within 3 seconds you get "CyberPad is already running but not responding." Any other file type is refused with "CyberPad can only open .txt, .md and .cpnote files."
-- **Formats:** CyberPad reads UTF-8 (with or without BOM) and UTF-16 with a BOM, keeps a file's CRLF line endings when you save it, and refuses anything else, or text containing a NUL, with "This file isn't UTF-8 or UTF-16 text." Files can be up to 4 MB on disk and, for `.txt` and `.md`, at most 1,000,000 characters of text.
-- **Encrypted notes** save as `.cpnote`: a small JSON file holding the same encrypted envelope the note already uses, so it stays ciphertext on disk. Encrypting a note that is linked to a `.txt` or `.md` file removes that link (the plain file is left alone, and you are told). A `.cpnote` file opens as an encrypted note and asks for its passphrase.
+- **Open file** (Ctrl+O) opens a file as a note, linked to it, in the mode its extension gives. Opening a file that is already linked jumps to its note.
+- **Open with:** if you used the installer, CyberPad is registered for **Open with** on `.txt`, `.md` and `.cpnote` files only; the other types open through **Open file**, the command line, or drag and drop. Right-click such a file in Explorer and choose **Open with**: CyberPad may be listed there directly or under **Choose another app** (which of the two lists Windows uses has not been confirmed on a real machine). With the portable zip, pick `CyberPad.exe` through **Choose another app** the first time. To make it the default, choose **Open with**, **Choose another app**, pick `CyberPad.exe` and tick **Always**. The app never makes registry changes itself; the installer registers CyberPad in the **Open with** list (the two keys above), and with the portable zip you add it by hand as described here. You can also run `CyberPad.exe "C:\path\file.md"`. A relative path is resolved against the folder you ran it from. If CyberPad is already running, the file opens in that window; if it cannot be reached within 3 seconds you get "CyberPad is already running but not responding." A file type that is not on the list is refused with "CyberPad cannot open that file type."
+- **Formats:** CyberPad reads UTF-8 (with or without BOM) and UTF-16 with a BOM, keeps a file's CRLF line endings when you save it, and refuses anything else, or text containing a NUL, with "This file isn't UTF-8 or UTF-16 text." Files can be up to 4 MB on disk and at most 1,000,000 characters of text, whatever their type.
+- **Encrypted notes** save as `.cpnote` only: a small JSON file holding the same encrypted envelope the note already uses, so it stays ciphertext on disk. Encrypting a note that is linked to any other type of file removes that link (the plain file is left alone, and you are told). A `.cpnote` file opens as an encrypted note and asks for its passphrase. A link cannot switch a note between an encrypted and a plain file: unlink it first.
 - **Changed elsewhere:** CyberPad checks linked files when the window regains focus. If you have no unsaved changes and have not typed in the note for two seconds, the new version loads quietly; otherwise a bar offers **Keep mine** or **Use the file's version**. A file edited while CyberPad was closed is reloaded on start if the note had no changes since it was last saved to that file; otherwise the bar asks.
 - **Missing file:** the note shows "File not found" and keeps its text. You can Save as to a new file or unlink it. CyberPad never deletes your files and never recreates one on its own. If the file comes back unchanged, saving to it resumes on its own.
 - A file can be linked to one note only ("That file is already linked to another note."). Duplicating a note drops the link, and backups never include it.
@@ -226,7 +308,7 @@ They live in `%LOCALAPPDATA%\CyberPad` (paste it into Explorer's address bar). T
 - Strict CSP: `default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'none'`, with no inline scripts or styles.
 - The calculator uses its own bounded parser and never calls `eval` or `Function`.
 - Stored data and imports are validated field by field. Note sizes, counts, and history depth are capped; bad records are dropped instead of being repaired.
-- Imports must use an allowed extension, have no risky double extension, stay within the size limit, and decode as strict UTF-8 with no binary bytes.
+- Imports must use an extension from the fixed file-type list, have no risky double extension, stay within the size limit, and decode as strict UTF-8 with no binary bytes.
 - The secret scanner and IOC extractor use bounded regular expressions with capped result counts. Finding previews are masked, and secrets never go into storage outside the note itself, logs, or the URL.
 - CSV exports prefix cells that start with `=`, `+`, `-`, `@`, tab, or carriage return, so a malicious indicator cannot run as a spreadsheet formula.
 - CVSS vectors are checked against an allow-list of metrics and values. Unknown metrics, duplicates, bad values, missing base metrics, and vectors over 300 characters are rejected with a specific message, never repaired.
@@ -235,7 +317,10 @@ They live in `%LOCALAPPDATA%\CyberPad` (paste it into Explorer's address bar). T
 - The subnet calculator rejects ambiguous input instead of guessing: no leading zeros in IPv4 octets (which some tools read as octal), no hex or short IPv4 forms, only contiguous netmasks, and no IPv6 zone IDs.
 - MD5 is not offered: Web Crypto does not provide it and the app does not ship its own crypto. SHA-1 is offered only for matching against existing threat intel.
 - Folder names are validated: 1 to 40 characters, no `/`, `\`, control characters, or invisible and text-direction characters, and at most 100 folders. This also refuses emoji built with a joiner (such as family or profession emoji) and the zero-width non-joiner some scripts use. They are stored in plain text, also for encrypted notes.
-- The language of a script note is stored in plain text, like the folder name, also for encrypted notes. The script preview and the line-number measuring element are built from text nodes and are cleared when a note locks.
+- The language of a script note is stored in plain text, like the folder name, also for encrypted notes. The script preview is built from text nodes and is cleared when a note locks.
+- The wider file-type list is still a fixed allow-list, checked on both sides (the page and the host) with the same text and size rules. The host accepts nothing off the list, and a test keeps the two copies the same. CyberPad can now write script and web file types (such as `.bat`, `.ps1` and `.html`), but only to a path you choose in the Save dialog, and it never runs them. Relinking cannot switch a note between an encrypted and a plain file.
+- The syntax colouring layer and the selection toolbar are built from text nodes, never from markup. The colouring layer holds note text, so it is emptied when a note locks, as is the line-number measuring element. Decoded output and flags are always shown as text and never interpreted. There is no user-supplied regular expression anywhere in the CTF tools: flag formats are plain prefixes. The decoders, the decoding search and the flag finder have limits on input size, output size and the number of steps, so hostile text cannot freeze the page.
+- **Encrypted notes are never copied into a CTF report, and the report does not list their titles, only how many were left out.** A dialog that shows decoded text or flags from an encrypted note closes when the note locks, and copying from it clears the clipboard like copying from the note.
 - `appearance.json` is read with a size cap and accepts only the five theme names; an unreadable file falls back to Neon. It holds a theme name and nothing else, as does `cyberpad.theme` in the browser.
 - The start-up theme script is an external file (`js/early-theme.js`) allowed by the existing CSP, so there is still no inline script.
 - The credentials note is sealed before it joins the note list, and cancelling the passphrase prompt leaves nothing behind.
@@ -246,7 +331,7 @@ They live in `%LOCALAPPDATA%\CyberPad` (paste it into Explorer's address bar). T
 ### Desktop app
 
 - **Narrow host bridge.** The page can send only a fixed list of message types: load, save, quarantine, export, flushed, flushFailed, theme and the linked-file messages (save as, relink, open, write, read, check, unlink, reveal, prune). Each is checked for the exact origin (`https://cyberpad.example/`), a known `type`, exact field types, no extra fields, and size limits (64 Mi characters of note text, 4 Mi for a linked file, 120-character file names, link IDs of exactly 32 hex characters). Anything else is rejected and written to `cyberpad.log` by type and reason only; note content is never logged. The `theme` message carries only `neon`, `amber`, `terminal`, `light` or `dark`; with System chosen the page sends `light` or `dark`, never `system`, and sends again when the system setting changes; the colours are fixed in the host, and any other value is rejected. There is no message to read or write an arbitrary path or run a command. Export file names are reduced to a safe name with a forced extension, and the user picks the real path in the Save dialog.
-- **Linked files.** The page only ever sees link IDs and file names; the host holds every path and accepts only `.txt`, `.md` and `.cpnote` (also from the command line and the pipe). Writes go through a hidden temporary file in the target folder and a swap, and a file that changed since CyberPad last read it is not overwritten unless you choose to. "Open with" hands paths to a running window over a named pipe that only your own Windows account can open. It carries one path of at most 32,767 characters, which is checked again before use, and at most 20 pending opens are kept. At startup CyberPad switches its working directory to its own folder, so nothing is ever resolved against the folder of a file you opened.
+- **Linked files.** The page only ever sees link IDs and file names; the host holds every path and accepts only the extensions on the fixed file-type list (also from the command line and the pipe), with `.cpnote` exactly when the note is encrypted. Writes go through a hidden temporary file in the target folder and a swap, and a file that changed since CyberPad last read it is not overwritten unless you choose to. "Open with" hands paths to a running window over a named pipe that only your own Windows account can open. It carries one path of at most 32,767 characters, which is checked again before use, and at most 20 pending opens are kept. At startup CyberPad switches its working directory to its own folder, so nothing is ever resolved against the folder of a file you opened.
 - **Locked-down web view.** The app loads only from its own virtual host `cyberpad.example` (a reserved name that never resolves), keeping the strict CSP. Navigation anywhere else is cancelled, new windows are cancelled, and downloads are cancelled. Every permission request (camera, microphone, location, clipboard read, and so on) is denied. Dev tools and browser shortcut keys are off in release builds, password and form autofill are off, and SmartScreen reputation checks are off for the local page.
 - **External links.** A clicked link opens in the default browser only if it is a well-formed `http`, `https`, or `mailto` URL. `file:`, `javascript:`, `ms-settings:`, UNC paths, and every other scheme are ignored.
 - **Crash-safe storage.** Saves are atomic with a kept backup, and unreadable files are renamed, never deleted. The app and its host make no network requests and send no telemetry. The WebView2 runtime is Microsoft's own component and follows Microsoft's and Windows' settings for diagnostic data, which CyberPad does not control. The only runtime NuGet dependency is `Microsoft.Web.WebView2`; `Microsoft.NET.ILLink.Tasks` is a build-time package, and the published exe bundles the .NET runtime. Every build audits the NuGet packages in the lock files for known vulnerabilities, and fails if the audit finds any or cannot complete.
@@ -259,7 +344,7 @@ They live in `%LOCALAPPDATA%\CyberPad` (paste it into Explorer's address bar). T
 npm test
 ```
 
-The tests use Node's built-in test runner (Node 18+) and cover the calculator, Markdown parser, text tools, vault, store, security tools, CVSS scoring (checked against reference scores), the subnet calculator, the script-mode indentation rules, and the `index.html` checks (the early-theme script, the exact Content-Security-Policy, no inline script or style attribute), including negative cases such as injection payloads, tampered ciphertext, bad imports, and prototype pollution.
+The tests use Node's built-in test runner (Node 18+) and cover the calculator, Markdown parser, text tools, vault, store, security tools, CVSS scoring (checked against reference scores), the subnet calculator, the script-mode indentation and line-editing rules, the syntax-colouring tokenizer and bracket matching, the CTF helpers (codecs, decoding search, flag finder, templates, report), the file-type table and the check that the page and the desktop host list the same file types, and the `index.html` checks (the early-theme script, the exact Content-Security-Policy, no inline script or style attribute), including negative cases such as injection payloads, tampered ciphertext, bad imports, and prototype pollution.
 
 **Desktop app.** You need the .NET 8 SDK, Node 18+, and the .NET Framework 4.7.1 targeting pack (an optional Visual Studio Installer component, or Microsoft's standalone 4.7.1 Developer Pack) for the two small setup and uninstall programs, which run on the .NET Framework that is part of Windows 10 and 11. No extra package is used.
 
@@ -313,6 +398,13 @@ Manual checks for the desktop app:
 - Replace appearance.json in the data folder with random text and start the app: it starts in Neon colours without a message.
 - In a Python script note, Tab, Shift+Tab and Enter after a colon indent by four spaces, and a long line scrolls sideways.
 - With line numbers on, the numbers line up with the lines while scrolling, and disappear when an encrypted note locks.
+- Open a .py, a .log and a .json file with Open file: each opens in the right mode. Try a .exe and a file with no extension: both are refused with "CyberPad cannot open that file type."
+- The Open dialog's "All supported types" filter lists files of every type, including the last ones in the list (.rst, .gitignore).
+- Save a Python note as file: the dialog proposes .py. Type a name ending in .txt instead: the note is saved as .txt and becomes a Markdown note. Type a name ending in .exe: it is refused and nothing is written.
+- Type a name with a less common listed extension, such as rules.yar, with another type selected in the dialog: the file is saved as rules.yar, not rules.yar.md.
+- In a Python note the code is coloured and stays aligned with the text while typing and scrolling; lock an encrypted script note and the colours and text are gone.
+- Select text in a Markdown note: the toolbar appears; Alt+F10 moves focus to it.
+- Build a CTF report in a folder that contains an encrypted note: the report says one encrypted note was left out and shows none of its text or title.
 - Minimise, maximise, close, drag, snap and the title bar's system menu still work.
 - Linked files (use a scratch folder):
   - Save a note as `.md`, edit it, and see the file change on disk.
@@ -337,13 +429,15 @@ css/style.css       themes and layout
 js/core/            pure logic, also loaded by Node tests
   calc.js           safe expression evaluator
   markdown.js       Markdown to syntax tree, URL allow-list
-  texttools.js      stats, tags, links, transforms, slash commands, fuzzy match
+  texttools.js      stats, tags, links, transforms, slash commands, fuzzy match, palette sections, selection formatting
   vault.js          PBKDF2 + AES-GCM via Web Crypto
-  store.js          data model, validation, backup and import checks
+  store.js          data model, validation, backup and import checks, the file-type table
   secops.js         IOC extraction, defang, secret scanning, decoders, hashing
   cvss.js           CVSS 3.0/3.1 parsing and scoring
   netcalc.js        IPv4/IPv6 subnet calculator
-  codeedit.js       script-mode languages and indentation rules
+  codeedit.js       script-mode languages, indentation rules, comment toggle and line moves
+  highlight.js      syntax-colouring tokenizer and bracket matching
+  ctf.js            CTF codecs, decoding search, flag finder, templates and report
 js/ui/              DOM helpers: renderer, caret position, sound
 js/early-theme.js   applies the last theme before first paint
 js/platform.js      storage and file adapter (browser or desktop host)

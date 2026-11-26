@@ -451,6 +451,104 @@ public sealed class LinkedFilesTests : IDisposable
         Assert.Equal(WithBom("x\r\ny"), File.ReadAllBytes(path));
     }
 
+    // ---- the text rules are the same for every plain listed type: one script type and one plain type ----
+
+    private static LinkFormat Format(string wire)
+    {
+        Assert.True(LinkFormat.TryParse(wire, out var f));
+        return f;
+    }
+
+    [Theory]
+    [InlineData("py")]
+    [InlineData("log")]
+    public void PlainType_WriteNew_Write_ReadNew_RoundTrip(string wire)
+    {
+        var path = P("n." + wire);
+        var rec = _files.WriteNew(path, Format(wire), "a\nb");
+        Assert.Equal(wire, rec.Format.Wire);
+        Assert.Equal(Encoding.UTF8.GetBytes("a\nb"), File.ReadAllBytes(path)); // UTF-8, no BOM, LF
+        Assert.Equal(WriteOutcome.Written, _files.Write(rec, "c\nd", false, out _));
+        var (again, text) = _files.ReadNew(path, Format(wire));
+        Assert.Equal("c\nd", text);
+        Assert.Equal(wire, again.Format.Wire);
+    }
+
+    [Theory]
+    [InlineData("py")]
+    [InlineData("log")]
+    public void PlainType_PreservesCrLfAndBom(string wire)
+    {
+        var path = P("n." + wire);
+        File.WriteAllBytes(path, WithBom("a\r\nb\r\n"));
+        var (rec, text) = _files.ReadNew(path, Format(wire));
+        Assert.Equal("a\nb\n", text);
+        Assert.Equal(LineEnding.CrLf, rec.LineEnding);
+        Assert.Equal(WriteOutcome.Written, _files.Write(rec, "x\ny", false, out _));
+        Assert.Equal(WithBom("x\r\ny"), File.ReadAllBytes(path));
+    }
+
+    [Theory]
+    [InlineData("py")]
+    [InlineData("log")]
+    public void PlainType_ReadsUtf16WithBom_AndWritesItBack(string wire)
+    {
+        var path = P("u16." + wire);
+        File.WriteAllBytes(path, new byte[] { 0xFF, 0xFE }.Concat(Encoding.Unicode.GetBytes("hé\r\n")).ToArray());
+        var (rec, text) = _files.ReadNew(path, Format(wire));
+        Assert.Equal("hé\n", text);
+        Assert.Equal(TextEncodingKind.Utf16LE, rec.Encoding);
+        Assert.True(rec.Bom);
+        Assert.Equal(WriteOutcome.Written, _files.Write(rec, "ok\n", false, out _));
+        Assert.Equal(new byte[] { 0xFF, 0xFE }.Concat(Encoding.Unicode.GetBytes("ok\r\n")).ToArray(), File.ReadAllBytes(path));
+
+        File.WriteAllBytes(path, new byte[] { 0xFE, 0xFF }.Concat(Encoding.BigEndianUnicode.GetBytes("be")).ToArray());
+        Assert.Equal("be", _files.ReadNew(path, Format(wire)).Text);
+    }
+
+    [Theory]
+    [InlineData("py")]
+    [InlineData("log")]
+    public void PlainType_RefusesNulAndNonText(string wire)
+    {
+        File.WriteAllBytes(P("nul." + wire), Encoding.UTF8.GetBytes("a\0b"));
+        var ex = Assert.Throws<StoreException>(() => _files.ReadNew(P("nul." + wire), Format(wire)));
+        Assert.Equal(TextCodec.NotTextMessage, ex.Message);
+        File.WriteAllBytes(P("bin." + wire), new byte[] { 0xFF, 0xFF, 0xFF });
+        Assert.Throws<StoreException>(() => _files.ReadNew(P("bin." + wire), Format(wire)));
+    }
+
+    [Theory]
+    [InlineData("py")]
+    [InlineData("log")]
+    public void PlainType_SizeAndLengthCaps(string wire)
+    {
+        File.WriteAllBytes(P("huge." + wire), Enumerable.Repeat((byte)'a', (int)LinkedFiles.MaxFileBytes + 1).ToArray());
+        var big = Assert.Throws<StoreException>(() => _files.ReadNew(P("huge." + wire), Format(wire)));
+        Assert.Equal("The file is too large to open.", big.Message);
+
+        File.WriteAllText(P("long." + wire), new string('a', LinkedFiles.MaxTextChars + 1));
+        var longer = Assert.Throws<StoreException>(() => _files.ReadNew(P("long." + wire), Format(wire)));
+        Assert.Equal("The file is too large to open.", longer.Message);
+
+        File.WriteAllText(P("max." + wire), new string('a', LinkedFiles.MaxTextChars));
+        Assert.Equal(LinkedFiles.MaxTextChars, _files.ReadNew(P("max." + wire), Format(wire)).Text.Length);
+
+        var rec = _files.WriteNew(P("w." + wire), Format(wire), "a");
+        var tooBig = new string('a', (int)LinkedFiles.MaxFileBytes + 1);
+        Assert.Throws<StoreException>(() => _files.Write(rec, tooBig, true, out _));
+        Assert.Equal("a", File.ReadAllText(P("w." + wire)));
+    }
+
+    [Fact]
+    public void NoFormat_IsRefused()
+    {
+        File.WriteAllText(P("n.txt"), "x");
+        Assert.Throws<ArgumentException>(() => _files.ReadNew(P("n.txt"), default));
+        Assert.Throws<ArgumentException>(() => _files.WriteNew(P("m.txt"), default, "x"));
+        Assert.False(File.Exists(P("m.txt")));
+    }
+
     [Fact]
     public void Write_LeavesNoTempFiles()
     {

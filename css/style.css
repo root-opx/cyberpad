@@ -571,6 +571,7 @@ svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-width:
   white-space: pre;
   overflow-wrap: normal;
   overflow-x: auto;
+  font-variant-ligatures: none;
 }
 
 #editor::placeholder { color: var(--dim); }
@@ -621,6 +622,58 @@ svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-width:
   overflow-wrap: break-word;
 }
 .gutter-mirror > div { min-height: var(--mlh, 1.7em); }
+
+/* Syntax colouring layer. A static element behind the editor that draws the same text in colour, only the lines on
+   screen. It shows (and the editor's own text turns transparent) only while the pane has .hl-on, which script sets
+   and clears in one function, so transparent text never exists without the layer. It holds note text: script
+   empties it wherever it empties the gutter's measuring copy. Font, size, line height and tab size are copied from
+   the editor by script. */
+.hl {
+  display: none;
+  position: absolute;
+  z-index: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  background: transparent;
+  color: var(--ink);
+  white-space: pre;
+  tab-size: 4;
+  font-variant-ligatures: none;
+  user-select: none;
+  pointer-events: none;
+}
+.pane-editor.has-gutter .hl { left: var(--gutter-w, 3.5rem); }
+.pane-editor.hl-on .hl { display: block; }
+.pane-editor.hl-on #editor {
+  position: relative;
+  z-index: 1;
+  color: transparent;
+}
+.pane-editor.hl-on #editor::selection { background: var(--sel); color: transparent; }
+.hl-rows { position: absolute; top: 0; left: 0; min-width: 100%; }
+.hl-row { height: var(--hl-pitch, 1.7em); white-space: pre; }
+.hl .tok-comment { color: var(--dim); }
+.hl .tok-string,
+.hl .tok-attr,
+.hl .tok-variable { color: var(--cool); }
+.hl .tok-keyword,
+.hl .tok-tag { color: var(--hot); }
+.hl .tok-number,
+.hl .tok-constant,
+.hl .tok-section { color: var(--warn); }
+.hl .hl-match { outline: 1px solid var(--cool); }
+
+@media (forced-colors: active) {
+  .hl { display: none !important; }
+  .pane-editor.hl-on #editor { color: CanvasText; }
+  .pane-editor.hl-on #editor::selection { background: Highlight; color: HighlightText; }
+}
 
 /* ---------- find bar ---------- */
 .findbar {
@@ -1025,6 +1078,51 @@ svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-width:
 .slash-item[aria-selected="true"] { background: var(--raise); }
 .slash-item[aria-selected="true"] .name { color: var(--cool); }
 
+/* ---------- selection toolbar ---------- */
+.seltools {
+  position: fixed;
+  z-index: 40;
+  display: flex;
+  gap: 0.15rem;
+  padding: 0.2rem;
+  border: 1px solid var(--line);
+  border-top: 2px solid var(--cool);
+  background: var(--panel);
+  box-shadow: 0 10px 30px rgb(0 0 0 / 0.45);
+  font-size: var(--fs-s);
+}
+
+.seltools[hidden] { display: none; }
+
+.seltool {
+  flex: none;
+  min-width: 2rem;
+  min-height: 2rem;
+  padding: 0 0.6rem;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  white-space: nowrap;
+}
+
+.seltool:hover { background: var(--raise); color: var(--cool); }
+.seltool:focus-visible { outline: 2px solid var(--cool); outline-offset: -2px; background: var(--raise); }
+.seltool-bold { font-weight: 700; }
+.seltool-italic { font-style: italic; }
+.seltool-strike { text-decoration: line-through; }
+
+@media (max-width: 760px) {
+  .seltools {
+    left: 0;
+    right: 0;
+    border-right: 0;
+    border-left: 0;
+    overflow-x: auto;
+  }
+  .seltool { min-height: 2.75rem; }
+}
+
 /* ---------- dialogs ---------- */
 dialog {
   padding: 0;
@@ -1316,10 +1414,14 @@ dialog::backdrop { background: rgb(4 2 12 / 0.6); }
 
 /* ---------- CRT ---------- */
 body.crt #editor,
+body.crt .hl,
 body.crt .preview,
 body.crt .boot pre {
   text-shadow: 0 0 5px color-mix(in srgb, var(--ink) calc(var(--glow-strength) * 100%), transparent);
 }
+
+/* With the colouring layer on, the layer draws the glow: the editor's transparent text must not draw a second one. */
+body.crt .pane-editor.hl-on #editor { text-shadow: none; }
 
 body.crt::after {
   content: "";
@@ -1520,7 +1622,7 @@ button.sev:hover { box-shadow: 0 0 0 1px currentColor; }
   }
 
   .titlebar, .sidebar, .scrim, .statusbar, .findbar, .alertbar, .pane-editor, .backlinks,
-  .copy-btn, .toasts, .boot, .dropzone, .slash, .gutter, .gutter-mirror, dialog { display: none !important; }
+  .copy-btn, .toasts, .boot, .dropzone, .slash, .seltools, .gutter, .gutter-mirror, .hl, dialog { display: none !important; }
   body.crt::after { display: none; }
 
   .workspace[data-view] .pane-preview { display: block; border: 0; }
@@ -1548,4 +1650,52 @@ button.sev:hover { box-shadow: 0 0 0 1px currentColor; }
     box-shadow: none;
     -webkit-print-color-adjust: exact; print-color-adjust: exact;
   }
+}
+
+/* ---------- CTF dialogs ---------- */
+.modal.ctf .modal-body { max-height: min(40rem, 72vh); overflow-y: auto; }
+
+.field textarea {
+  width: 100%;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--void);
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: var(--fs-s);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  resize: vertical;
+  min-height: 4rem;
+  max-height: 16rem;
+}
+
+.field textarea:focus { border-color: var(--cool); }
+.field select:focus-visible, .field textarea:focus-visible, .field input:focus-visible { outline: 2px solid var(--cool); outline-offset: 1px; }
+
+.decode-row { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: end; }
+.decode-row .field { flex: 1 1 14rem; min-width: 0; }
+.decode-dir { display: flex; gap: 0.4rem; margin-bottom: 0.75rem; }
+.decode-params { display: flex; flex-wrap: wrap; gap: 0 0.6rem; }
+.decode-params .field { flex: 1 1 10rem; min-width: 0; }
+.decode-tools { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0 0 0.6rem; }
+.decode-tools .btn[aria-pressed="true"] { color: var(--cool); border-color: var(--cool); }
+.decode-tools .btn:disabled, .decode-dir .chip:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.modal p.ctf-status { min-height: 1.2em; margin: 0 0 0.6rem; color: var(--ink); }
+.ctf-btns { display: flex; flex-direction: column; gap: 0.3rem; align-items: stretch; }
+.ctf-results { max-height: min(24rem, 50vh); }
+
+.flag-group { display: grid; gap: 0.35rem; }
+.flag-note { justify-self: start; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.flag-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; gap: 0.15rem 0.5rem; align-items: center; }
+.flag-code { padding: 0.2rem 0.45rem; background: var(--void); border: 1px solid var(--line); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 7rem; overflow-y: auto; }
+.flag-via { color: var(--dim); font-size: var(--fs-xs); white-space: nowrap; }
+
+@media (max-width: 760px) {
+  .flag-row { grid-template-columns: minmax(0, 1fr) auto auto; }
+  .flag-code { grid-column: 1 / -1; }
+  .flag-via { grid-column: 1; }
+  .decode-tools .btn, .flag-row .chip, .ctf-btns .chip { min-height: 2.75rem; }
 }

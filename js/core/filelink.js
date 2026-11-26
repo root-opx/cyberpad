@@ -18,7 +18,6 @@
 
   const MAX_NAME = 120;
   const IDLE_RELOAD_MS = 2000;
-  const EXT = Object.freeze({ txt: '.txt', md: '.md', cpnote: '.cpnote' });
   const DAMAGED = 'This .cpnote file is damaged or not a CyberPad note.';
   const TOO_LONG = 'That file is too long for one note.';
   const UNREADABLE = 'That file could not be opened.';
@@ -78,8 +77,8 @@
   }
 
   /**
-   * Builds a new, linked note from an opened file ({linkId, name, format, text}): plain text for .txt/.md,
-   * a locked encrypted note for .cpnote. Throws FileLinkError for damaged, oversized or mismatched files.
+   * Builds a new, linked note from an opened file ({linkId, name, format, text}): a Markdown note for .txt/.md/.markdown,
+   * a script note (the language of the file type) for the other text types, a locked encrypted note for .cpnote. Throws FileLinkError for damaged, oversized or mismatched files.
    */
   function noteFromFile(opened, now = Date.now()) {
     if (!isPlainObject(opened) || typeof opened.text !== 'string') throw new FileLinkError(UNREADABLE);
@@ -87,11 +86,12 @@
     if (opened.format === 'cpnote') {
       note = store.createNote('', now);
       note.cipher = parseCpnote(opened.text);
-    } else if (opened.format === 'txt' || opened.format === 'md') {
+    } else {
+      const type = store.fileTypeOf(opened.format);
+      if (!type) throw new FileLinkError('That file format is not supported.');
       if (opened.text.length > store.LIMITS.body) throw new FileLinkError(TOO_LONG);
       note = store.createNote(opened.text, now);
-    } else {
-      throw new FileLinkError('That file format is not supported.');
+      note.lang = type.lang; // '' for txt, md and markdown: a Markdown note
     }
     note.file = { linkId: opened.linkId, name: opened.name, format: opened.format };
     const checked = store.validateNote(note, now);
@@ -99,15 +99,18 @@
     return checked;
   }
 
+  const PLAIN_FORMATS = Object.freeze(store.FILE_FORMATS.filter((f) => f !== 'cpnote'));
+
+  /** The formats a note may be saved as: only cpnote when encrypted, every text type otherwise. */
   function formatsFor(note) {
-    return note && note.cipher ? ['cpnote'] : ['txt', 'md'];
+    return note && note.cipher ? ['cpnote'] : PLAIN_FORMATS.slice();
   }
 
   function suggestedFileName(title, format) {
-    if (typeof format !== 'string' || !Object.prototype.hasOwnProperty.call(EXT, format)) {
+    if (typeof format !== 'string' || !store.FILE_FORMATS.includes(format)) {
       throw new FileLinkError('That file format is not supported.');
     }
-    const ext = EXT[format];
+    const ext = `.${format}`;
     const slug = T.slugify(typeof title === 'string' ? title : '') || 'note';
     return slug.slice(0, MAX_NAME - ext.length) + ext;
   }

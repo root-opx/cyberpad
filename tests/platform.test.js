@@ -1,7 +1,8 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createPlatform, PlatformError } = require('../js/platform.js');
+const { createPlatform, PlatformError, FILE_FORMATS } = require('../js/platform.js');
+const store = require('../js/core/store.js');
 
 const crypto = globalThis.crypto;
 
@@ -236,7 +237,8 @@ test('malformed host replies are rejected', async () => {
   const bad = [
     { type: 'fileLinked', linkId: 'zz', name: 'n', format: 'md' },
     { type: 'fileLinked', linkId: LK, name: '', format: 'md' },
-    { type: 'fileLinked', linkId: LK, name: 'n', format: 'html' },
+    { type: 'fileLinked', linkId: LK, name: 'n', format: 'exe' },
+    { type: 'fileLinked', linkId: LK, name: 'n', format: 'PY' },
     { type: 'fileLinked', linkId: LK, name: 'x'.repeat(256), format: 'md' },
     { type: 'fileLinked', linkId: LK, name: 'a/b', format: 'md' },
     { type: 'fileWritten' },
@@ -449,4 +451,33 @@ test('setHostTheme rejects when the host never answers', async () => {
   const again = p.setHostTheme('neon');
   assert.equal(fake.posted.length, before + 1);
   await assert.rejects(again, PlatformError);
+});
+
+test('platform FILE_FORMATS is the store table, exactly and frozen', () => {
+  assert.deepEqual([...FILE_FORMATS], [...store.FILE_FORMATS]);
+  assert.equal(FILE_FORMATS.length, 69);
+  assert.equal(Object.isFrozen(FILE_FORMATS), true);
+});
+
+test('requests post only listed formats; replies accept only listed formats', async () => {
+  const { fake, p } = desktop();
+  for (const format of ['exe', 'PY', 'py ', 'py:stream', '', undefined, 7, 'tar.gz']) {
+    await assert.rejects(p.saveAsFile({ format, suggestedName: 'n', text: 't' }), /invalid format/);
+  }
+  assert.equal(fake.posted.length, 0);
+  for (const format of ['py', 'ps1', 'gitignore', 'jsonl']) {
+    const pr = p.saveAsFile({ format, suggestedName: `n.${format}`, text: 't' });
+    assert.equal(fake.posted.at(-1).format, format);
+    fake.reply({ type: 'fileLinked', id: lastId(fake), linkId: LK, name: `n.${format}`, format: 'rs' });
+    assert.deepEqual(await pr, { linked: true, linkId: LK, name: `n.${format}`, format: 'rs' });
+  }
+  const r = p.saveAsFile({ format: 'py', suggestedName: 'n', text: 't', relinkId: LK });
+  fake.reply({ type: 'fileLinked', id: lastId(fake), linkId: LK, name: 'n', format: 'exe' });
+  await assert.rejects(r, /unexpected reply/);
+  const o = p.openFile();
+  fake.reply({ type: 'fileOpened', id: lastId(fake), linkId: LK, name: 'a.py', format: 'py', text: 'x', alreadyLinked: false });
+  assert.equal((await o).format, 'py');
+  const o2 = p.openFile();
+  fake.reply({ type: 'fileOpened', id: lastId(fake), linkId: LK, name: 'a.exe', format: 'exe', text: 'x', alreadyLinked: false });
+  await assert.rejects(o2, /unexpected reply/);
 });

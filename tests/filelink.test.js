@@ -2,6 +2,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const F = require('../js/core/filelink.js');
+const store = require('../js/core/store.js');
 
 const ENV = { v: 1, kdf: 'PBKDF2-SHA256', iter: 600000, salt: 'AAAAAAAAAAAAAAAAAAAAAA==', iv: 'AAAAAAAAAAAAAAAA', data: 'AAAA' };
 const plain = (body) => ({ id: 'x', body, cipher: null });
@@ -40,7 +41,8 @@ test('parseCpnote accepts its own output and rejects damage', () => {
 });
 
 test('formatsFor follows encryption state', () => {
-  assert.deepEqual(F.formatsFor(plain('a')), ['txt', 'md']);
+  assert.deepEqual(F.formatsFor(plain('a')), store.FILE_FORMATS.filter((f) => f !== 'cpnote'));
+  assert.equal(F.formatsFor(plain('a')).length, 68);
   assert.deepEqual(F.formatsFor(secret), ['cpnote']);
 });
 
@@ -54,7 +56,7 @@ test('suggestedFileName slugs, caps and falls back', () => {
     const n = F.suggestedFileName('a'.repeat(500), f);
     assert.ok(n.length <= 120 && n.endsWith('.' + f));
   }
-  assert.throws(() => F.suggestedFileName('x', 'html'), F.FileLinkError);
+  assert.throws(() => F.suggestedFileName('x', 'exe'), F.FileLinkError);
   assert.throws(() => F.suggestedFileName('x', undefined), F.FileLinkError);
 });
 
@@ -169,6 +171,20 @@ test('noteFromFile: plain text becomes a linked plain note', () => {
   assert.equal(n.created, 1000);
 });
 
+test('noteFromFile: script types become script notes; txt, md and markdown stay Markdown notes', () => {
+  const py = F.noteFromFile({ linkId: LINK, name: 'a.py', format: 'py', text: 'print(1)' }, 1000);
+  assert.equal(py.lang, 'python');
+  assert.deepEqual(py.file, { linkId: LINK, name: 'a.py', format: 'py' });
+  assert.equal(F.noteFromFile({ linkId: LINK, name: 'a.log', format: 'log', text: 'x' }).lang, 'plain');
+  assert.equal(F.noteFromFile({ linkId: LINK, name: 'a.yml', format: 'yml', text: 'a: 1' }).lang, 'yaml');
+  for (const f of ['txt', 'md', 'markdown']) assert.equal(F.noteFromFile({ linkId: LINK, name: `a.${f}`, format: f, text: 'x' }).lang, '');
+});
+
+test('suggestedFileName accepts every listed type and nothing else', () => {
+  for (const f of store.FILE_FORMATS) assert.equal(F.suggestedFileName('My script', f), `my-script.${f}`);
+  for (const f of ['PY', 'py ', 'exe', '', 'py.exe']) assert.throws(() => F.suggestedFileName('x', f), F.FileLinkError);
+});
+
 test('noteFromFile: .cpnote becomes a locked encrypted note with the envelope only', () => {
   const n = F.noteFromFile({ linkId: LINK, name: 'secret.cpnote', format: 'cpnote', text: F.fileTextOf(secret) });
   assert.deepEqual(n.cipher, ENV);
@@ -181,7 +197,7 @@ test('noteFromFile: refuses damaged, oversized and invalid files', () => {
   const ok = { linkId: LINK, name: 'a.txt', format: 'txt', text: 'x' };
   assert.throws(() => F.noteFromFile({ ...ok, format: 'cpnote', name: 'a.cpnote', text: '{' }), { message: DAMAGED });
   assert.throws(() => F.noteFromFile({ ...ok, text: 'x'.repeat(1000001) }), F.FileLinkError);
-  assert.throws(() => F.noteFromFile({ ...ok, format: 'html' }), F.FileLinkError);
+  assert.throws(() => F.noteFromFile({ ...ok, format: 'exe' }), F.FileLinkError);
   assert.throws(() => F.noteFromFile({ ...ok, linkId: 'nope' }), F.FileLinkError);
   assert.throws(() => F.noteFromFile({ ...ok, name: 'a/b.txt' }), F.FileLinkError);
   assert.throws(() => F.noteFromFile({ ...ok, text: 7 }), F.FileLinkError);

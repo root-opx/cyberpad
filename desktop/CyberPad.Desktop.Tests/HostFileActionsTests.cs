@@ -44,10 +44,10 @@ public sealed class HostFileActionsTests : IDisposable
 
     private string Doc(string name) => Path.Combine(_docs, name);
 
-    private async Task<FileLinkResult> SaveAs(string path, LinkFormat format = LinkFormat.Txt, string text = "hello", string? relink = null)
+    private async Task<FileLinkResult> SaveAs(string path, LinkFormat? format = null, string text = "hello", string? relink = null)
     {
         _host.AskSavePath = (_, _) => path;
-        var r = await _host.SaveAsFileAsync(format, Path.GetFileName(path), text, relink);
+        var r = await _host.SaveAsFileAsync(format ?? LinkFormat.Txt, Path.GetFileName(path), text, relink);
         Assert.NotNull(r);
         return r!;
     }
@@ -98,14 +98,182 @@ public sealed class HostFileActionsTests : IDisposable
     }
 
     [Fact]
-    public async Task SaveAs_RefusesExtensionThatDoesNotMatchTheFormat()
+    public async Task SaveAs_RefusesUnlistedOrEncryptedMismatch()
     {
-        _host.AskSavePath = (_, _) => Doc("a.md");
+        _host.AskSavePath = (_, _) => Doc("a.cpnote");
         await Assert.ThrowsAsync<StoreException>(() => _host.SaveAsFileAsync(LinkFormat.Txt, "a.txt", "t", null));
         _host.AskSavePath = (_, _) => Doc("a.exe");
         await Assert.ThrowsAsync<StoreException>(() => _host.SaveAsFileAsync(LinkFormat.Txt, "a.txt", "t", null));
-        Assert.False(File.Exists(Doc("a.md")));
+        Assert.False(File.Exists(Doc("a.cpnote")));
+        Assert.False(File.Exists(Doc("a.exe")));
         Assert.Equal(0, _links.Count);
+    }
+
+    private static LinkFormat Format(string wire)
+    {
+        Assert.True(LinkFormat.TryParse(wire, out var f));
+        return f;
+    }
+
+    [Fact]
+    public async Task SaveAs_RequestedPy_PicksTxt_IsAcceptedAndReportedAsTxt()
+    {
+        string? suggested = null;
+        _host.AskSavePath = (f, name) => { Assert.Equal("py", f.Wire); suggested = name; return Doc("x.txt"); };
+        var r = await _host.SaveAsFileAsync(Format("py"), "script.py", "print(1)", null);
+        Assert.Equal("script.py", suggested);
+        Assert.Equal("x.txt", r!.Name);
+        Assert.Equal(LinkFormat.Txt, r.Format);
+        Assert.Equal("print(1)", File.ReadAllText(Doc("x.txt")));
+        Assert.True(_links.TryGet(r.LinkId, out var rec));
+        Assert.Equal(LinkFormat.Txt, rec.Format);
+    }
+
+    [Fact]
+    public async Task SaveAs_RequestedMd_PicksUpperCasePy_IsReportedAsCanonicalPy()
+    {
+        var r = await SaveAs(Doc("Tool.PY"), LinkFormat.Md, "x = 1\n");
+        Assert.Equal("Tool.PY", r.Name);
+        Assert.Equal("py", r.Format.Wire);
+        var reloaded = new LinkStore(_data);
+        reloaded.Load();
+        Assert.True(reloaded.TryGet(r.LinkId, out var rec));
+        Assert.Equal("py", rec.Format.Wire);
+    }
+
+    [Fact]
+    public async Task SaveAs_RequestedPy_PicksCpNote_IsRefused()
+    {
+        _host.AskSavePath = (_, _) => Doc("x.cpnote");
+        var ex = await Assert.ThrowsAsync<StoreException>(() => _host.SaveAsFileAsync(Format("py"), "x.py", "t", null));
+        Assert.Equal(HostActions.PlainAsCpNoteMessage, ex.Message);
+        Assert.False(File.Exists(Doc("x.cpnote")));
+        Assert.Equal(0, _links.Count);
+    }
+
+    [Theory]
+    [InlineData("x.md")]
+    [InlineData("x.py")]
+    [InlineData("x.txt")]
+    public async Task SaveAs_RequestedCpNote_PicksAPlainType_IsRefused(string picked)
+    {
+        _host.AskSavePath = (_, _) => Doc(picked);
+        var ex = await Assert.ThrowsAsync<StoreException>(() => _host.SaveAsFileAsync(LinkFormat.CpNote, "x.cpnote", "{}", null));
+        Assert.Equal("Choose a file ending in .cpnote.", ex.Message);
+        Assert.False(File.Exists(Doc(picked)));
+        Assert.Equal(0, _links.Count);
+    }
+
+    [Theory]
+    [InlineData("x.exe")]
+    [InlineData("x.py.exe")]
+    [InlineData("x.lnk")]
+    [InlineData("Makefile")]
+    [InlineData("x.py:stream")]
+    public async Task SaveAs_RequestedMd_PicksAnUnlistedName_IsRefused(string picked)
+    {
+        _host.AskSavePath = (_, _) => Doc(picked);
+        var ex = await Assert.ThrowsAsync<StoreException>(() => _host.SaveAsFileAsync(LinkFormat.Md, "x.md", "t", null));
+        Assert.Equal(FilePathPolicy.UnsupportedSaveMessage, ex.Message);
+        Assert.Empty(Directory.GetFileSystemEntries(_docs));
+        Assert.Equal(0, _links.Count);
+    }
+
+    [Fact]
+    public void SaveAndOpenMessages_AreDistinct()
+    {
+        Assert.Equal("CyberPad cannot save that file type. Choose one of the listed types.", FilePathPolicy.UnsupportedSaveMessage);
+        Assert.NotEqual(FilePathPolicy.UnsupportedMessage, FilePathPolicy.UnsupportedSaveMessage);
+    }
+
+    [Fact]
+    public async Task SaveAs_Relink_PlainLinkToCpNote_IsRefused_NothingWritten()
+    {
+        var first = await SaveAs(Doc("a.txt"), LinkFormat.Txt, "keep");
+        _host.AskSavePath = (_, _) => Doc("b.cpnote");
+        var ex = await Assert.ThrowsAsync<StoreException>(() => _host.SaveAsFileAsync(LinkFormat.CpNote, "b.cpnote", "{}", first.LinkId));
+        Assert.Equal("This note's file type cannot change between encrypted and plain. Unlink the file first.", ex.Message);
+        Assert.False(File.Exists(Doc("b.cpnote")));
+        Assert.Equal("keep", File.ReadAllText(Doc("a.txt")));
+        Assert.True(_links.TryGet(first.LinkId, out var rec));
+        Assert.Equal(Doc("a.txt"), rec.Path);
+        Assert.Equal(LinkFormat.Txt, rec.Format);
+    }
+
+    [Fact]
+    public async Task SaveAs_Relink_EncryptedLinkToPlain_IsRefused_NothingWritten()
+    {
+        var first = await SaveAs(Doc("a.cpnote"), LinkFormat.CpNote, "{}");
+        _host.AskSavePath = (_, _) => Doc("b.txt");
+        var ex = await Assert.ThrowsAsync<StoreException>(() => _host.SaveAsFileAsync(LinkFormat.Txt, "b.txt", "plain", first.LinkId));
+        Assert.Equal(HostActions.RelinkKindMessage, ex.Message);
+        Assert.False(File.Exists(Doc("b.txt")));
+        Assert.True(_links.TryGet(first.LinkId, out var rec));
+        Assert.Equal(Doc("a.cpnote"), rec.Path);
+        Assert.True(rec.Format.IsEncrypted);
+    }
+
+    [Fact]
+    public async Task SaveAs_Relink_EncryptedToEncrypted_StillWorks()
+    {
+        var first = await SaveAs(Doc("a.cpnote"), LinkFormat.CpNote, "{}");
+        var moved = await SaveAs(Doc("b.cpnote"), LinkFormat.CpNote, "{}", relink: first.LinkId);
+        Assert.Equal(first.LinkId, moved.LinkId);
+        Assert.True(_links.TryGet(first.LinkId, out var rec));
+        Assert.Equal(Doc("b.cpnote"), rec.Path);
+    }
+
+    /// <summary>
+    /// The Save dialog adds the requested extension to a name typed without one (DefaultExt plus the requested pattern
+    /// first in every filter entry), and its overwrite question is asked about that full name. The host never adds an
+    /// extension itself: a name that still has none could only come from outside the dialog, and is refused.
+    /// </summary>
+    [Fact]
+    public async Task SaveAs_RequestedPy_NameWithoutExtension_DialogAddsPy_HostNeverDoes()
+    {
+        var filter = FileTypes.SaveDialogFilter(Format("py")).Split('|');
+        Assert.Equal("*.py", filter[1].Split(';')[0]);
+        Assert.Equal("*.py", filter[3].Split(';')[0]);
+
+        _host.AskSavePath = (_, _) => Doc("x");
+        await Assert.ThrowsAsync<StoreException>(() => _host.SaveAsFileAsync(Format("py"), "x.py", "t", null));
+        Assert.Empty(Directory.GetFileSystemEntries(_docs));
+
+        var r = await SaveAs(Doc("x.py"), Format("py"), "t");
+        Assert.Equal("x.py", r.Name);
+        Assert.Equal("py", r.Format.Wire);
+    }
+
+    [Fact]
+    public async Task SaveAs_TrailingSpace_WritesAndLinksTheNameWindowsUses()
+    {
+        var r = await SaveAs(Doc("trail.py") + " ", Format("py"), "t");
+        Assert.Equal("trail.py", r.Name);
+        Assert.True(_links.TryGet(r.LinkId, out var rec));
+        Assert.Equal(Doc("trail.py"), rec.Path);
+        Assert.Equal(new[] { Doc("trail.py") }, Directory.GetFiles(_docs));
+    }
+
+    [Fact]
+    public async Task SaveAs_Relink_ToAnotherPlainType_FollowsTheChosenType()
+    {
+        var first = await SaveAs(Doc("a.md"), LinkFormat.Md, "x");
+        var moved = await SaveAs(Doc("a.log"), LinkFormat.Md, "x", relink: first.LinkId);
+        Assert.Equal(first.LinkId, moved.LinkId);
+        Assert.Equal("log", moved.Format.Wire);
+        Assert.True(_links.TryGet(first.LinkId, out var rec));
+        Assert.Equal("log", rec.Format.Wire);
+    }
+
+    [Fact]
+    public async Task Open_ListedScriptType_ReportsItsCanonicalWire()
+    {
+        File.WriteAllText(Doc("Run.PS1"), "Write-Host hi");
+        _host.AskOpenPath = () => Doc("Run.PS1");
+        var r = await _host.OpenFileAsync();
+        Assert.Equal("ps1", r!.Format.Wire);
+        Assert.Equal("Run.PS1", r.Name);
+        Assert.Equal("Write-Host hi", r.Text);
     }
 
     [Fact]

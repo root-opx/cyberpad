@@ -114,7 +114,7 @@ test('backup import validates and re-ids collisions', () => {
 test('import file checks: extension allow-list, double extensions, size', () => {
   assert.equal(store.checkImportFile('notes.md', 10), 'md');
   assert.equal(store.checkImportFile('my.meeting.notes.txt', 10), 'txt');
-  for (const bad of ['run.exe', 'page.html', 'noext', 'evil.html.md', 'x.js.txt', '']) {
+  for (const bad of ['run.exe', 'page.exe', 'photo.png', 'noext', 'evil.html.md', 'x.js.txt', '']) {
     assert.throws(() => store.checkImportFile(bad, 10), store.StoreError, bad);
   }
   assert.throws(() => store.checkImportFile('big.txt', store.LIMITS.importBytes + 1), store.StoreError);
@@ -214,7 +214,7 @@ const withFile = (file, extra = {}) => ({ id: ID, body: 'x', created: 1, updated
 test('validateNote keeps a valid file link and rebuilds it field by field', () => {
   const n = store.validateNote(withFile({ linkId: LINK, name: 'a.md', format: 'md', path: 'C:\\x' }));
   assert.deepEqual(n.file, { linkId: LINK, name: 'a.md', format: 'md' });
-  assert.deepEqual(store.FILE_FORMATS, ['txt', 'md', 'cpnote']);
+  for (const f of ['txt', 'md', 'cpnote']) assert.ok(store.FILE_FORMATS.includes(f));
   assert.equal(store.createNote('a').file, null);
   assert.equal(store.validateNote({ id: ID, body: '' }).file, null);
   const round = store.parseStored(store.serialize({ notes: [n], settings: { ...store.DEFAULT_SETTINGS }, activeId: ID }));
@@ -240,7 +240,7 @@ test('validateNote drops malformed links', () => {
     { linkId: LINK, name: 'a\nb', format: 'md' },
     { linkId: LINK, name: 'a\u007fb', format: 'md' },
     { linkId: LINK, name: 5, format: 'md' },
-    { linkId: LINK, name: 'a.md', format: 'html' },
+    { linkId: LINK, name: 'a.md', format: 'exe' },
     'string', [], 7, true,
   ];
   for (const f of bad) assert.equal(store.validateNote(withFile(f)).file, null, JSON.stringify(f));
@@ -379,7 +379,7 @@ test('the folder of an encrypted note survives save, load and backup', () => {
 const withLang = (lang, extra = {}) => ({ id: ID, body: 'x', created: 1, updated: 1, lang, ...extra });
 
 test('lang: every listed id is kept, in the listed order', () => {
-  assert.equal(store.LANGS.length, 16);
+  assert.equal(store.LANGS.length, 24);
   assert.equal(Object.isFrozen(store.LANGS), true);
   assert.deepEqual([...store.LANGS].slice(0, 3), ['bash', 'c', 'cpp']);
   for (const id of store.LANGS) assert.equal(store.validateNote(withLang(id)).lang, id);
@@ -456,4 +456,193 @@ test('lineNumbers setting: accepts script, all and off; defaults to script; anyt
 test('lineNumbers setting: survives serialize then load', () => {
   const text = store.serialize({ notes: [], settings: { ...store.DEFAULT_SETTINGS, lineNumbers: 'off' }, activeId: null });
   assert.equal(store.parseStored(text).settings.lineNumbers, 'off');
+});
+
+// ---- file types, languages and settings added for IDE mode and CTF
+
+const SPEC_TABLE = {
+  Notes: ['txt', 'md', 'markdown'], Encrypted: ['cpnote'], Python: ['py', 'pyw'], JavaScript: ['js', 'mjs', 'cjs', 'jsx'],
+  TypeScript: ['ts', 'tsx'], Shell: ['sh', 'bash', 'zsh'], PowerShell: ['ps1', 'psm1', 'psd1'], Batch: ['bat', 'cmd'],
+  C: ['c', 'h'], 'C++': ['cpp', 'cc', 'cxx', 'hpp'], 'C#': ['cs'], Java: ['java'], Go: ['go'], Rust: ['rs'], Ruby: ['rb'],
+  PHP: ['php'], Lua: ['lua'], Perl: ['pl'], SQL: ['sql'], HTML: ['html', 'htm'], XML: ['xml', 'xsd', 'xsl', 'svg'],
+  CSS: ['css', 'scss'], JSON: ['json', 'jsonl'], YAML: ['yaml', 'yml'],
+  'TOML and INI': ['toml', 'ini', 'cfg', 'conf', 'properties', 'env'],
+  'Plain text': ['log', 'csv', 'tsv', 'diff', 'patch', 'nfo', 'lst', 'rules', 'yar', 'yara', 'nse', 'asm', 's', 'tex', 'rst', 'gitignore'],
+};
+const SPEC_LANG = {
+  Notes: '', Encrypted: '', Python: 'python', JavaScript: 'javascript', TypeScript: 'typescript', Shell: 'bash', PowerShell: 'powershell',
+  Batch: 'batch', C: 'c', 'C++': 'cpp', 'C#': 'csharp', Java: 'java', Go: 'go', Rust: 'rust', Ruby: 'ruby', PHP: 'php', Lua: 'lua',
+  Perl: 'perl', SQL: 'sql', HTML: 'html', XML: 'xml', CSS: 'css', JSON: 'json', YAML: 'yaml', 'TOML and INI': 'ini', 'Plain text': 'plain',
+};
+
+test('FILE_TYPES: the spec table row by row, in order, frozen', () => {
+  const expected = [];
+  for (const [group, exts] of Object.entries(SPEC_TABLE)) for (const ext of exts) expected.push({ ext, lang: SPEC_LANG[group], group });
+  assert.deepEqual(store.FILE_TYPES.map((t) => ({ ...t })), expected);
+  assert.equal(store.FILE_TYPES.length, 69);
+  assert.equal(Object.isFrozen(store.FILE_TYPES), true);
+  for (const t of store.FILE_TYPES) assert.equal(Object.isFrozen(t), true, t.ext);
+});
+
+test('FILE_TYPES: extensions are unique, lower-case, well formed; every lang is empty or in LANGS', () => {
+  const seen = new Set();
+  for (const t of store.FILE_TYPES) {
+    assert.match(t.ext, /^[a-z0-9]{1,12}$/);
+    assert.equal(t.ext, t.ext.toLowerCase());
+    assert.equal(seen.has(t.ext), false, `duplicate ${t.ext}`);
+    seen.add(t.ext);
+    assert.ok(t.lang === '' || store.LANGS.includes(t.lang), t.ext);
+    assert.ok(['txt', 'md', 'markdown', 'cpnote'].includes(t.ext) === (t.lang === ''), t.ext);
+  }
+  for (const id of store.LANGS) assert.ok(store.FILE_TYPES.some((t) => t.lang === id), `no extension opens as ${id}`);
+});
+
+test('FILE_FORMATS is the frozen list of all 69 extensions', () => {
+  assert.equal(store.FILE_FORMATS.length, 69);
+  assert.equal(Object.isFrozen(store.FILE_FORMATS), true);
+  assert.deepEqual([...store.FILE_FORMATS], store.FILE_TYPES.map((t) => t.ext));
+  for (const f of ['txt', 'md', 'cpnote']) assert.ok(store.FILE_FORMATS.includes(f));
+});
+
+test('fileTypeOf: every extension resolves to its lang; anything else is null', () => {
+  for (const [group, exts] of Object.entries(SPEC_TABLE)) {
+    for (const ext of exts) {
+      const t = store.fileTypeOf(ext);
+      assert.equal(t.ext, ext);
+      assert.equal(t.lang, SPEC_LANG[group], ext);
+      assert.equal(t.group, group, ext);
+    }
+  }
+  for (const bad of ['PY', 'Py', '.py', 'py ', ' py', 'py\n', '', 'exe', 'py.exe', '__proto__', 'constructor', 'toString', 'hasOwnProperty', null, undefined, 5, true, {}, [], ['py'], { toString: () => 'py' }]) {
+    assert.equal(store.fileTypeOf(bad), null, JSON.stringify(bad));
+  }
+});
+
+test('defaultExtFor: encrypted gives cpnote, plain gives txt, Markdown gives md, a language its first extension', () => {
+  assert.equal(store.defaultExtFor({ cipher: { v: 1 }, lang: 'python' }), 'cpnote');
+  assert.equal(store.defaultExtFor({ cipher: null, lang: '' }), 'md');
+  assert.equal(store.defaultExtFor({ lang: 'plain' }), 'txt');
+  const first = { python: 'py', javascript: 'js', typescript: 'ts', bash: 'sh', powershell: 'ps1', batch: 'bat', c: 'c', cpp: 'cpp', csharp: 'cs', java: 'java', go: 'go', rust: 'rs', ruby: 'rb', php: 'php', lua: 'lua', perl: 'pl', sql: 'sql', html: 'html', xml: 'xml', css: 'css', json: 'json', yaml: 'yaml', ini: 'toml' };
+  for (const [lang, ext] of Object.entries(first)) assert.equal(store.defaultExtFor({ cipher: null, lang }), ext, lang);
+  for (const id of store.LANGS) assert.ok(store.FILE_FORMATS.includes(store.defaultExtFor({ lang: id })), id);
+  for (const bad of [null, undefined, 5, 'x', [], {}, { lang: '__proto__' }, { lang: 'Python' }, { lang: 5 }]) {
+    assert.ok(store.FILE_FORMATS.includes(store.defaultExtFor(bad)), JSON.stringify(bad));
+  }
+});
+
+test('extensionsFor: all extensions of a language in table order, [] for unknown ids', () => {
+  assert.deepEqual(store.extensionsFor('python'), ['py', 'pyw']);
+  assert.deepEqual(store.extensionsFor('ini'), ['toml', 'ini', 'cfg', 'conf', 'properties', 'env']);
+  assert.equal(store.extensionsFor('plain').length, 16);
+  assert.deepEqual(store.extensionsFor(''), ['txt', 'md', 'markdown', 'cpnote']);
+  for (const bad of ['__proto__', 'Python', 'cobol', null, undefined, 5, {}, []]) assert.deepEqual(store.extensionsFor(bad), [], JSON.stringify(bad));
+  const all = store.LANGS.flatMap((id) => store.extensionsFor(id)).concat(store.extensionsFor(''));
+  assert.equal(all.length, 69);
+});
+
+test('validateFile: every listed format is accepted for the right encryption state', () => {
+  for (const ext of store.FILE_FORMATS) {
+    const plain = store.validateNote(withFile({ linkId: LINK, name: `a.${ext}`, format: ext }));
+    const sealed = store.validateNote(withFile({ linkId: LINK, name: `a.${ext}`, format: ext }, { cipher: ENV }));
+    assert.equal(plain.file === null, ext === 'cpnote', ext);
+    assert.equal(sealed.file === null, ext !== 'cpnote', ext);
+    if (plain.file) assert.equal(plain.file.format, ext);
+  }
+  for (const bad of ['PY', 'exe', '', '__proto__', 'py ', null, 5, {}, ['py']]) {
+    assert.equal(store.validateNote(withFile({ linkId: LINK, name: 'a.py', format: bad })).file, null, JSON.stringify(bad));
+  }
+});
+
+test('old stored data loads unchanged: txt, md and cpnote links, no new settings', () => {
+  const old = { v: 1, activeId: null, settings: { theme: 'amber', lineNumbers: 'all' }, notes: [
+    { id: ID, body: 'a', created: 1, updated: 1, file: { linkId: LINK, name: 'a.txt', format: 'txt' } },
+    { id: 'b'.repeat(32), body: 'b', created: 1, updated: 1, file: { linkId: 'f'.repeat(32), name: 'b.md', format: 'md' } },
+    { id: 'c'.repeat(32), cipher: ENV, created: 1, updated: 1, file: { linkId: 'e'.repeat(32), name: 'c.cpnote', format: 'cpnote' } },
+  ] };
+  const s = store.validateState(old);
+  assert.deepEqual(s.notes.map((n) => n.file.format), ['txt', 'md', 'cpnote']);
+  assert.equal(s.settings.theme, 'amber');
+  assert.equal(s.settings.lineNumbers, 'all');
+  assert.equal(s.settings.syntaxColors, true);
+  assert.equal(s.settings.selectionToolbar, true);
+  assert.deepEqual(s.settings.flagPrefixes, ['flag', 'ctf', 'HTB', 'picoCTF', 'THM', 'DUCTF']);
+});
+
+test('LANGS: the eight new ids follow the sixteen, in order, and load', () => {
+  assert.deepEqual([...store.LANGS].slice(16), ['batch', 'ruby', 'php', 'lua', 'perl', 'xml', 'ini', 'plain']);
+  assert.deepEqual([...store.LANGS].slice(0, 16), ['bash', 'c', 'cpp', 'csharp', 'css', 'go', 'html', 'java', 'javascript', 'json', 'powershell', 'python', 'rust', 'sql', 'typescript', 'yaml']);
+  assert.equal(store.validateNote(withLang('plain')).lang, 'plain');
+});
+
+test('new settings: syntaxColors and selectionToolbar are booleans defaulting to true', () => {
+  assert.equal(store.DEFAULT_SETTINGS.syntaxColors, true);
+  assert.equal(store.DEFAULT_SETTINGS.selectionToolbar, true);
+  const off = store.validateState({ v: 1, settings: { syntaxColors: false, selectionToolbar: false } }).settings;
+  assert.equal(off.syntaxColors, false);
+  assert.equal(off.selectionToolbar, false);
+  for (const bad of ['false', 0, null, 'no', [], {}]) {
+    const s = store.validateState({ v: 1, settings: { syntaxColors: bad, selectionToolbar: bad } }).settings;
+    assert.equal(s.syntaxColors, true, JSON.stringify(bad));
+    assert.equal(s.selectionToolbar, true, JSON.stringify(bad));
+  }
+});
+
+const DEFAULT_FLAGS = ['flag', 'ctf', 'HTB', 'picoCTF', 'THM', 'DUCTF'];
+const flags = (v) => store.validateState({ v: 1, settings: { flagPrefixes: v } }).settings.flagPrefixes;
+
+test('flagPrefixes: the default, a valid list and its order are kept', () => {
+  assert.deepEqual([...store.DEFAULT_SETTINGS.flagPrefixes], DEFAULT_FLAGS);
+  assert.deepEqual(flags(['abc', 'X_1', 'a']), ['abc', 'X_1', 'a']);
+  assert.deepEqual(flags(undefined), DEFAULT_FLAGS);
+});
+
+test('flagPrefixes: hostile values are dropped, never repaired', () => {
+  assert.deepEqual(flags(['a.*', 'flag{', '(x)', 'a b', '', 'ok', '\\d', 'x|y', 'é', 'a\n', '[a]', '$']), ['ok']);
+  assert.deepEqual(flags(['x'.repeat(21), 'y'.repeat(20)]), ['y'.repeat(20)]);
+  assert.deepEqual(flags([5, null, {}, ['a'], true, 'good']), ['good']);
+  assert.deepEqual(flags(['__proto__', 'constructor']), ['__proto__', 'constructor']);
+});
+
+test('flagPrefixes: duplicates ignoring case keep the first spelling; at most 30', () => {
+  assert.deepEqual(flags(['HTB', 'htb', 'Htb', 'THM']), ['HTB', 'THM']);
+  const many = Array.from({ length: 100 }, (_, i) => `p${i}`);
+  const out = flags(many);
+  assert.equal(out.length, 30);
+  assert.deepEqual(out, many.slice(0, 30));
+});
+
+test('flagPrefixes: not an array, or nothing valid left, gives the defaults', () => {
+  for (const bad of ['flag', 5, null, true, {}, { 0: 'flag', length: 1 }, [], ['a.b'], [''], [5], 'x'.repeat(100)]) {
+    assert.deepEqual(flags(bad), DEFAULT_FLAGS, JSON.stringify(bad));
+  }
+});
+
+test('flagPrefixes: a fresh array every time, never the shared default', () => {
+  const a = flags(undefined);
+  a.push('mutated');
+  assert.deepEqual(flags(undefined), DEFAULT_FLAGS);
+  assert.notEqual(store.validateSettings(null).flagPrefixes, store.DEFAULT_SETTINGS.flagPrefixes);
+  assert.notEqual(store.validateSettings({}).flagPrefixes, store.DEFAULT_SETTINGS.flagPrefixes);
+  assert.deepEqual(DEFAULT_FLAGS, [...store.DEFAULT_SETTINGS.flagPrefixes]);
+  const list = ['one', 'two'];
+  assert.notEqual(flags(list), list);
+});
+
+test('flagPrefixes survive serialize and load', () => {
+  const settings = { ...store.DEFAULT_SETTINGS, flagPrefixes: ['abc', 'DEF'] };
+  const back = store.parseStored(store.serialize({ notes: [], settings, activeId: null }));
+  assert.deepEqual(back.settings.flagPrefixes, ['abc', 'DEF']);
+});
+
+test('import extensions: every listed type except cpnote; the error sentence and the risky rule stay', () => {
+  assert.deepEqual([...store.IMPORT_EXTENSIONS], store.FILE_FORMATS.filter((e) => e !== 'cpnote'));
+  assert.ok(store.IMPORT_EXTENSIONS.includes('json'));
+  for (const ext of store.IMPORT_EXTENSIONS) assert.equal(store.checkImportFile(`a.${ext}`, 10), ext);
+  assert.equal(store.checkImportFile('A.PY', 10), 'py');
+  for (const bad of ['a.cpnote', 'a.exe', 'a.py ', 'a.py:stream', 'noext', 'a.docx']) {
+    assert.throws(() => store.checkImportFile(bad, 10), { message: 'CyberPad cannot import that file type.' }, bad);
+  }
+  assert.throws(() => store.checkImportFile('x.exe.py', 10), /suspicious double extension/);
+  assert.throws(() => store.checkImportFile('x.ps1.log', 10), /suspicious double extension/);
+  assert.throws(() => store.checkImportFile('x.bat.txt', 10), /suspicious double extension/);
 });

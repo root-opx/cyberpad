@@ -3,8 +3,12 @@ using CyberPad.Desktop.Storage;
 
 namespace CyberPad.Desktop.Bridge;
 
-/// <summary>A note was linked to a file. Carries the opaque link id and the file name only, never a path.</summary>
-public sealed record FileLinkResult(string LinkId, string Name);
+/// <summary>
+/// A note was linked to a file. Carries the opaque link id and the file name only, never a path. <paramref name="Format"/>
+/// is the type of the file actually chosen, which may differ from the one the page asked for (any plain type may be picked
+/// for a plain note).
+/// </summary>
+public sealed record FileLinkResult(string LinkId, string Name, LinkFormat Format);
 
 /// <summary>A file was opened. <paramref name="AlreadyLinked"/>: the file was already linked, and LinkId is that link.</summary>
 public sealed record FileOpenResult(string LinkId, string Name, LinkFormat Format, string Text, bool AlreadyLinked);

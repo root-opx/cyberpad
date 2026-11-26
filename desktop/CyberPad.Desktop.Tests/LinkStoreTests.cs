@@ -90,6 +90,80 @@ public sealed class LinkStoreTests : IDisposable
         Assert.Single(Directory.GetFiles(dir, "links.unreadable-*.json"));
     }
 
+    private static string V1Entry(string path, string format, string encoding = "utf8", bool bom = false, string lineEnding = "lf") =>
+        $"{{\"path\":{System.Text.Json.JsonSerializer.Serialize(path)},\"format\":{System.Text.Json.JsonSerializer.Serialize(format)},"
+        + $"\"encoding\":\"{encoding}\",\"bom\":{(bom ? "true" : "false")},\"lineEnding\":\"{lineEnding}\",\"size\":3,"
+        + $"\"mtimeUtc\":\"2026-01-02T03:04:05.0000000Z\",\"sha256\":\"{GoodSha}\"}}";
+
+    /// <summary>A links.json written by the previous version (three formats only) loads unchanged.</summary>
+    [Fact]
+    public void Load_PreviousVersionFile_WithTheThreeFormats_StillLoads()
+    {
+        var dir = NewDir();
+        Directory.CreateDirectory(dir);
+        var t = new string('a', 32);
+        var m = new string('b', 32);
+        var c = new string('c', 32);
+        var json = "{\"v\":1,\"links\":{"
+            + $"\"{t}\":{V1Entry(@"C:\Notes\a.txt", "txt", "utf16le", true, "crlf")},"
+            + $"\"{m}\":{V1Entry(@"C:\Notes\B.MD", "md")},"
+            + $"\"{c}\":{V1Entry(@"D:\vault\s.cpnote", "cpnote")}"
+            + "}}";
+        File.WriteAllText(Path.Combine(dir, LinkStore.FileName), json);
+
+        var store = new LinkStore(dir);
+        store.Load();
+        Assert.Equal(3, store.Count);
+        Assert.True(store.TryGet(t, out var txt));
+        Assert.Equal(LinkFormat.Txt, txt.Format);
+        Assert.Equal(TextEncodingKind.Utf16LE, txt.Encoding);
+        Assert.True(store.TryGet(m, out var md));
+        Assert.Equal(LinkFormat.Md, md.Format);
+        Assert.True(store.TryGet(c, out var cp));
+        Assert.Equal(LinkFormat.CpNote, cp.Format);
+
+        // Rewritten by this version, the same three wire names come back out.
+        store.Add(Rec(@"C:\Notes\new.md"));
+        var text = File.ReadAllText(Path.Combine(dir, LinkStore.FileName));
+        Assert.Contains("\"format\":\"txt\"", text);
+        Assert.Contains("\"format\":\"cpnote\"", text);
+        var again = new LinkStore(dir);
+        again.Load();
+        Assert.Equal(4, again.Count);
+    }
+
+    /// <summary>
+    /// An entry whose format is unknown, not canonical, or not the type of its path is dropped like any other invalid
+    /// entry; the rest of the file still loads and nothing is quarantined.
+    /// </summary>
+    [Fact]
+    public void Load_UnknownOrMismatchedFormat_DropsThatEntryOnly()
+    {
+        var dir = NewDir();
+        Directory.CreateDirectory(dir);
+        var good = new string('0', 32);
+        var json = "{\"v\":1,\"links\":{"
+            + $"\"{good}\":{V1Entry(@"C:\Notes\tool.PY", "py")},"
+            + $"\"{new string('1', 32)}\":{V1Entry(@"C:\Notes\a.exe", "exe")},"
+            + $"\"{new string('2', 32)}\":{V1Entry(@"C:\Notes\b.py", "PY")},"
+            + $"\"{new string('3', 32)}\":{V1Entry(@"C:\Notes\c.py", "txt")},"
+            + $"\"{new string('4', 32)}\":{V1Entry(@"C:\Notes\d.md", "py")},"
+            + $"\"{new string('5', 32)}\":{V1Entry(@"C:\Notes\e.py", " py")},"
+            + $"\"{new string('6', 32)}\":{V1Entry(@"C:\Notes\f.py", "cpnote")},"
+            + $"\"{new string('7', 32)}\":{V1Entry(@"C:\Notes\g.cpnote", "md")},"
+            + $"\"{new string('8', 32)}\":{V1Entry(@"C:\Notes\h.cpnote", "cpnote", "utf16le", true)}"
+            + "}}";
+        File.WriteAllText(Path.Combine(dir, LinkStore.FileName), json);
+
+        var store = new LinkStore(dir);
+        store.Load();
+        Assert.Equal(1, store.Count);
+        Assert.True(store.TryGet(good, out var rec));
+        Assert.Equal("py", rec.Format.Wire);
+        Assert.Equal(@"C:\Notes\tool.PY", rec.Path);
+        Assert.Empty(Directory.GetFiles(dir, "links.unreadable-*.json"));
+    }
+
     [Fact]
     public void Load_DropsInvalidRecords()
     {

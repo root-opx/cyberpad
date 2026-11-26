@@ -115,3 +115,100 @@ test('CVSS vectors become cvss nodes', () => {
   assert.deepEqual(nodes[1], { type: 'cvss', vector: v });
   assert.ok(!parseInline(`x${v}`).some((n) => n.type === 'cvss'));
 });
+
+// ---- ==highlight== (the parser already produced a mark node; these tests pin the rules) ----
+
+const marks = (nodes) => nodes.filter((n) => n.type === 'mark');
+const typesOf = (nodes) => nodes.map((n) => n.type);
+
+test('highlight: ==text== becomes a mark node with the inner text', () => {
+  const nodes = parseInline('a ==hot== b');
+  assert.deepEqual(typesOf(nodes), ['text', 'mark', 'text']);
+  assert.equal(textOf(marks(nodes)[0].children), 'hot');
+  assert.equal(nodes[0].value, 'a ');
+  assert.equal(nodes[2].value, ' b');
+});
+
+test('highlight: several marks on a line, and a mark inside a paragraph, list item, heading and table cell', () => {
+  assert.equal(marks(parseInline('==a== and ==b==')).length, 2);
+  const para = parse('x ==y== z')[0];
+  assert.equal(marks(para.children).length, 1);
+  assert.equal(marks(parse('- ==y==')[0].items[0].children).length, 1);
+  assert.equal(marks(parse('# ==y==')[0].children).length, 1);
+  assert.equal(marks(parse('| h |\n| --- |\n| ==y== |')[0].rows[0][0]).length, 1);
+});
+
+test('highlight: not inside code spans or code blocks', () => {
+  const span = parseInline('`==x==`');
+  assert.deepEqual(typesOf(span), ['code']);
+  assert.equal(span[0].value, '==x==');
+  const block = parse('```\n==x==\n```')[0];
+  assert.equal(block.type, 'code');
+  assert.equal(block.text, '==x==');
+  assert.equal(marks(parseInline('a `==` b ==c==')).length, 1);
+});
+
+test('highlight: no closing == on the same line stays literal', () => {
+  for (const src of ['==open', 'a ==open b', '== x', 'x ==y', '==a\nb==']) {
+    const nodes = parse(src)[0].children || parseInline(src);
+    const all = JSON.stringify(nodes);
+    assert.ok(!all.includes('"mark"'), src);
+    assert.equal(textOf(nodes.filter((n) => n.type === 'text' || n.type === 'br')), src.replace('\n', ''), src);
+  }
+  const two = parse('==a\nb==')[0].children;
+  assert.deepEqual(typesOf(two), ['text', 'br', 'text']);
+});
+
+test('highlight: an empty ==== and spaces next to the markers stay literal', () => {
+  for (const src of ['====', '== ==', '== a ==', '==a ==', '== a==']) {
+    const nodes = parseInline(src);
+    assert.deepEqual(typesOf(nodes), ['text'], src);
+    assert.equal(nodes[0].value, src, src);
+  }
+});
+
+test('highlight: nests with bold, italic and strikethrough like strikethrough does', () => {
+  const strongIn = marks(parseInline('==**b**=='))[0];
+  assert.deepEqual(typesOf(strongIn.children), ['strong']);
+  const emIn = marks(parseInline('==*i* and x=='))[0];
+  assert.deepEqual(typesOf(emIn.children), ['em', 'text']);
+  const delIn = marks(parseInline('==~~d~~=='))[0];
+  assert.deepEqual(typesOf(delIn.children), ['del']);
+  const inStrong = parseInline('**==m==**')[0];
+  assert.equal(inStrong.type, 'strong');
+  assert.deepEqual(typesOf(inStrong.children), ['mark']);
+  const inDel = parseInline('~~==m==~~')[0];
+  assert.deepEqual(typesOf(inDel.children), ['mark']);
+  const inEm = parseInline('*==m==*')[0];
+  assert.deepEqual(typesOf(inEm.children), ['mark']);
+});
+
+test('highlight: an escaped marker is literal; a link label may hold a mark', () => {
+  const escaped = parseInline('\\==a==');
+  assert.equal(marks(escaped).length, 0);
+  assert.equal(textOf(escaped), '==a==');
+  const link = parseInline('[==a==](https://example.com)')[0];
+  assert.equal(link.type, 'link');
+  assert.deepEqual(typesOf(link.children), ['mark']);
+});
+
+test('highlight: a mark holds no raw HTML, only nodes', () => {
+  const m = marks(parseInline('==<b>x</b>=='))[0];
+  assert.equal(textOf(m.children), '<b>x</b>');
+  assert.deepEqual(typesOf(m.children), ['text']);
+});
+
+test('highlight: hostile lines of = parse fast (20,000 =, 5,000 =, and ==a repeats)', () => {
+  const inputs = [
+    '='.repeat(20000), '='.repeat(5000), '='.repeat(4999), `${'==a '.repeat(1249)}`, `==${'x '.repeat(2400)}`, '= '.repeat(2400), `${'=='.repeat(2400)}x`,
+    `${'a==b '.repeat(990)}`,
+  ];
+  for (const src of inputs) {
+    const t0 = process.hrtime.bigint();
+    parse(src);
+    const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+    assert.ok(ms < 100, `${src.slice(0, 12)}... (${src.length}) took ${ms} ms`);
+  }
+  const long = parse('='.repeat(20000))[0];
+  assert.equal(textOf(long.children), '='.repeat(20000)); // over the inline limit: plain text
+});

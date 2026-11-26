@@ -32,3 +32,34 @@ test('no inline script and no style attribute anywhere', () => {
   assert.doesNotMatch(html, /<style\b/i);
   assert.doesNotMatch(html, /\son[a-z]+\s*=/i, 'no inline event handlers');
 });
+
+test('the import file picker accepts every importable extension, and the drop hint matches', () => {
+  const store = require('../js/core/store.js');
+  const m = /<input type="file" id="file-input" accept="([^"]*)" hidden>/.exec(html);
+  assert.ok(m, 'file input present');
+  const accepted = m[1].split(',');
+  for (const ext of store.IMPORT_EXTENSIONS) assert.ok(accepted.includes(`.${ext}`), `.${ext} is accepted`);
+  assert.equal(accepted.length, store.IMPORT_EXTENSIONS.length, 'nothing extra is accepted');
+  assert.ok(!accepted.includes('.cpnote'));
+  assert.ok(html.includes('<p>Drop a text, code or backup .json file to import it</p>'));
+});
+
+test('highlight.js loads after codeedit.js, and the colouring layer is hidden from assistive technology', () => {
+  assert.ok(html.indexOf('js/core/codeedit.js') < html.indexOf('js/core/highlight.js'));
+  assert.ok(html.indexOf('js/core/highlight.js') < html.indexOf('js/app.js'));
+  assert.match(html, /<pre class="hl" id="hl" aria-hidden="true" inert><\/pre>/);
+});
+
+test('ctf.js is loaded once, after highlight.js and before app.js', () => {
+  assert.equal(html.split('js/core/ctf.js').length - 1, 1);
+  assert.ok(html.indexOf('js/core/highlight.js') < html.indexOf('js/core/ctf.js'));
+  assert.ok(html.indexOf('js/core/ctf.js') < html.indexOf('js/app.js'));
+});
+
+test('the copy and cut listeners never receive noteSensitiveCopy directly (an Event would count as force)', () => {
+  const app = fs.readFileSync(path.join(__dirname, '..', 'js', 'app.js'), 'utf8');
+  const lines = app.split('\n').filter((l) => /addEventListener\(\s*'(copy|cut)'/.test(l));
+  assert.ok(lines.length >= 2, 'copy and cut listeners present');
+  for (const l of lines) assert.ok(!/,\s*noteSensitiveCopy\s*\)/.test(l), l.trim());
+  assert.match(app, /force !== true/, 'only a literal true forces the clipboard clear');
+});

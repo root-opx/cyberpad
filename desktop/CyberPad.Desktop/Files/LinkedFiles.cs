@@ -37,6 +37,7 @@ public sealed class LinkedFiles
     public (LinkRecord Record, string Text) ReadNew(string fullPath, LinkFormat format)
     {
         ArgumentException.ThrowIfNullOrEmpty(fullPath);
+        RequireFormat(format);
         var snap = ReadSnapshot(fullPath);
         var (text, enc, bom, le) = Decode(format, snap.Bytes);
         return (new LinkRecord(fullPath, format, enc, bom, le, snap.Bytes.Length, snap.MtimeUtc, snap.Sha256), text);
@@ -173,6 +174,7 @@ public sealed class LinkedFiles
     {
         ArgumentException.ThrowIfNullOrEmpty(fullPath);
         ArgumentNullException.ThrowIfNull(text);
+        RequireFormat(format);
 
         var seed = new LinkRecord(fullPath, format, TextEncodingKind.Utf8, false, LineEnding.Lf, 0, default, string.Empty);
         var bytes = EncodeFor(seed, text);
@@ -265,7 +267,7 @@ public sealed class LinkedFiles
 
     private static (string Text, TextEncodingKind Enc, bool Bom, LineEnding Le) Decode(LinkFormat format, byte[] bytes)
     {
-        if (format == LinkFormat.CpNote)
+        if (format.IsEncrypted)
         {
             var skip = bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF ? 3 : 0;
             string raw;
@@ -291,7 +293,7 @@ public sealed class LinkedFiles
         byte[] bytes;
         try
         {
-            bytes = r.Format == LinkFormat.CpNote
+            bytes = r.Format.IsEncrypted
                 ? StrictUtf8.GetBytes(text)
                 : TextCodec.Encode(text, r.Encoding, r.Bom, r.LineEnding);
         }
@@ -403,6 +405,11 @@ public sealed class LinkedFiles
         }
         _log("linked write: replace failed, temp kept");
         return false;
+    }
+
+    private static void RequireFormat(LinkFormat format)
+    {
+        if (!format.IsDefined) throw new ArgumentException("A file format is required.", nameof(format));
     }
 
     private static string Hash(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();

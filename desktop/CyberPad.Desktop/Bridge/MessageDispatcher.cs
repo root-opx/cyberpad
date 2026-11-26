@@ -214,18 +214,18 @@ public sealed class MessageDispatcher
                         || nameEl.ValueKind != JsonValueKind.String
                         || textEl.ValueKind != JsonValueKind.String)
                         return Reject(type, id, "fields must be strings");
-                    if (!LinkFormats.TryParse(formatEl.GetString(), out var format)) return Reject(type, id, "unknown format");
+                    if (!LinkFormat.TryParse(formatEl.GetString(), out var format)) return Reject(type, id, "unknown format");
                     var suggested = nameEl.GetString()!;
                     if (suggested.Length > MaxNameChars) return Reject(type, id, "name too long");
                     var text = textEl.GetString()!;
                     if (text.Length > MaxFileTextChars) return Reject(type, id, "text too large");
-                    var safeName = FileNameSanitizer.Sanitize(suggested, LinkFormats.Extension(format));
+                    var safeName = FileNameSanitizer.Sanitize(suggested, format.Extension);
                     return await RunFileAsync(type, id!, false, async () =>
                     {
                         var r = await _actions.SaveAsFileAsync(format, safeName, text, relinkId).ConfigureAwait(false);
                         return r is null
                             ? Serialize(new { type = "fileCancelled", id })
-                            : Serialize(new { type = "fileLinked", id, linkId = r.LinkId, name = r.Name, format = LinkFormats.Wire(format) });
+                            : Serialize(new { type = "fileLinked", id, linkId = r.LinkId, name = r.Name, format = r.Format.Wire });
                     }).ConfigureAwait(false);
                 }
 
@@ -238,7 +238,7 @@ public sealed class MessageDispatcher
                             : Serialize(new
                             {
                                 type = "fileOpened", id, linkId = r.LinkId, name = r.Name,
-                                format = LinkFormats.Wire(r.Format), text = r.Text, alreadyLinked = r.AlreadyLinked,
+                                format = r.Format.Wire, text = r.Text, alreadyLinked = r.AlreadyLinked,
                             });
                     }).ConfigureAwait(false);
 

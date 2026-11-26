@@ -115,6 +115,8 @@ The host project copies `index.html`, `css/`, and `js/` into a `wwwroot` folder 
 
 ### Bridge between page and host
 
+Updated 2026-11-26: the list of file types is now the table in 2026-11-26-file-types-ide-selection-ctf-design.md. The `format` field of the file messages below is now one of those extensions, not only `txt`, `md` and `cpnote`.
+
 - **Transport:** `window.chrome.webview.postMessage(obj)` from page to host, and `CoreWebView2.PostWebMessageAsJson` from host to page.
 - **Every message the host accepts** goes through one dispatcher that checks:
   - The sender origin (`args.Source`) is exactly `https://cyberpad.example/`.
