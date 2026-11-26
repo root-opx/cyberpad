@@ -18,6 +18,8 @@ Read `docs/ux-handoff.md` first. Its rules apply: strict CSP, no `innerHTML`, no
 
 ## Non-goals
 
+Updated 2026-11-26: syntax colouring, bracket matching, and saving a script note under its language's extension were added later, and the language table was extended to 24 languages; see 2026-11-26-file-types-ide-selection-ctf-design.md.
+
 - Syntax colouring, code completion, bracket matching, linting or running code.
 - Saving a script note to a file with the language's extension. Linked files stay `.txt`, `.md` and `.cpnote`.
 - Detecting the language automatically.
@@ -64,6 +66,8 @@ No bridge change: the file is written from the existing `theme` message. A missi
 **Model.** A note gains `lang`: `''` for an ordinary Markdown note, or one of the language ids below. It is stored in plain text, also for encrypted notes, like the folder name. Backups and duplicates carry it. Anything not on the list loads as `''`.
 
 **Languages** *(the list and the rules are my call)*:
+
+Updated 2026-11-26: the table below was extended to 24 languages (batch, ruby, php, lua, perl, xml, ini and plain were added); see 2026-11-26-file-types-ide-selection-ctf-design.md.
 
 | id | Name | One indent | Enter adds an indent after a line ending in | A closer typed first on a line removes an indent |
 |---|---|---|---|---|

@@ -4,7 +4,7 @@ Start here if you are picking up the UX/UI work on CyberPad in a fresh session. 
 
 ## What CyberPad is
 
-An offline, cyberpunk-retro notepad for a cybersecurity specialist. It runs as a plain web page or as a Windows desktop app (WinForms + WebView2) that loads the same page. Besides Markdown notes with a live preview it has slash inserts, an inline calculator, AES-GCM note encryption, a secret scanner, IOC extraction and defanging, a CVSS calculator, a subnet calculator, and, in the desktop app only, notes linked to `.txt`/`.md`/`.cpnote` files on disk. The README lists every feature and shortcut.
+An offline, cyberpunk-retro notepad for a cybersecurity specialist. It runs as a plain web page or as a Windows desktop app (WinForms + WebView2) that loads the same page. Besides Markdown notes with a live preview it has slash inserts, an inline calculator, AES-GCM note encryption, a secret scanner, IOC extraction and defanging, a CVSS calculator, a subnet calculator, and, in the desktop app only, notes linked to files on disk (a fixed list of 69 text file types, `.cpnote` for encrypted notes), script notes with syntax colouring and line editing, a selection toolbar, and CTF tools (decoders, flag finder, folder report). The README lists every feature and shortcut.
 
 The look is "a salvaged corporate terminal": dark screens, a display face in OCR-A, glowing signal colours, an optional CRT effect (scanlines and glow), optional typing sounds, and a boot animation.
 
@@ -17,15 +17,17 @@ The look is "a salvaged corporate terminal": dark screens, a display face in OCR
 
 ```
 index.html        app shell: titlebar, sidebar, workspace (editor + preview), statusbar, dialogs, CSP
-css/style.css     everything visual, about 1,550 lines; theme tokens at the top
-js/app.js         application controller (about 4,550 lines): rendering of lists, bars, dialogs, palette, toasts
+css/style.css     everything visual, about 1,700 lines; theme tokens at the top
+js/app.js         application controller (about 5,900 lines): rendering of lists, bars, dialogs, palette, toasts
 js/ui/dom.js      NP.dom.h(tag, attrs, ...children): the only way UI builds elements
 js/ui/render.js   Markdown tree to DOM for the preview
 js/ui/caret.js    caret position (for the slash popup)
 js/ui/sound.js    typing sounds (Web Audio)
 js/early-theme.js applies the last theme (localStorage `cyberpad.theme`) before first paint; external file by design
 js/core/          pure logic with Node tests; usually no UI work here
-js/core/codeedit.js  script-mode languages, indent units and the Tab/Enter/Backspace rules
+js/core/codeedit.js  script-mode languages (24), indent units, comment markers, the Tab/Enter/Backspace rules, comment toggle, duplicate and move line
+js/core/highlight.js syntax-colouring tokenizer (one line at a time, with a small carried state) and bracket matching
+js/core/ctf.js    CTF codecs, readable-text scoring, decoding search, flag finder, templates, challenge parser and report builder
 js/platform.js    storage and file bridge (browser or desktop host)
 desktop/          Windows host, xUnit tests, build.ps1
 desktop/CyberPad.Install/    installer and uninstaller logic (folder rules, unpacking, manifest, registry, shortcut), tested by xUnit
@@ -56,14 +58,17 @@ The System setting resolves to Light or Dark and is never a `data-theme` value.
 - sidebar: New note, filter row, note list, tags;
 - find/replace bar;
 - secret-scanner alert bar;
-- editor, with the line-number gutter at its left edge;
+- editor, with the line-number gutter at its left edge and, in script notes, the syntax-colouring layer behind its text (`.hl`, with the matching-bracket outline);
+- selection toolbar: a `role="toolbar"` row of buttons above the selection (a full-width row above the status bar on phones), built when it shows and emptied when it hides;
+- Go to line dialog (`Ctrl+G`, palette Edit);
+- CTF dialogs (palette CTF section): New CTF challenge, Decode or encode (with the Caesar and XOR brute-force lists), Common decodings, Flags in this note, Flags in all notes, Flag formats;
 - script-mode language dialog (palette, Note: **Script mode: choose a language…**);
 - lock screen for encrypted notes;
 - preview and backlinks;
 - script code-block preview: one block with the language name and a Copy button;
 - statusbar: save LED, position, words, selection, language button (script notes; opens the language dialog), lock and timer, clock;
 - slash popup;
-- command palette (`Ctrl+K`);
+- command palette (`Ctrl+K`), in 13 sections: Recent notes, Note, File, Edit, Format, Text, Insert, View, Settings, Tools, CTF, Vault, Security (`PALETTE_SECTIONS` in `js/core/texttools.js`);
 - modal dialogs (built in `app.js`, e.g. CVSS, subnet, hashes);
 - toasts;
 - boot screen;
@@ -85,7 +90,8 @@ These come from the project and from the user's security rules in `~/.claude/rul
   - Its attribute allow-list (`SAFE_ATTR` in `dom.js`) is a security control: widen it only if the user agrees.
 - **Start-up theme and held note text.**
   - The start-up theme script (`js/early-theme.js`) must stay an external file: an inline script would break the CSP.
-  - Anything that holds note text off screen, such as the gutter's measuring element, must be emptied when a note locks.
+  - Anything that holds note text off screen or behind the editor, such as the gutter's measuring element and the syntax-colouring layer, must be emptied when a note locks (`clearHl()` and the gutter's clear run together).
+  - Decoded text and note-derived text (flags, report text, toolbar labels) is only ever inserted as text nodes or a form control's value, never as markup. A dialog that holds text from an encrypted note is created with `sensitive: true`, so a lock closes it, and copying from it clears the clipboard like copying from the note.
 - **Offline, no dependencies.**
   - No CDN, no web fonts from the network, no npm packages, no build step: the page must work when opened by double-clicking `index.html`.
   - Bundling a font file under the repo (allowed by `font-src 'self'`) is still a new dependency and needs the user's OK, including its licence.
@@ -112,9 +118,9 @@ These come from the project and from the user's security rules in `~/.claude/rul
   ```
 
 - **Tests:**
-  - `npm test` (Node built-in runner, 371 tests);
+  - `npm test` (Node built-in runner, 864 tests, including the tokenizer, the CTF helpers and the page/host file-type parity test);
   - `node --check js/app.js`;
-  - `dotnet test desktop/CyberPad.sln` (909 tests). The .NET test run rewrites `desktop/**/packages.lock.json`; revert that with `git checkout -- "desktop/**/packages.lock.json"`.
+  - `dotnet test desktop/CyberPad.sln` (1,185 tests). The .NET test run rewrites `desktop/**/packages.lock.json`; revert that with `git checkout -- "desktop/**/packages.lock.json"`.
 - **Manual checks:** README, "Manual checks for the desktop app". Add a line there for any desktop-visible UI change.
 
 ## Git

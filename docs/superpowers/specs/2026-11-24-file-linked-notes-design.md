@@ -11,6 +11,8 @@ The user wants CyberPad to work like Notepad with their own files: choose a fold
 
 ## Goals
 
+Updated 2026-11-26: the list of file types is now the table in 2026-11-26-file-types-ide-selection-ctf-design.md.
+
 1. **Save as file.** Link any note to a new or existing file the user picks in the Windows Save dialog, choosing the format.
 2. **Keep the file in step.** After linking, every change to the note reaches the file automatically, on the same debounce as `notes.json` saves, written crash-safely.
 3. **Open file.** Open a `.txt`, `.md` or `.cpnote` file from inside CyberPad. It becomes a linked note (or focuses the existing one if that file is already linked).
@@ -18,6 +20,8 @@ The user wants CyberPad to work like Notepad with their own files: choose a fold
 5. **Never lose or clobber.** If the file changed elsewhere, went missing, or can't be written, CyberPad says so and asks. It never silently overwrites, deletes or recreates a user file.
 
 ## Non-goals
+
+Updated 2026-11-26: the list of file types is now the table in 2026-11-26-file-types-ide-selection-ctf-design.md.
 
 - Formats beyond `.txt`, `.md`, `.cpnote` (no HTML, PDF, DOCX, RTF).
 - Registering file associations in the registry (the app is a portable zip with no installer). The README explains "Open with → Choose another app → CyberPad.exe → Always use this app".
