@@ -571,6 +571,7 @@ svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-width:
   white-space: pre;
   overflow-wrap: normal;
   overflow-x: auto;
+  font-variant-ligatures: none;
 }
 
 #editor::placeholder { color: var(--dim); }
@@ -621,6 +622,56 @@ svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-width:
   overflow-wrap: break-word;
 }
 .gutter-mirror > div { min-height: var(--mlh, 1.7em); }
+
+/* Syntax colouring layer. A static element behind the editor that draws the same text in colour, only the lines on
+   screen. It shows (and the editor's own text turns transparent) only while the pane has .hl-on, which script sets
+   and clears in one function, so transparent text never exists without the layer. It holds note text: script
+   empties it wherever it empties the gutter's measuring copy. Font, size, line height and tab size are copied from
+   the editor by script. */
+.hl {
+  display: none;
+  position: absolute;
+  z-index: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  background: transparent;
+  color: var(--ink);
+  white-space: pre;
+  tab-size: 4;
+  font-variant-ligatures: none;
+  user-select: none;
+  pointer-events: none;
+}
+.pane-editor.has-gutter .hl { left: var(--gutter-w, 3.5rem); }
+.pane-editor.hl-on .hl { display: block; }
+.pane-editor.hl-on #editor {
+  position: relative;
+  z-index: 1;
+  color: transparent;
+}
+.pane-editor.hl-on #editor::selection { background: var(--sel); color: transparent; }
+.hl-rows { position: absolute; top: 0; left: 0; min-width: 100%; }
+.hl-row { height: var(--hl-pitch, 1.7em); white-space: pre; }
+.hl .tok-comment { color: var(--dim); }
+.hl .tok-string,
+.hl .tok-attr,
+.hl .tok-variable { color: var(--cool); }
+.hl .tok-keyword,
+.hl .tok-tag { color: var(--hot); }
+.hl .tok-number,
+.hl .tok-constant,
+.hl .tok-section { color: var(--warn); }
+.hl .hl-match { outline: 1px solid var(--cool); }
+
+@media (forced-colors: active) {
+  .hl { display: none !important; }
+}
 
 /* ---------- find bar ---------- */
 .findbar {
@@ -1316,10 +1367,14 @@ dialog::backdrop { background: rgb(4 2 12 / 0.6); }
 
 /* ---------- CRT ---------- */
 body.crt #editor,
+body.crt .hl,
 body.crt .preview,
 body.crt .boot pre {
   text-shadow: 0 0 5px color-mix(in srgb, var(--ink) calc(var(--glow-strength) * 100%), transparent);
 }
+
+/* With the colouring layer on, the layer draws the glow: the editor's transparent text must not draw a second one. */
+body.crt .pane-editor.hl-on #editor { text-shadow: none; }
 
 body.crt::after {
   content: "";
@@ -1520,7 +1575,7 @@ button.sev:hover { box-shadow: 0 0 0 1px currentColor; }
   }
 
   .titlebar, .sidebar, .scrim, .statusbar, .findbar, .alertbar, .pane-editor, .backlinks,
-  .copy-btn, .toasts, .boot, .dropzone, .slash, .gutter, .gutter-mirror, dialog { display: none !important; }
+  .copy-btn, .toasts, .boot, .dropzone, .slash, .gutter, .gutter-mirror, .hl, dialog { display: none !important; }
   body.crt::after { display: none; }
 
   .workspace[data-view] .pane-preview { display: block; border: 0; }

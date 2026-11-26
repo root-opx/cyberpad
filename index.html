@@ -90,6 +90,7 @@
       <div class="panes">
         <section class="pane pane-editor" aria-label="Editor">
           <textarea id="editor" spellcheck="false" autocapitalize="off" aria-label="Note text" placeholder="Start typing. Type / for quick inserts."></textarea>
+          <pre class="hl" id="hl" aria-hidden="true" inert></pre>
           <div class="gutter" id="gutter" aria-hidden="true" inert></div>
           <div class="gutter-mirror" id="gutter-mirror" aria-hidden="true" inert></div>
           <div class="lockscreen" id="lockscreen" hidden>
@@ -150,16 +151,17 @@
   </div>
 
   <div id="dropzone" class="dropzone" hidden>
-    <p>Drop a .txt, .md or backup .json file to import it</p>
+    <p>Drop a text, code or backup .json file to import it</p>
   </div>
 
-  <input type="file" id="file-input" accept=".txt,.md,.markdown,.json" hidden>
+  <input type="file" id="file-input" accept=".txt,.md,.markdown,.py,.pyw,.js,.mjs,.cjs,.jsx,.ts,.tsx,.sh,.bash,.zsh,.ps1,.psm1,.psd1,.bat,.cmd,.c,.h,.cpp,.cc,.cxx,.hpp,.cs,.java,.go,.rs,.rb,.php,.lua,.pl,.sql,.html,.htm,.xml,.xsd,.xsl,.svg,.css,.scss,.json,.jsonl,.yaml,.yml,.toml,.ini,.cfg,.conf,.properties,.env,.log,.csv,.tsv,.diff,.patch,.nfo,.lst,.rules,.yar,.yara,.nse,.asm,.s,.tex,.rst,.gitignore" hidden>
   <input type="file" id="hash-file-input" hidden>
 
   <script src="js/core/calc.js"></script>
   <script src="js/core/markdown.js"></script>
   <script src="js/core/texttools.js"></script>
   <script src="js/core/codeedit.js"></script>
+  <script src="js/core/highlight.js"></script>
   <script src="js/core/vault.js"></script>
   <script src="js/core/store.js"></script>
   <script src="js/core/filelink.js"></script>

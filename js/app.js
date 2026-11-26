@@ -4,6 +4,7 @@
 
   const { calc, markdown, text: T, codeedit, vault, store, secops, cvss, netcalc, dom, caret, sound, renderMarkdown } = window.NP;
   const { h } = dom;
+  const highlight = window.NP.highlight;
   const { PlatformError } = window.NP.platformFactory;
   const platform = window.NP.platformFactory.createPlatform(window);
   const $ = (id) => document.getElementById(id);
@@ -24,7 +25,7 @@
     modal: $('modal'), toasts: $('toasts'), boot: $('boot'), bootLog: $('boot-log'), dropzone: $('dropzone'),
     fileInput: $('file-input'), hashFileInput: $('hash-file-input'), wordmark: document.querySelector('.wordmark-text'),
     secretAlert: $('secret-alert'), secretAlertText: $('secret-alert-text'),
-    gutter: $('gutter'), gutterMirror: $('gutter-mirror'),
+    gutter: $('gutter'), gutterMirror: $('gutter-mirror'), hl: $('hl'),
   };
 
   const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -700,6 +701,7 @@
     els.lockscreen.hidden = !locked;
     els.editor.hidden = locked;
     if (locked) {
+      clearHl(); // before anything else: a locked note's text must not stay in the layer
       els.editor.value = '';
       els.unlockError.textContent = '';
     } else {
@@ -716,6 +718,7 @@
     document.title = note ? `${titleOf(note)} | CyberPad` : 'CyberPad';
     g.hold = false;
     updateGutter();
+    updateHl();
   }
 
   // ------------------------------------------------------ line-number gutter
@@ -759,6 +762,7 @@
     g.text = [];
     g.tops = null;
     g.key = '';
+    clearHl(); // the colouring layer holds note text too: the two are always emptied together
   }
 
   function clearRows() {
@@ -854,6 +858,21 @@
     g.raf = requestAnimationFrame(drawGutter);
   }
 
+  /**
+   * The real distance between two lines of an unwrapped (script) note. The engine lays lines out on a 1/64 px grid,
+   * so it can differ from the computed line height by a few thousandths of a pixel: over 20,000 lines that is a
+   * whole row. When the text is taller than the box, the pitch is taken from the textarea's own height instead.
+   * The gutter and the colouring layer both use this one measurement.
+   */
+  function scriptPitch(ed, cs, lh, padTop, lines) {
+    const sh = ed.scrollHeight;
+    if (sh > ed.clientHeight && lines > 1) {
+      const p = (sh - padTop - (parseFloat(cs.paddingBottom) || 0)) / lines;
+      if (p > lh * 0.95 && p < lh * 1.05) return p;
+    }
+    return lh;
+  }
+
   /** Draws the numbers that can be seen, plus a little overscan. */
   function drawGutter() {
     g.raf = 0;
@@ -883,15 +902,7 @@
       used++;
     };
     if (!g.wrapped) {
-      // The engine lays lines out on a 1/64 px grid, so its real pitch can differ from the computed line height
-      // by a few thousandths of a pixel: over 20,000 lines that is a whole row. When the text is taller than the
-      // box, the pitch is taken from the textarea's own height instead.
-      let pitch = lh;
-      const sh = ed.scrollHeight;
-      if (sh > view && g.lines > 1) {
-        const p = (sh - padTop - (parseFloat(cs.paddingBottom) || 0)) / g.lines;
-        if (p > lh * 0.95 && p < lh * 1.05) pitch = p;
-      }
+      const pitch = scriptPitch(ed, cs, lh, padTop, g.lines);
       const first = Math.max(0, Math.floor((st - padTop) / pitch) - GUTTER_OVERSCAN);
       const last = Math.min(g.lines - 1, Math.ceil((st + view - padTop) / pitch) + GUTTER_OVERSCAN);
       for (let k = first; k <= last; k++) put(k + 1, padTop + k * pitch - st);
@@ -927,6 +938,433 @@
     if (c === g.caret) return;
     g.caret = c;
     scheduleGutterDraw();
+  }
+
+  // ------------------------------------------------------ syntax colouring layer
+  //
+  // A static <pre> behind the editor draws the note's text in colour at the same place as the editor's own text, which
+  // is transparent while the layer shows. Script notes do not wrap, so each line is one row, and only the rows on
+  // screen (plus a little overscan) exist. Everything the layer knows lives in `hl`; clearHl() empties it all, and
+  // clearMirror() calls it, so the layer is emptied on every path the gutter's measuring copy is: lock, note switch,
+  // delete, language change, setting off, printing, editor off screen.
+  //
+  // Tokenizer states are remembered for every 200th line (`sts`) next to those lines' offsets (`offs`). To draw from
+  // line L the nearest remembered line at or before L is tokenized forward (at most 200 lines, a "chunk"). Chunks keep
+  // offsets and tokens only, never the text, which is sliced from the editor's own value when needed. An edit forgets
+  // everything from its first changed line (found from the beforeinput caret; unknown edits forget from line 0).
+  // Catching up to a viewport far past the remembered lines happens in slices of HL_SLICE_CHUNKS chunks (5,000 lines)
+  // per timer tick (about a millisecond of work each); until then those rows are drawn uncoloured.
+  const HL_STEP = 200;
+  const HL_MAX_LINES = 200000;
+  const HL_SLICE_CHUNKS = 25;
+  const HL_SYNC_CHUNKS = 6; // a gap this small is filled before drawing; a bigger one is caught up in slices
+  const HL_OVERSCAN = 3;
+  const HL_CHUNK_CACHE = 48;
+  const HL_TOKEN_TYPES = new Set(['comment', 'string', 'keyword', 'number', 'constant', 'tag', 'attr', 'section', 'variable']);
+  const HL_SIMPLE_EDITS = new Set(['insertText', 'insertLineBreak', 'insertParagraph', 'insertFromPaste', 'insertReplacementText', 'insertCompositionText', 'deleteContentBackward', 'deleteContentForward', 'deleteByCut']);
+  const hl = {
+    on: false, lang: '', noteId: null, lines: 1, len: 0,
+    offs: [0], sts: [highlight.initialState()], chunks: new Map(), rows: new Map(),
+    box: null, rowFirst: -1, rowLast: -1, dirtyFrom: Infinity, dirtyLines: new Set(), pending: null,
+    want: 0, buildTimer: 0, matchRaf: 0, match: null, marks: new Map(), key: '', pitch: '', sbw: -1, sbh: -1,
+  };
+
+  /** The one place that shows or hides the layer: the class shows it and makes the editor's own text transparent. */
+  function setHlActive(on) {
+    hl.on = on;
+    els.editorPane.classList.toggle('hl-on', on);
+  }
+
+  /** Empties the layer and forgets everything about the text. Safe to call at any time. */
+  function clearHl() {
+    clearTimeout(hl.buildTimer);
+    cancelAnimationFrame(hl.matchRaf);
+    hl.buildTimer = 0;
+    hl.matchRaf = 0;
+    setHlActive(false);
+    els.hl.replaceChildren();
+    hl.box = null;
+    hl.rows = new Map();
+    hl.chunks = new Map();
+    hl.offs = [0];
+    hl.sts = [highlight.initialState()];
+    hl.marks = new Map();
+    hl.match = null;
+    hl.dirtyLines = new Set();
+    hl.dirtyFrom = Infinity;
+    hl.pending = null;
+    hl.rowFirst = -1;
+    hl.rowLast = -1;
+    hl.noteId = null;
+    hl.lang = '';
+    hl.key = '';
+    hl.pitch = '';
+    hl.sbw = -1;
+    hl.sbh = -1;
+    hl.len = 0;
+    hl.lines = 1;
+  }
+
+  function hlWanted(note) {
+    return !!note && isEditable(note) && isScript(note) && note.lang !== 'plain' && S.settings.syntaxColors
+      && !g.hold && highlight.LANGUAGE_IDS.includes(note.lang) && !els.editor.hidden;
+  }
+
+  /** Forget everything from `line` on (its start offset and state, and so everything before it, stay valid). */
+  function hlInvalidate(line) {
+    const c = Math.floor(line / HL_STEP);
+    if (hl.offs.length > c + 1) hl.offs.length = c + 1;
+    if (hl.sts.length > c + 1) hl.sts.length = c + 1;
+    for (const k of [...hl.chunks.keys()]) if (k >= c) hl.chunks.delete(k);
+    if (line < hl.dirtyFrom) hl.dirtyFrom = line;
+  }
+
+  /** Remembers the offsets of every 200th line up to chunk c. False when the text has fewer lines. */
+  function hlExtendOffs(v, c) {
+    while (hl.offs.length <= c) {
+      let pos = hl.offs[hl.offs.length - 1];
+      for (let i = 0; i < HL_STEP; i++) {
+        const e = v.indexOf('\n', pos);
+        if (e < 0) return false;
+        pos = e + 1;
+      }
+      hl.offs.push(pos);
+    }
+    return true;
+  }
+
+  /** Tokenizes chunk c (its offset and state must be remembered). A full chunk also remembers where the next one starts. */
+  function hlCompute(v, c) {
+    const starts = [];
+    const ends = [];
+    const toks = [];
+    const ins = [];
+    let pos = hl.offs[c];
+    let st = hl.sts[c];
+    let full = true;
+    for (let i = 0; i < HL_STEP; i++) {
+      let e = v.indexOf('\n', pos);
+      const lastLine = e < 0;
+      if (lastLine) e = v.length;
+      const r = highlight.tokenizeLine(hl.lang, v.slice(pos, e), st);
+      starts.push(pos);
+      ends.push(e);
+      toks.push(r.tokens);
+      ins.push(st);
+      st = r.state;
+      if (lastLine) { full = false; break; }
+      pos = e + 1;
+    }
+    if (full) {
+      if (hl.offs.length === c + 1) hl.offs.push(pos);
+      if (hl.sts.length === c + 1) hl.sts.push(st);
+    }
+    return { starts, ends, toks, ins };
+  }
+
+  /** Makes sure the state at the start of chunk c is known, tokenizing at most maxChunks chunks to get there. */
+  function hlEnsureStates(v, c, maxChunks) {
+    if (hl.sts.length > c) return true;
+    if (c - (hl.sts.length - 1) > maxChunks) return false;
+    while (hl.sts.length <= c) {
+      const k = hl.sts.length - 1;
+      if (!hlExtendOffs(v, k)) return false;
+      const before = hl.sts.length;
+      hlCompute(v, k);
+      if (hl.sts.length === before) return false; // the text ended
+    }
+    return true;
+  }
+
+  /** Chunk c with tokens, or null when its state is not known yet (the caller draws it uncoloured). */
+  function hlChunk(v, c) {
+    let ch = hl.chunks.get(c);
+    if (ch) return ch;
+    if (!hlExtendOffs(v, c) || !hlEnsureStates(v, c, HL_SYNC_CHUNKS)) return null;
+    ch = hlCompute(v, c);
+    if (hl.chunks.size >= HL_CHUNK_CACHE) hl.chunks.clear();
+    hl.chunks.set(c, ch);
+    return ch;
+  }
+
+  /** Where the lines of chunk c start and end, without tokens. Null when the text has no such chunk. */
+  function hlPlainChunk(v, c) {
+    if (!hlExtendOffs(v, c)) return null;
+    const starts = [];
+    const ends = [];
+    let pos = hl.offs[c];
+    for (let i = 0; i < HL_STEP; i++) {
+      let e = v.indexOf('\n', pos);
+      const lastLine = e < 0;
+      if (lastLine) e = v.length;
+      starts.push(pos);
+      ends.push(e);
+      if (lastLine) break;
+      pos = e + 1;
+    }
+    return { starts, ends, toks: null, ins: null };
+  }
+
+  /** A lower bound for the line holding offset pos, from the remembered offsets (at most 200 newlines are counted). */
+  function hlLineBound(v, pos) {
+    const offs = hl.offs;
+    let lo = 0;
+    let hi = offs.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (offs[mid] <= pos) lo = mid; else hi = mid - 1;
+    }
+    let line = lo * HL_STEP;
+    let p = offs[lo];
+    for (let i = 0; i < HL_STEP; i++) {
+      const e = v.indexOf('\n', p);
+      if (e < 0 || e >= pos) break;
+      line++;
+      p = e + 1;
+    }
+    return line;
+  }
+
+  /** One row: the line's text as text nodes and <span class="tok-…"> elements, never markup. */
+  function hlRow(text, toks, marks) {
+    const row = h('div', { class: 'hl-row' });
+    const piece = (s, e, type, mark) => {
+      if (e <= s) return;
+      const str = text.slice(s, e);
+      if (!type && !mark) row.appendChild(document.createTextNode(str));
+      else row.appendChild(h('span', { class: [type ? `tok-${type}` : '', mark ? 'hl-match' : ''].filter(Boolean).join(' ') }, str));
+    };
+    const push = (s, e, type) => {
+      let a = s;
+      if (marks) {
+        for (const m of marks) {
+          if (m >= a && m < e) { piece(a, m, type, false); piece(m, m + 1, type, true); a = m + 1; }
+        }
+      }
+      piece(a, e, type, false);
+    };
+    let pos = 0;
+    if (toks) {
+      for (const t of toks) {
+        push(pos, t.start, '');
+        push(t.start, t.end, HL_TOKEN_TYPES.has(t.type) ? t.type : '');
+        pos = t.end;
+      }
+    }
+    push(pos, text.length, '');
+    return row;
+  }
+
+  /** Copies the editor's text metrics to the layer when they change, and keeps it clear of the editor's scrollbars. */
+  function hlSyncStyle(ed, cs, pitch) {
+    const key = [cs.fontFamily, cs.fontSize, cs.fontWeight, cs.fontStyle, cs.letterSpacing, cs.wordSpacing, cs.tabSize, cs.lineHeight].join('|');
+    if (key !== hl.key) {
+      hl.key = key;
+      const st = els.hl.style;
+      for (const p of ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'letterSpacing', 'wordSpacing', 'tabSize', 'lineHeight']) st[p] = cs[p];
+    }
+    const p = `${pitch}px`;
+    if (p !== hl.pitch) { hl.pitch = p; els.hl.style.setProperty('--hl-pitch', p); }
+    const sbw = ed.offsetWidth - ed.clientWidth;
+    const sbh = ed.offsetHeight - ed.clientHeight;
+    if (sbw !== hl.sbw) { hl.sbw = sbw; els.hl.style.right = `${sbw}px`; }
+    if (sbh !== hl.sbh) { hl.sbh = sbh; els.hl.style.bottom = `${sbh}px`; }
+  }
+
+  /** Draws the visible rows. Rows below dirtyFrom (and the dirty ones) are rebuilt; the others are only moved. */
+  function drawHl() {
+    if (!hl.on) return;
+    const ed = els.editor;
+    if (!ed.clientHeight || !ed.clientWidth) { clearHl(); return; } // editor not on screen
+    const cs = getComputedStyle(ed);
+    let lh = parseFloat(cs.lineHeight);
+    if (!(lh > 0)) lh = parseFloat(cs.fontSize) * 1.7;
+    const padTop = parseFloat(cs.paddingTop) || 0;
+    const padLeft = parseFloat(cs.paddingLeft) || 0;
+    const pitch = scriptPitch(ed, cs, lh, padTop, hl.lines);
+    hlSyncStyle(ed, cs, pitch);
+    const st = ed.scrollTop;
+    const first = Math.max(0, Math.floor((st - padTop) / pitch) - HL_OVERSCAN);
+    const last = Math.min(hl.lines - 1, Math.ceil((st + ed.clientHeight - padTop) / pitch) + HL_OVERSCAN);
+    if (!hl.box) { hl.box = h('div', { class: 'hl-rows' }); els.hl.appendChild(hl.box); }
+    hl.box.style.top = `${padTop + first * pitch - st}px`;
+    hl.box.style.left = `${padLeft - ed.scrollLeft}px`;
+    const rebuildAll = hl.dirtyFrom !== Infinity || hl.dirtyLines.size > 0;
+    if (!rebuildAll && first === hl.rowFirst && last === hl.rowLast) return; // only moved
+    let v = null;
+    const rows = [];
+    const fresh = new Map();
+    let plain = false;
+    let needChunk = -1;
+    for (let k = first; k <= last; k++) {
+      const old = hl.rows.get(k);
+      if (old && k < hl.dirtyFrom && !hl.dirtyLines.has(k)) { rows.push(old); fresh.set(k, old); continue; }
+      if (v === null) v = ed.value;
+      const c = Math.floor(k / HL_STEP);
+      let ch = hlChunk(v, c);
+      if (!ch) {
+        ch = hlPlainChunk(v, c);
+        if (ch) { plain = true; needChunk = Math.max(needChunk, c); }
+      }
+      const j = k - c * HL_STEP;
+      if (!ch || j >= ch.starts.length) break; // past the end of the text
+      const row = hlRow(v.slice(ch.starts[j], ch.ends[j]), ch.toks ? ch.toks[j] : null, hl.marks.get(k) || null);
+      rows.push(row);
+      fresh.set(k, row);
+    }
+    hl.rows = fresh;
+    hl.box.replaceChildren(...rows);
+    hl.rowFirst = first;
+    hl.rowLast = last;
+    hl.dirtyFrom = Infinity;
+    hl.dirtyLines.clear();
+    if (plain) {
+      hl.want = needChunk;
+      if (!hl.buildTimer) hl.buildTimer = setTimeout(hlBuildStep, 0);
+    }
+  }
+
+  /** One slice of catching up: tokenizes up to 5,000 lines towards the viewport, then redraws or schedules the next slice (a timer, so catching up does not wait for frames). */
+  function hlBuildStep() {
+    hl.buildTimer = 0;
+    if (!hl.on) return;
+    const v = els.editor.value;
+    if (v.length !== hl.len) return; // an edit is about to rebuild everything anyway
+    let n = 0;
+    while (hl.sts.length <= hl.want && n < HL_SLICE_CHUNKS) {
+      const k = hl.sts.length - 1;
+      if (!hlExtendOffs(v, k)) break;
+      const before = hl.sts.length;
+      hlCompute(v, k);
+      if (hl.sts.length === before) break;
+      n++;
+    }
+    if (hl.sts.length > hl.want) {
+      hl.dirtyFrom = 0; // the rows drawn uncoloured are redrawn
+      drawHl();
+    } else if (n === HL_SLICE_CHUNKS) {
+      hl.buildTimer = setTimeout(hlBuildStep, 0);
+    }
+  }
+
+  /** Decides whether the layer shows for the open note, and (re)builds it from scratch when it does. */
+  function updateHl() {
+    const note = active();
+    const ed = els.editor;
+    if (!hlWanted(note) || !ed.clientHeight || !ed.clientWidth) { if (hl.on || hl.noteId) clearHl(); return; }
+    const v = ed.value;
+    const lines = g.on && !g.wrapped && g.noteId === note.id ? g.lines : countLines(v);
+    if (lines > HL_MAX_LINES) { if (hl.on || hl.noteId) clearHl(); return; }
+    if (!hl.on || hl.noteId !== note.id || hl.lang !== note.lang) clearHl();
+    hl.noteId = note.id;
+    hl.lang = note.lang;
+    hl.lines = lines;
+    hl.len = v.length;
+    hlInvalidate(0);
+    setHlActive(true);
+    drawHl();
+    scheduleBracket();
+  }
+
+  /** The line the edit about to happen starts on is remembered, so its input event forgets only from there. */
+  function onHlBeforeInput(e) {
+    if (!hl.on) return;
+    if (!HL_SIMPLE_EDITS.has(e.inputType)) { hl.pending = 0; return; }
+    hl.pending = hlLineBound(els.editor.value, Math.max(0, els.editor.selectionStart - 1));
+  }
+
+  function onHlInput() {
+    const note = active();
+    if (!hlWanted(note)) { if (hl.on || hl.noteId) clearHl(); return; }
+    if (!hl.on) { updateHl(); return; }
+    const v = els.editor.value;
+    const lines = g.on && !g.wrapped ? g.lines : countLines(v);
+    if (lines > HL_MAX_LINES) { clearHl(); return; }
+    hl.lines = lines;
+    hl.len = v.length;
+    hlInvalidate(hl.pending === null ? 0 : hl.pending);
+    hl.pending = null;
+    drawHl();
+    scheduleBracket();
+  }
+
+  function onHlScroll() {
+    if (hl.on) drawHl();
+  }
+
+  /** The editor was resized or shown again: redraw, or build the layer if it should show and does not. */
+  function hlRefresh() {
+    if (hl.on) drawHl();
+    else if (hlWanted(active())) updateHl();
+  }
+
+  // Matching bracket: the two brackets get an outline in the layer. One search per animation frame.
+  function scheduleBracket() {
+    if (!hl.on || hl.matchRaf) return;
+    hl.matchRaf = requestAnimationFrame(updateBracket);
+  }
+
+  /** The line and column of offset pos, and the chunk its line is in. */
+  function hlLocate(v, pos) {
+    for (;;) {
+      const next = hl.offs.length;
+      if (!hlExtendOffs(v, next) || hl.offs[next] > pos) break;
+    }
+    const line = hlLineBound(v, pos);
+    const c = Math.floor(line / HL_STEP);
+    let start = hl.offs[c];
+    for (let i = c * HL_STEP; i < line; i++) start = v.indexOf('\n', start) + 1;
+    return { line, column: pos - start, c };
+  }
+
+  function hlFindMatch(v, pos) {
+    const bracket = (ch) => ch === '(' || ch === ')' || ch === '[' || ch === ']' || ch === '{' || ch === '}';
+    if (!bracket(v[pos - 1]) && !bracket(v[pos])) return null;
+    const at = hlLocate(v, pos);
+    if (!hlEnsureStates(v, at.c, HL_SYNC_CHUNKS)) return null;
+    const chunkOf = (i) => (i >= 0 && i < hl.lines ? hlChunk(v, Math.floor(i / HL_STEP)) : null);
+    const getLine = (i) => {
+      const ch = chunkOf(i);
+      const j = i - Math.floor(i / HL_STEP) * HL_STEP;
+      return ch && j < ch.starts.length ? v.slice(ch.starts[j], ch.ends[j]) : null;
+    };
+    const stateAt = (i) => {
+      const ch = chunkOf(i);
+      const j = i - Math.floor(i / HL_STEP) * HL_STEP;
+      return ch && j < ch.ins.length ? ch.ins[j] : undefined;
+    };
+    return highlight.matchBracket(getLine, hl.lines, at.line, at.column, hl.lang, stateAt);
+  }
+
+  function updateBracket() {
+    hl.matchRaf = 0;
+    if (!hl.on) return;
+    const ed = els.editor;
+    let next = null;
+    if (ed.selectionStart === ed.selectionEnd) next = hlFindMatch(ed.value, ed.selectionStart);
+    const old = hl.match;
+    const same = (a, b) => (a === null && b === null) || (a !== null && b !== null
+      && a.open.line === b.open.line && a.open.column === b.open.column && a.close.line === b.close.line && a.close.column === b.close.column);
+    if (same(old, next)) return;
+    for (const m of [old, next]) if (m) { hl.dirtyLines.add(m.open.line); hl.dirtyLines.add(m.close.line); }
+    hl.match = next;
+    hl.marks = new Map();
+    if (next) {
+      for (const p of [next.open, next.close]) {
+        const cols = hl.marks.get(p.line) || [];
+        cols.push(p.column);
+        cols.sort((a, b) => a - b);
+        hl.marks.set(p.line, cols);
+      }
+    }
+    drawHl();
+  }
+
+  function toggleSyntaxColors() {
+    S.settings.syntaxColors = !S.settings.syntaxColors;
+    saveSettings();
+    updateHl();
+    toast(S.settings.syntaxColors ? 'Syntax colouring on.' : 'Syntax colouring off.');
   }
 
   function lineNumbersTitle() {
@@ -1105,20 +1543,29 @@
     });
   }
 
+  // Notes whose language the user picked (language dialog or "Back to a Markdown note"). Saving such a note under another
+  // file type keeps that choice. Kept for this session only, never saved.
+  const langByHand = new Set();
+
+  /** Re-renders everything a language change touches. */
+  function refreshAfterLang(note) {
+    if (note.id !== S.activeId) return;
+    renderEditor();
+    renderList();
+    renderTags();
+    renderPreview();
+    updateStatus();
+  }
+
   /** Switches a note between Markdown (`''`) and a script language. The text, its history and its date are not touched. */
-  function setNoteLang(note, id) {
+  function setNoteLang(note, id, byHand = false) {
     if (!note || !isEditable(note) || (id !== '' && !codeedit.language(id))) return;
     closeSlash();
     arrowMemo = null;
     note.lang = id;
+    if (byHand) langByHand.add(note.id);
     persistNow();
-    if (note.id === S.activeId) {
-      renderEditor();
-      renderList();
-      renderTags();
-      renderPreview();
-      updateStatus();
-    }
+    refreshAfterLang(note);
     toast(id ? `Script mode: ${codeedit.language(id).name}.` : 'Back to a Markdown note.');
   }
 
@@ -1144,7 +1591,7 @@
       actions: [{ label: 'Cancel', value: null }],
     });
     if (!picked || active() !== note) return;
-    setNoteLang(note, picked.id);
+    setNoteLang(note, picked.id, true);
   }
 
   async function moveToFolder() {
@@ -1773,6 +2220,7 @@
     S.tabEscape = false;
 
     const note = active();
+    if (lineEditKeydown(e, note)) return;
     if (isScript(note)) { scriptKeydown(e, note, escaped); return; }
 
     if (e.key === 'Tab' && !e.ctrlKey && !e.altKey && !e.metaKey) {
@@ -1793,6 +2241,90 @@
     if (e.key === 'Enter' && !e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey && !e.isComposing) {
       if (continueList()) e.preventDefault();
     }
+  }
+
+  // ------------------------------------------------------ line editing (comment, duplicate, move, go to line)
+
+  /**
+   * Runs a codeedit line command on the editor's selection as one undo step. Script notes pass their language; Markdown
+   * notes pass '' (duplicate and move only). Returns false when the command does not apply.
+   */
+  function applyLineEdit(kind, dir = 0) {
+    const note = active();
+    const ed = els.editor;
+    if (!isEditable(note) || ed.hidden) return false;
+    const { selectionStart: s, selectionEnd: t, value } = ed;
+    const id = isScript(note) ? note.lang : '';
+    let r = null;
+    if (kind === 'comment') r = id ? codeedit.toggleComment(value, s, t, id) : null;
+    else if (kind === 'duplicate') r = codeedit.duplicateLines(value, s, t, id);
+    else if (kind === 'move') r = codeedit.moveLines(value, s, t, id, dir);
+    if (!r) return false;
+    // A result that leaves the text as it is only moves the selection: nothing is edited, nothing is dispatched.
+    if (value.slice(r.start, r.end) === r.insert) { ed.setSelectionRange(r.selStart, r.selEnd); return true; }
+    if (value.length - (r.end - r.start) + r.insert.length > store.LIMITS.body) { toast('The result would be too long for one note.', 'error'); return true; }
+    replaceRange(r.start, r.end, r.insert, r.selStart, r.selEnd);
+    return true;
+  }
+
+  /**
+   * Ctrl+/, Ctrl+Shift+D, Alt+Up, Alt+Down and Ctrl+G in the editor. Returns true when the key was used. Ctrl+G stays
+   * "Find next" while the find bar is open.
+   */
+  function lineEditKeydown(e, note) {
+    if (e.isComposing || e.keyCode === 229 || !isEditable(note)) return false;
+    const mod = e.ctrlKey || e.metaKey;
+    let done = false;
+    if (mod && !e.altKey && (e.key === '/' || e.code === 'Slash' || e.code === 'NumpadDivide')) {
+      if (!isScript(note)) return false;
+      applyLineEdit('comment');
+      done = true;
+    } else if (mod && !e.altKey && e.shiftKey && e.key.toLowerCase() === 'd') {
+      applyLineEdit('duplicate');
+      done = true;
+    } else if (e.altKey && !mod && !e.shiftKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+      applyLineEdit('move', e.key === 'ArrowUp' ? -1 : 1);
+      done = true;
+    } else if (mod && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'g' && els.findbar.hidden) {
+      gotoLineDialog();
+      done = true;
+    }
+    if (done) { e.preventDefault(); e.stopPropagation(); }
+    return done;
+  }
+
+  /** Go to line…: a number from 1 to the note's line count. */
+  async function gotoLineDialog() {
+    const note = active();
+    if (!isEditable(note)) return;
+    const total = countLines(els.editor.value);
+    const input = h('input', { type: 'number', id: 'goto-line', autocomplete: 'off' });
+    // Fixed values and a line count (an integer), set as properties: SAFE_ATTR does not list min, max or inputmode.
+    input.min = '1';
+    input.max = String(total);
+    input.inputMode = 'numeric';
+    const err = h('p', { class: 'form-error', role: 'alert' });
+    const pending = showDialog({
+      title: 'Go to line',
+      initialFocus: '#goto-line',
+      body: [h('label', { class: 'field' }, h('span', null, 'Line number'), input), err],
+      actions: [{ label: 'Cancel', value: null }, { label: 'Go', submit: true, className: 'btn-primary' }],
+      onSubmit: () => {
+        const raw = input.value.trim();
+        const n = /^\d{1,9}$/.test(raw) ? Number(raw) : NaN;
+        if (!(n >= 1 && n <= total)) {
+          err.textContent = `Enter a line number from 1 to ${total}.`;
+          input.focus();
+          return undefined;
+        }
+        return n;
+      },
+    });
+    // The page checks the number itself and shows its own message; the browser's built-in bubble would replace it.
+    if (input.form) input.form.noValidate = true;
+    const n = await pending;
+    if (typeof n !== 'number' || active() !== note || !isEditable(note)) return;
+    gotoLine(n - 1);
   }
 
   /**
@@ -2056,8 +2588,9 @@
       C('Note', 'Duplicate note', duplicateNote, null, editable && !note.cipher),
       C('Note', 'Show version history', showHistory, null, editable),
       C('Note', 'Go to heading', () => setTimeout(() => openPalette('@'), 0), '@', editable && !isScript(note)),
+      C('Note', 'Go to line…', gotoLineDialog, 'Ctrl G', editable),
       C('Note', 'Script mode: choose a language…', chooseLanguage, null, editable),
-      C('Note', 'Back to a Markdown note', () => setNoteLang(active(), ''), null, editable && isScript(note)),
+      C('Note', 'Back to a Markdown note', () => setNoteLang(active(), '', true), null, editable && isScript(note)),
       C('Note', 'Move to folder…', moveToFolder, null, !!note),
       C('Note', 'Remove from folder', removeFromFolder, null, !!(note && note.folder)),
       C('Note', 'Rename folder…', renameFolder, null, !!(note && note.folder)),
@@ -2069,6 +2602,7 @@
       C('File', 'Show file in folder', revealActive, null, platform.isDesktop && !!(note && note.file)),
       C('File', 'Unlink from file', unlinkActive, null, platform.isDesktop && !!(note && note.file)),
       C('File', 'Export note as Markdown', exportNote, null, editable),
+      C('File', 'Export note as file', exportNoteFile, null, editable && isScript(note) && !platform.isDesktop),
       C('File', 'Export note as PDF', exportPdf, null, editable),
       C('File', 'Export backup of all notes', exportBackup),
       C('File', 'Export encrypted backup of all notes', exportEncryptedBackup),
@@ -2084,6 +2618,7 @@
       C('View', S.settings.sound ? 'Turn off typing sounds' : 'Turn on typing sounds', toggleSound),
       C('View', S.settings.arrows ? 'Turn off arrow replacement' : 'Turn on arrow replacement', toggleArrows),
       C('View', lineNumbersTitle(), cycleLineNumbers),
+      C('View', S.settings.syntaxColors ? 'Turn off syntax colouring' : 'Turn on syntax colouring', toggleSyntaxColors),
       C('View', S.settings.boot ? 'Skip the boot screen on start' : 'Show the boot screen on start', toggleBoot),
       C('View', 'Keyboard shortcuts', showShortcuts, 'F1'),
       C('View', 'About CyberPad', showAbout, null, platform.isDesktop),
@@ -2095,6 +2630,10 @@
       C('Templates', 'Insert incident timeline (UTC)', () => insertSlash('timeline'), '/timeline', editable),
       C('Templates', 'Insert UTC timestamp', () => insertSlash('utc'), '/utc', editable),
       C('Templates', 'New encrypted credentials note', newCredentialsNote, '/credentials'),
+      C('Text', 'Comment or uncomment lines', () => applyLineEdit('comment'), 'Ctrl /', editable && isScript(note)),
+      C('Text', 'Duplicate line', () => applyLineEdit('duplicate'), 'Ctrl Shift D', editable),
+      C('Text', 'Move line up', () => applyLineEdit('move', -1), 'Alt ↑', editable),
+      C('Text', 'Move line down', () => applyLineEdit('move', 1), 'Alt ↓', editable),
       tf('UPPERCASE', 'upper'),
       tf('lowercase', 'lower'),
       tf('Title Case', 'title'),
@@ -3064,6 +3603,8 @@
       ['Ctrl F', 'Find'], ['Ctrl H', 'Find and replace'], ['F3 / Shift F3', 'Next / previous match'], ['Alt Z', 'Zen mode'],
       ['Alt L', 'Lock encrypted notes'], ['Alt I', 'Extract IOCs from the note or selection'], ['/', 'Quick inserts (at the start of a word)'], ['Tab after "="', 'Work out the sum on that line'],
       ['Ctrl Enter', 'Make a task, or tick it'], ['Tab / Shift Tab', 'Indent / outdent'], ['Esc, then Tab', 'Move focus out of the editor'],
+      ['Ctrl /', 'Comment or uncomment lines (script notes)'], ['Ctrl Shift D', 'Duplicate the line or selected lines'],
+      ['Alt ↑ / Alt ↓', 'Move the line or selected lines'], ['Ctrl G', 'Go to line (next match while the find bar is open)'],
       ['Paste a URL on a selection', 'Make a link'],
       ['Delete', 'Delete the focused note in the list'], ['Ctrl Z', 'Undo the last delete (in the note list)'],
     ];
@@ -3117,6 +3658,21 @@
     if (saved) toast(`Saved ${saved}.`);
   }
 
+  /** Browser version: downloads a script note's text as it is, with the extension of its language (.txt for plain text). */
+  async function exportNoteFile() {
+    const note = active();
+    if (!isEditable(note) || !isScript(note)) return;
+    if (note.cipher) {
+      const ok = await confirmDialog('Export without encryption?', 'The exported file will contain the note as plain text.', 'Export plain text', true);
+      if (!ok) return;
+      if (!isEditable(note)) { toast('The note was locked. Unlock it and try again.', 'error'); return; }
+    }
+    // An encrypted note's own extension would be .cpnote; this file is plain text, so it gets its language's extension.
+    const ext = store.defaultExtFor({ lang: note.lang, cipher: null });
+    const saved = await exportOut('note', `${T.slugify(titleOf(note)) || 'note'}.${ext}`, bodyOf(note), 'text/plain;charset=utf-8');
+    if (saved) toast(`Saved ${saved}.`);
+  }
+
   // Printing is the PDF route: the print stylesheet draws the preview on paper and the
   // user picks "Save as PDF" in the print dialog. Nothing is written anywhere new.
   async function exportPdf() {
@@ -3166,6 +3722,7 @@
     printing = false;
     g.hold = false;
     updateGutter();
+    updateHl();
     if (printFocusCleanup) { printFocusCleanup(); printFocusCleanup = null; }
     const note = active();
     document.title = note ? `${titleOf(note)} | CyberPad` : 'CyberPad';
@@ -3271,13 +3828,25 @@
     }
   }
 
+  /** True when the text is JSON whose `app` field names CyberPad (or its old name): it claims to be a backup or note file. */
+  function claimsBackup(text) {
+    let raw;
+    try { raw = JSON.parse(text); } catch (err) {
+      if (err instanceof SyntaxError) return false;
+      throw err;
+    }
+    return raw !== null && typeof raw === 'object' && !Array.isArray(raw) && (raw.app === 'cyberpad' || raw.app === 'neonpad');
+  }
+
   async function importFiles(files) {
     let lastId = null;
     let count = 0;
+    let textNotes = 0;
     for (const file of files.slice(0, 20)) {
       try {
         const ext = store.checkImportFile(file.name, file.size);
-        let text = store.decodeImportBytes(await file.arrayBuffer());
+        const text = store.decodeImportBytes(await file.arrayBuffer());
+        const type = store.fileTypeOf(ext);
         if (ext === 'json') {
           const mergeIn = (incoming) => {
             const merged = store.mergeNotes(S.notes, incoming);
@@ -3305,15 +3874,19 @@
             continue;
           } catch (err) {
             if (!(err instanceof store.StoreError)) throw err;
-            text = `\`\`\`json\n${text}\n\`\`\``; // ordinary JSON file: keep it as a code block
+            // A file that says it is a CyberPad backup but fails validation is reported, never imported as text.
+            if (claimsBackup(text)) throw new store.StoreError('That file says it is a CyberPad backup, but it is damaged or not valid, so it was not imported.');
+            // Any other JSON (or text that does not parse) is an ordinary file: it becomes a JSON note below.
           }
         }
         if (text.length > store.LIMITS.body) throw new store.StoreError('That file is too long for one note.');
         if (S.notes.length >= store.LIMITS.notes) throw new store.StoreError('The note limit has been reached.');
         const n = store.createNote(text);
+        n.lang = type ? type.lang : '';
         S.notes.push(n);
         lastId = n.id;
         count++;
+        textNotes++;
       } catch (err) {
         if (!(err instanceof store.StoreError)) throw err;
         toast(`${file.name}: ${err.message}`, 'error');
@@ -3324,7 +3897,7 @@
     S.meta.clear();
     renderAll();
     if (lastId) openNote(lastId);
-    if (files.length === 1 && !files[0].name.toLowerCase().endsWith('.json')) toast(`Imported ${files[0].name}.`);
+    if (files.length === 1 && textNotes === 1) toast(`Imported ${files[0].name}.`);
   }
 
   // --------------------------------------------------------- linked files
@@ -3758,23 +4331,6 @@
     });
   }
 
-  /** Which format to save in: the only one for encrypted notes, else a choice that defaults to Markdown. */
-  async function chooseFormat(note, title) {
-    const formats = FL.formatsFor(note);
-    if (formats.length === 1) return formats[0];
-    const res = await showDialog({
-      title,
-      body: [h('p', null, 'Both formats hold the note text exactly. Markdown (.md) tells other apps the text uses Markdown.')],
-      actions: [
-        { label: 'Cancel', value: null },
-        { label: 'Text (.txt)', value: 'txt' },
-        { label: 'Markdown (.md)', submit: true, className: 'btn-primary' },
-      ],
-    });
-    if (res === true) return 'md';
-    return res === 'txt' ? 'txt' : null;
-  }
-
   function suggestedNameFor(note, format, copy) {
     const current = note.file && note.file.format === format ? note.file.name : null;
     if (!copy && current && current.length <= 120) return current;
@@ -3799,8 +4355,9 @@
     if (!platform.isDesktop || !note || !noteById(note.id) || files.hold.has(note.id)) return;
     await flushSeals();
     if (S.sealFailed.has(note.id)) { toast('The latest changes could not be encrypted, so they were not saved to a file. Press Ctrl+S to retry.', 'error'); return; }
-    const format = await chooseFormat(note, copy ? 'Save a copy as file' : 'Save as file');
-    if (!format || !noteById(note.id) || !FL.formatsFor(note).includes(format)) return;
+    // The host's dialog offers this type first, then every supported type; the reply says what the user picked.
+    const format = store.defaultExtFor(note);
+    if (!noteById(note.id) || !FL.formatsFor(note).includes(format)) return;
     let relinkId = !copy && note.file ? note.file.linkId : null;
     files.hold.add(note.id);
     try {
@@ -3841,10 +4398,15 @@
       }
       if (!noteById(note.id) || !FL.formatsFor(note).includes(res.format)) { forgetHostLink(res.linkId); return; }
       note.file = { linkId: res.linkId, name: res.name, format: res.format };
+      // Saved under another type than offered: the note's mode follows it, unless the user set the language by hand.
+      const type = store.fileTypeOf(res.format);
+      const modeChanged = res.format !== format && !note.cipher && !langByHand.has(note.id) && !!type && type.lang !== note.lang;
+      if (modeChanged) note.lang = type.lang;
       files.tracker.confirm(note.id, text);
       files.outcome.set(note.id, 'written');
       setFileStatus(note.id, 'saved');
       persistNow();
+      if (modeChanged) refreshAfterLang(note);
       renderList();
       updateStatus();
       toast(`Saved to ${res.name}. Every change now goes to this file too.`);
@@ -4275,11 +4837,15 @@
     ed.addEventListener('blur', () => setTimeout(() => { if (document.activeElement !== ed) closeSlash(); }, 120));
     ed.addEventListener('mousedown', () => { arrowMemo = null; closeSlash(); });
     ed.addEventListener('input', onGutterInput);
+    ed.addEventListener('beforeinput', onHlBeforeInput);
+    ed.addEventListener('input', onHlInput); // after onGutterInput: the layer reuses the gutter's line count
+    ['keyup', 'mouseup', 'select', 'focus'].forEach((t) => ed.addEventListener(t, scheduleBracket));
     ['keyup', 'mouseup', 'select', 'focus'].forEach((t) => ed.addEventListener(t, onGutterCaret));
-    document.addEventListener('selectionchange', () => { if (document.activeElement === ed) onGutterCaret(); });
-    if (typeof ResizeObserver === 'function') new ResizeObserver(() => { if (g.on) drawGutter(); }).observe(ed);
+    document.addEventListener('selectionchange', () => { if (document.activeElement === ed) { onGutterCaret(); scheduleBracket(); } });
+    if (typeof ResizeObserver === 'function') new ResizeObserver(() => { if (g.on) drawGutter(); hlRefresh(); }).observe(ed);
     ed.addEventListener('scroll', () => {
       scheduleGutterDraw();
+      onHlScroll();
       if (S.slash.open) renderSlash();
       if (S.settings.view !== 'split') return;
       const max = ed.scrollHeight - ed.clientHeight;
