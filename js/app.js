@@ -2616,7 +2616,7 @@
     };
     window.addEventListener('mouseup', () => endMouse(true));
     window.addEventListener('pointercancel', () => endMouse(true));
-    window.addEventListener('blur', () => endMouse(false));
+    window.addEventListener('blur', () => { selKeyHeld = ''; endMouse(false); }); // a key-up can be lost with the focus
     const noteInput = (e) => { selInput = { type: e.inputType || '', at: performance.now() }; };
     ed.addEventListener('beforeinput', noteInput);
     ed.addEventListener('input', noteInput);
@@ -5159,7 +5159,7 @@
     if (!copy && current && current.length <= 120) return current;
     const title = titleOf(note);
     // ".env" or ".gitignore" as a title: keep the leading dot, so the host's dot-file rule gives ".env", not "env.env".
-    if (!copy && title.length > 1 && title[0] === '.' && store.FILE_FORMATS.includes(title.slice(1).toLowerCase())) return title.toLowerCase();
+    if (!copy && title.length > 1 && title[0] === '.' && FL.formatsFor(note).includes(title.slice(1).toLowerCase())) return title.toLowerCase();
     return FL.suggestedFileName(copy ? `${title} copy` : title, format);
   }
 
