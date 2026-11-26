@@ -26,10 +26,18 @@
   const MAX_FLAG_SCAN = 5000000; // findFlags only looks at the first 5,000,000 characters
   const MAX_ENCODED_RUNS = 200;
   const MAX_RUN_CHARS = 4096;
-  const MIN_RUN_CHARS = 16;
+  const MIN_RUN_CHARS = 12;
   const SEARCH_MAX_ATTEMPTS = 400;
   const SEARCH_MAX_CHARS = 20000000;
-  const READABLE_THRESHOLD = 0.7;
+  const READABLE_THRESHOLD = 0.5; // a decoding is listed from this score up
+  const CIPHER_MARGIN = 0.15; // a cipher step must beat its input's score by this much
+  const SHORT_CIPHER_CHARS = 16; // a cipher result shorter than this must score at least ...
+  const SHORT_CIPHER_SCORE = 0.9; // ... this much: a few letters shift into a plausible word too easily
+  const BRUTE_PENALTY = 0.05; // among equal scores, a fixed transform beats one picked out of 25 or 256 tries
+  const XOR_MIN_SPACES = 0.05; // a single-byte XOR hit must look like prose: at least 5% spaces
+  const XOR_MIN_SCORE = 0.7; // single-byte XOR gives 256 tries, so chance matches must be kept out
+  const PRINTABLE_MIN = 0.9; // ... when at least this share of its characters is printable
+  const BASE58_MAX_BYTES = 1460; // 1,460 bytes encode to at most 2,000 Base58 characters
   const REPORT_SOFT_LIMIT = 950000;
   const REPORT_HARD_LIMIT = 1000000;
   const FIELD_MAX = 120;
@@ -38,6 +46,7 @@
   const MSG_TOO_LONG = 'That text is too long to convert (limit 100,000 characters).';
   const MSG_OUT_TOO_LONG = 'That result is too long to show (limit 1,000,000 characters).';
   const MSG_EMPTY = 'Enter some text to convert.';
+  const MSG_SURROGATE = 'That text contains a broken character and cannot be converted.';
 
   class CodecError extends Error {}
 
@@ -50,6 +59,20 @@
   // ------------------------------------------------------------ byte helpers
 
   function toBytes(text) { return encoderUtf8.encode(text); }
+
+  /** UTF-8 bytes of the text; a lone surrogate (which would silently become U+FFFD) is refused. */
+  function toBytesStrict(text) {
+    for (let i = 0; i < text.length; i++) {
+      const c = text.charCodeAt(i);
+      if (c >= 0xd800 && c <= 0xdbff) {
+        const d = i + 1 < text.length ? text.charCodeAt(i + 1) : 0;
+        if (d >= 0xdc00 && d <= 0xdfff) { i++; continue; }
+        throw new CodecError(MSG_SURROGATE);
+      }
+      if (c >= 0xdc00 && c <= 0xdfff) throw new CodecError(MSG_SURROGATE);
+    }
+    return encoderUtf8.encode(text);
+  }
 
   function hexOf(bytes) {
     const parts = [];
@@ -219,7 +242,7 @@
   }
 
   function base58Encode(bytes) {
-    if (bytes.length > BASE58_MAX_CHARS * 4) throw new CodecError('That text is too long for Base58 (limit 2,000 characters).');
+    if (bytes.length > BASE58_MAX_BYTES) throw new CodecError('That text is too long to encode as Base58 (limit 1,460 bytes, which is 2,000 Base58 characters).');
     let zeros = 0;
     while (zeros < bytes.length && bytes[zeros] === 0) zeros++;
     const hex = hexOf(bytes.subarray(zeros));
@@ -657,7 +680,7 @@
       if (!s.length || s.length % 2 || s.length > 512) throw new CodecError('The hex key must be 1 to 256 bytes of hex digits.');
       try { bytes = hexBytes(s); } catch (e) { throw new CodecError('The hex key must be 1 to 256 bytes of hex digits.'); }
     } else {
-      bytes = toBytes(p.key);
+      bytes = toBytesStrict(p.key);
     }
     if (bytes.length < 1 || bytes.length > 256) throw new CodecError('The key must be 1 to 256 bytes.');
     return bytes;
@@ -692,7 +715,7 @@
     };
   }
 
-  const enc = (fn) => wrap((t, p) => fn(toBytes(t), p), false);
+  const enc = (fn) => wrap((t, p) => fn(toBytesStrict(t), p), false);
   const dec = (fn) => wrap((t, p) => fromBytes(fn(t, p)), true);
   const txtEnc = (fn) => wrap(fn, false);
   const txtDec = (fn) => wrap(fn, true);
@@ -732,6 +755,14 @@
         try { return decodeURIComponent(t); } catch (e) { throw new CodecError('That text has a broken % escape.'); }
       }),
     }),
+    define('urlForm', 'URL (form, + as space)', 'Text', {
+      encode: txtEnc((t) => {
+        try { return encodeURIComponent(t).split('%20').join('+'); } catch (e) { throw new CodecError('That text has characters that cannot be URL-encoded.'); }
+      }),
+      decode: txtDec((t) => {
+        try { return decodeURIComponent(t.split('+').join(' ')); } catch (e) { throw new CodecError('That text has a broken % escape.'); }
+      }),
+    }),
     define('htmlEntities', 'HTML entities', 'Text', { encode: txtEnc(htmlEncode), decode: txtDec(htmlDecode) }),
     define('unicodeEscape', 'Unicode escapes', 'Text', { encode: txtEnc(unicodeEscapeEncode), decode: txtDec(unicodeEscapeDecode) }),
     define('rot13', 'ROT13', 'Ciphers', symmetric(rot13)),
@@ -750,7 +781,7 @@
       decode: txtDec((t, p) => railFence(t, p, true)),
     }, [{ id: 'rails', label: 'Rails', type: 'int', min: 2, max: 10, default: 3 }]),
     define('xor', 'XOR', 'Ciphers', {
-      encode: wrap((t, p) => { const key = xorKey(p); return hexOf(xorBytes(toBytes(t), key)); }, false),
+      encode: wrap((t, p) => { const key = xorKey(p); return hexOf(xorBytes(toBytesStrict(t), key)); }, false),
       decode: wrap((t, p) => {
         const key = xorKey(p);
         const bytes = parseBinaryText(t);
@@ -770,107 +801,154 @@
 
   // --------------------------------------------------------------- scoring
 
-  const FREQ = {
-    e: 12.7, t: 9.1, a: 8.2, o: 7.5, i: 7.0, n: 6.7, s: 6.3, h: 6.1, r: 6.0, d: 4.3, l: 4.0, c: 2.8, u: 2.8, m: 2.4, w: 2.4,
-    f: 2.2, g: 2.0, y: 2.0, p: 1.9, b: 1.5, v: 1.0, k: 0.8, j: 0.15, x: 0.15, q: 0.1, z: 0.07,
-  };
-  const WEIGHT = (() => {
-    const w = new Float64Array(128);
-    for (let c = 32; c < 127; c++) w[c] = 0.4;
-    w[32] = 1;
-    for (const ch of '.,\'"!?-:;()') w[ch.charCodeAt(0)] = 0.6;
-    for (let c = 48; c < 58; c++) w[c] = 0.5;
-    for (const k of Object.keys(FREQ)) {
-      const v = Math.min(1, 0.15 + FREQ[k] * 0.12);
-      w[k.charCodeAt(0)] = v;
-      w[k.toUpperCase().charCodeAt(0)] = v;
-    }
-    w[9] = w[10] = w[13] = 0.6;
-    return w;
+  const ENGLISH = { e: 12.7, t: 9.1, a: 8.2, o: 7.5, i: 7.0, n: 6.7, s: 6.3, h: 6.1, r: 6.0, d: 4.3, l: 4.0, c: 2.8, u: 2.8, m: 2.4, w: 2.4,
+    f: 2.2, g: 2.0, y: 2.0, p: 1.9, b: 1.5, v: 1.0, k: 0.8, j: 0.15, x: 0.15, q: 0.1, z: 0.07 };
+  // log2 of the English probability of each letter (floored so that rare letters stay finite).
+  const LOG_P = (() => {
+    let total = 0;
+    for (const k of Object.keys(ENGLISH)) total += ENGLISH[k];
+    const t = new Float64Array(26);
+    for (let i = 0; i < 26; i++) t[i] = Math.log2(Math.max(ENGLISH[String.fromCharCode(97 + i)] / total, 0.0005));
+    return t;
   })();
+  // The most common English letter pairs, as (first - 'a') * 32 + (second - 'a').
   const COMMON_PAIRS = new Set(('th he in er an re on at en nd ti es or te of ed is it al ar st to nt ng se ha as ou io le ve co me de hi ri ro ic ne ea ra ce li ch ll be ma si om ur')
-    .split(' ').map((p) => ((p.charCodeAt(0) - 97) << 5) | (p.charCodeAt(1) - 97)));
-  const COMMON_WORDS = new Set('the and of to a in is it you that he was for on are with as his they be at one have this from or had by not but what all were we when your can said there use an each which she do how their if will up'.split(' ').filter((w) => w.length <= 4));
-  const FREQ_LETTER = (() => {
+    .split(' ').map((q) => ((q.charCodeAt(0) - 97) << 5) | (q.charCodeAt(1) - 97)));
+  const RARE_SYMBOL = (() => {
     const t = new Uint8Array(128);
-    for (let c = 65; c <= 90; c++) { t[c] = 1; t[c + 32] = 1; }
+    for (const ch of '`^~|\\[]{}<>;$%#@*') t[ch.charCodeAt(0)] = 1;
     return t;
   })();
   const SCORE_SAMPLE = 4000;
   const FLAG_SCORE_SAMPLE = 20000;
 
+  function clamp01(v) { return v < 0 ? 0 : v > 1 ? 1 : v; }
+
+  /** Letters, digits, common punctuation, space, tab, newline, and Latin letters with accents. */
+  function printableCode(c) {
+    return (c >= 32 && c < 127) || c === 9 || c === 10 || c === 13 || (c >= 0xc0 && c <= 0x24f && c !== 0xd7 && c !== 0xf7);
+  }
+
+  /**
+   * Readability of text without the flag bonus, in [0, 1], looking at the first 4,000 characters:
+   * the share of printable characters is the main term; an English-like letter distribution (average
+   * log-likelihood of the letters) raises it; low diversity, repetition, many digits, many symbols,
+   * random-looking letter case and very short text lower it.
+   */
   function rawScore(text) {
     const n = Math.min(text.length, SCORE_SAMPLE);
     if (!n) return 0;
-    let sum = 0;
+    const counts = new Uint16Array(26);
+    const seenAscii = new Uint8Array(128);
+    let others = null;
+    let printable = 0;
     let letters = 0;
-    let symbols = 0;
-    for (let i = 0; i < n; i++) {
-      const c = text.charCodeAt(i);
-      if (c < 128) {
-        sum += WEIGHT[c];
-        if (WEIGHT[c] === 0.4) symbols++; // printable ASCII that is not a letter, digit, space or common punctuation
-        else if (FREQ_LETTER[c]) letters++;
-      }
-    }
-    let v = (sum / n - 0.55) / 0.25;
-    v = v < 0 ? 0 : v > 1 ? 1 : v;
-    // Real prose is full of common letter pairs; shifted or random letters are not.
+    let digits = 0;
+    let punct = 0;
+    let rare = 0;
+    let distinct = 0;
+    let camel = 0;
+    let prevLower = false;
+    let mixed = 0; // characters of alphanumeric tokens (6 or more) that hold both letters and digits
+    let tokLen = 0;
+    let tokLetters = 0;
+    let tokDigits = 0;
+    let tokSyms = 0;
+    let tokUpper = 0;
+    let tokLower = 0;
     let pairs = 0;
-    let common = 0;
-    let prev = -1;
-    for (let i = 0; i < n; i++) {
-      const c = text.charCodeAt(i) | 32;
-      const letter = c >= 97 && c <= 122;
-      if (letter && prev >= 0) {
-        pairs++;
-        if (COMMON_PAIRS.has(((prev - 97) << 5) | (c - 97))) common++;
-      }
-      prev = letter ? c : -1;
-    }
-    if (pairs >= 6) {
-      const f = (common / pairs - 0.2) / 0.2;
-      v *= f < 0 ? 0 : f > 1 ? 1 : f;
-    }
-    const alpha = (letters / n - 0.3) / 0.3; // mostly letters
-    v *= alpha < 0 ? 0 : alpha > 1 ? 1 : alpha;
-    v *= Math.max(0, 1 - (3 * symbols) / n); // few stray symbols
-    // Common short English words (a mild factor: technical text without them still passes).
-    let words = 0;
-    let commonWords = 0;
-    let start = -1;
+    let commonPairs = 0;
+    let prevLetter = -1;
     for (let i = 0; i <= n; i++) {
-      const c = i < n ? text.charCodeAt(i) | 32 : 0;
-      if (c >= 97 && c <= 122) { if (start < 0) start = i; } else if (start >= 0) {
-        words++;
-        if (i - start <= 4 && COMMON_WORDS.has(text.slice(start, i).toLowerCase())) commonWords++;
-        start = -1;
+      const c = i < n ? text.charCodeAt(i) : 32;
+      const isLetter = ((c | 32) >= 97 && (c | 32) <= 122);
+      const isDigit = c >= 48 && c <= 57;
+      if (isLetter || isDigit || c === 43 || c === 47) {
+        tokLen++;
+        if (isLetter) { tokLetters++; if (c < 97) tokUpper++; else tokLower++; } else if (isDigit) tokDigits++; else tokSyms++;
+      } else {
+        // A token that holds letters and digits (and, with + or /, both letter cases) looks like a hash, a key or Base64.
+        if (tokLen >= 6 && tokLetters && tokDigits && (!tokSyms || (tokUpper && tokLower))) mixed += tokLen;
+        tokLen = tokLetters = tokDigits = tokSyms = tokUpper = tokLower = 0;
+      }
+      if (i === n) break;
+      if (printableCode(c)) printable++;
+      if (c < 128) {
+        if (!seenAscii[c]) { seenAscii[c] = 1; distinct++; }
+        const lower = c | 32;
+        if (lower >= 97 && lower <= 122) {
+          letters++;
+          counts[lower - 97]++;
+          if (prevLetter >= 0) { pairs++; if (COMMON_PAIRS.has((prevLetter << 5) | (lower - 97))) commonPairs++; }
+          prevLetter = lower - 97;
+          if (c < 97 && prevLower) camel++;
+          prevLower = c >= 97;
+          continue;
+        }
+        if (c >= 48 && c <= 57) digits++;
+        else if (c > 32 && c < 127) { punct++; if (RARE_SYMBOL[c]) rare++; }
+        prevLetter = -1;
+      } else {
+        prevLetter = -1;
+        if (others === null) others = new Set();
+        if (!others.has(c)) { others.add(c); distinct++; }
+      }
+      prevLower = false;
+    }
+    const share = printable / n;
+    if (share === 0) return 0;
+
+    // English-likeness of the letters: 1 near English, 0 for uniformly random letters.
+    let f = 0.4;
+    if (letters >= 3) {
+      let ll = 0;
+      for (let i = 0; i < 26; i++) if (counts[i]) ll += counts[i] * LOG_P[i];
+      f = clamp01((ll / letters + 5.65) / 1.0);
+    }
+    let v = share * share * share * share * (0.25 + 0.75 * f);
+    v *= 1 - clamp01((digits / n - 0.25) / 0.3); // mostly digits: numbers, hex, not prose
+    v *= 1 - clamp01((punct / n - 0.33) / 0.3); // more than about a third punctuation and symbols
+    v *= 1 - clamp01((rare / n - 0.04) / 0.15); // unusual symbols (` ^ ~ | [ ] { } < > ; $ % # @ *), as in shifted or garbled text
+    if (letters >= 4) v *= 1 - clamp01((camel / letters - 0.05) / 0.2); // random upper and lower case, as in Base64
+    v *= 1 - clamp01((mixed / n - 0.3) / 0.4); // long letter-and-digit tokens: hashes, keys, Base64
+    if (pairs >= 6) v *= 0.5 + 0.5 * clamp01((commonPairs / pairs - 0.05) / 0.2); // letters side by side as in English
+
+    if (n >= 8) {
+      v *= clamp01((distinct / Math.min(n, 32) - 0.1) / 0.25);
+      // A single repeated character or a short repeated group (hihihihi, on on on).
+      for (let period = 1; period <= 4 && n >= 3 * period; period++) {
+        let i = period;
+        while (i < n && text.charCodeAt(i) === text.charCodeAt(i - period)) i++;
+        if (i === n) { v = Math.min(v, 0.25); break; }
       }
     }
-    if (words >= 4) {
-      const w = commonWords / words / 0.15;
-      v *= 0.75 + 0.25 * (w > 1 ? 1 : w);
-    }
+    if (n < 4) v = Math.min(v, 0.3);
+    else if (n < 8) v = Math.min(v, 0.3 + (0.7 * (n - 3)) / 5);
     return v;
   }
 
+  function spaceShare(text) {
+    const n = Math.min(text.length, SCORE_SAMPLE);
+    let spaces = 0;
+    for (let i = 0; i < n; i++) if (text.charCodeAt(i) === 32) spaces++;
+    return n ? spaces / n : 0;
+  }
+
+  /** Share of the first 4,000 characters that is printable (see printableCode). */
   function printableShare(text) {
     const n = Math.min(text.length, SCORE_SAMPLE);
     if (!n) return 0;
     let ok = 0;
-    for (let i = 0; i < n; i++) {
-      const c = text.charCodeAt(i);
-      if ((c >= 32 && c < 127) || c === 9 || c === 10 || c === 13) ok++;
-    }
+    for (let i = 0; i < n; i++) if (printableCode(text.charCodeAt(i))) ok++;
     return ok / n;
   }
 
-  /** Readability in [0, 1]: weighted share of printable ASCII (common English letters and spaces count most), plus a bonus for a flag. */
+  /** Readability in [0, 1] (see rawScore); a text that holds a flag scores at least 0.9. */
   function readableScore(text, prefixes) {
     if (typeof text !== 'string' || text === '') return 0;
     let s = rawScore(text);
     const head = text.length > FLAG_SCORE_SAMPLE ? text.slice(0, FLAG_SCORE_SAMPLE) : text;
-    if (findFlags(head, prefixes).length) s = 0.8 + 0.2 * s;
+    if (findFlags(head, prefixes).length) s = 0.9 + 0.1 * s;
     return s;
   }
 
@@ -994,7 +1072,7 @@
     return t;
   })();
 
-  function runBytes(run) {
+  function runBytes(run, padded) {
     const found = [];
     let allHex = true;
     let std = true;
@@ -1009,7 +1087,7 @@
       if (!((u >= 65 && u <= 90) || (u >= 50 && u <= 55))) b32 = false;
     }
     try {
-      if (allHex) found.push({ via: 'hex', bytes: hexBytes(run.length % 2 ? run.slice(0, -1) : run) });
+      if (allHex && !padded && run.length >= MIN_RUN_CHARS) found.push({ via: 'hex', bytes: hexBytes(run.length % 2 ? run.slice(0, -1) : run) });
       if (b32) {
         let n = run.length;
         const r = n % 8;
@@ -1056,11 +1134,15 @@
       if (c >= 128 || !RUN_TABLE[c]) { i++; continue; }
       const start = i;
       while (i < t.length && t.charCodeAt(i) < 128 && RUN_TABLE[t.charCodeAt(i)]) i++;
+      const bodyEnd = i;
+      let pad = 0;
+      while (pad < 2 && i < t.length && t.charCodeAt(i) === 61) { i++; pad++; } // up to two "=" belong to a Base64 run
       if (i - start < MIN_RUN_CHARS) continue;
       runs++;
-      const run = t.slice(start, Math.min(i, start + MAX_RUN_CHARS));
+      const run = t.slice(start, Math.min(bodyEnd, start + MAX_RUN_CHARS));
+      const padded = pad > 0;
       const line = () => liner(start);
-      for (const cand of runBytes(run)) {
+      for (const cand of runBytes(run, padded)) {
         const decoded = decoderLoose.decode(cand.bytes);
         scanPlain(decoded, map, (flag, prefix) => add(flag, prefix, line, cand.via));
       }
@@ -1107,7 +1189,9 @@
 
   /**
    * Try the parameterless decoders up to 3 layers deep (breadth first). Caesar and single-byte XOR are leaf steps.
-   * Bounded by a hard budget of 400 decoder attempts and 20,000,000 characters processed.
+   * A result is listed when at least 90% of it is printable and it scores 0.5 or more (see readableScore), or it holds a flag;
+   * a cipher step (ROT13, ROT47, Atbash, reverse, Caesar, XOR) must also score clearly higher than the text it started from.
+   * Flags come first, then by score. Bounded by a hard budget of 400 decoder attempts and 20,000,000 characters processed.
    */
   function tryDecodings(text, prefixes) {
     if (typeof text !== 'string' || text === '' || text.length > LIMITS.input) return [];
@@ -1124,59 +1208,68 @@
       chars += n;
       return true;
     };
-    const hasFlag = (s) => {
+    const hasFlag = (str) => {
       let hit = false;
-      scanPlain(s, map, () => { hit = true; return false; });
+      scanPlain(str, map, () => { hit = true; return false; });
       return hit;
     };
 
-    const queue = [{ text, path: [], readable: rawScore(text) >= READABLE_THRESHOLD }];
-    const accept = (output, path, detail) => {
-      if (seen.has(output)) return;
+    const rootScore = rawScore(text);
+    const queue = [{ text, path: [], score: rootScore, readable: rootScore >= READABLE_THRESHOLD }];
+    // `floor` is the lowest score a result may have (cipher steps pass the parent's score plus a margin).
+    const accept = (output, path, detail, floor, cipher, brute, needSpaces) => {
+      if (seen.has(output)) return null;
       seen.add(output);
       const flag = hasFlag(output);
       const raw = rawScore(output);
-      const score = flag ? 0.8 + 0.2 * raw : raw;
-      const readable = score >= READABLE_THRESHOLD;
+      const score = flag ? 0.9 + 0.1 * raw : raw;
+      const printable = printableShare(output) >= PRINTABLE_MIN;
+      const readable = printable && score >= READABLE_THRESHOLD;
       const shown = cap(output);
-      if ((readable || flag) && !shownOutputs.has(shown)) {
+      if ((flag || (readable && score >= floor && (!cipher || output.length >= SHORT_CIPHER_CHARS || score >= SHORT_CIPHER_SCORE) && (!needSpaces || spaceShare(output) >= XOR_MIN_SPACES))) && !shownOutputs.has(shown)) {
         shownOutputs.add(shown);
         const item = { path, output: shown, score };
         if (detail) item.detail = detail;
-        results.push(item);
+        results.push({ item, flag, rank: brute ? score - BRUTE_PENALTY : score });
       }
-      return { flag, readable };
+      return { flag, readable, printable, score };
     };
 
     outer:
     for (let qi = 0; qi < queue.length; qi++) {
       const node = queue[qi];
-      const ids = node.readable ? ENCODING_IDS : ENCODING_IDS.concat(CIPHER_IDS);
+      // Ciphers (which always "succeed") are tried on text that is not readable yet, and never twice in a row.
+      const afterCipher = node.path.length > 0 && CIPHER_IDS.includes(node.path[node.path.length - 1]);
+      const ids = node.readable || afterCipher ? ENCODING_IDS : ENCODING_IDS.concat(CIPHER_IDS);
+      const cipherFloor = Math.max(READABLE_THRESHOLD, node.score + CIPHER_MARGIN);
+      const xorFloor = Math.max(XOR_MIN_SCORE, node.score + CIPHER_MARGIN);
       for (const id of ids) {
         if (!spend(node.text.length)) break outer;
         const r = BY_ID.get(id).decode(node.text);
         if (!r.ok || r.output === node.text || r.output.startsWith(DUMP_NOTE)) continue;
         const path = node.path.concat(id);
-        const info = accept(r.output, path);
-        if (info && !info.flag && path.length < LIMITS.layers && printableShare(r.output) >= 0.9) {
-          queue.push({ text: r.output, path, readable: info.readable });
+        const info = accept(r.output, path, undefined, CIPHER_IDS.includes(id) ? cipherFloor : READABLE_THRESHOLD, CIPHER_IDS.includes(id));
+        if (info && !info.flag && path.length < LIMITS.layers && info.printable) {
+          queue.push({ text: r.output, path, score: info.score, readable: info.readable });
         }
       }
       // Leaf steps: they are results only and never explored further.
+      if (afterCipher) continue;
       if (spend(Math.min(node.text.length, LIMITS.resultChars) * 25)) {
         const head = cap(node.text);
-        for (let shift = 1; shift <= 25; shift++) accept(caesar(head, 26 - shift), node.path.concat('caesar'), `shift ${shift}`);
+        for (let shift = 1; shift <= 25; shift++) accept(caesar(head, 26 - shift), node.path.concat('caesar'), `shift ${shift}`, cipherFloor, true, true);
       } else break;
       if (spend(LIMITS.resultChars * 256)) {
         const bytes = parseBinaryText(node.text);
         if (bytes && bytes.length) {
-          for (const c of xorCandidates(bytes, 0)) accept(c.output, node.path.concat('xor'), `key 0x${c.keyHex}`);
+          for (const c of xorCandidates(bytes, 0)) accept(c.output, node.path.concat('xor'), `key 0x${c.keyHex}`, xorFloor, true, true, true);
         }
       } else break;
     }
 
-    results.sort((a, b) => b.score - a.score || a.path.length - b.path.length || a.path.join('>').localeCompare(b.path.join('>')));
-    return results.slice(0, LIMITS.results);
+    results.sort((x, y) => (y.flag ? 1 : 0) - (x.flag ? 1 : 0) || y.rank - x.rank
+      || x.item.path.length - y.item.path.length || x.item.path.join('>').localeCompare(y.item.path.join('>')));
+    return results.slice(0, LIMITS.results).map((r) => r.item);
   }
 
   // ------------------------------------------------------------- templates
@@ -1320,11 +1413,15 @@
     let n = 0;
     while (ln[i + n] === f.ch) n++;
     if (n < f.n) return false;
-    for (let j = i + n; j < ln.length; j++) if (ln[j] !== ' ' && ln[j] !== '\t') return false;
+    for (let j = i + n; j < ln.length; j++) if (ln[j] !== ' ' && ln[j] !== '\t' && ln[j] !== '\r') return false;
     return true;
   }
 
-  /** Move every Markdown heading down one level (capped at six), leaving fenced code alone. */
+  /**
+   * Move every Markdown heading down one level (capped at six), leaving fenced code alone. Lines may end in CRLF.
+   * Setext headings (a title line over === or ---) are not ATX headings and are left as they are.
+   * Returns the text and the fence that is still open at its end (or null).
+   */
   function demoteHeadings(body) {
     const lines = body.split('\n');
     let fence = null;
@@ -1341,7 +1438,7 @@
         if (h < 6) lines[k] = ln.slice(0, i) + '#' + ln.slice(i);
       }
     }
-    return lines.join('\n');
+    return { text: lines.join('\n'), open: fence };
   }
 
   function cell(value) {
@@ -1372,6 +1469,31 @@
   }
 
   const LIST_LINES = 100;
+  const REPORT_MARKER = 'Generated by CyberPad CTF report.';
+  const MARKER_LINES = 12;
+  const MARKER_SCAN_CHARS = 20000;
+
+  /** Languages that hold data, configuration or markup, not solve scripts (such notes may hold secrets). */
+  const REPORT_NON_SCRIPT_LANGS = Object.freeze(['plain', 'ini', 'json', 'yaml', 'xml', 'html', 'css']);
+
+  /** True when one of the first 12 lines of the note is the marker that every report carries. */
+  function hasReportMarker(body) {
+    const head = body.length > MARKER_SCAN_CHARS ? body.slice(0, MARKER_SCAN_CHARS) : body;
+    let pos = 0;
+    for (let n = 0; n < MARKER_LINES && pos <= head.length; n++) {
+      let end = head.indexOf('\n', pos);
+      if (end === -1) end = head.length;
+      if (end - pos <= 200 && head.slice(pos, end).trim() === REPORT_MARKER) return true;
+      pos = end + 1;
+    }
+    return false;
+  }
+
+  function isScriptLang(lang) {
+    if (typeof lang !== 'string') return false;
+    const id = lang.trim().toLowerCase();
+    return id !== '' && !REPORT_NON_SCRIPT_LANGS.includes(id);
+  }
 
   function titleList(titles) {
     const shown = titles.slice(0, LIST_LINES).map((t) => `- ${t}`);
@@ -1380,27 +1502,30 @@
   }
 
   /**
-   * Build the CTF report note for a folder. Encrypted notes are never read: only their titles are listed.
-   * `notes` is an array of { title, body, lang, encrypted }.
+   * Build the CTF report note for a folder. `notes` is an array of { title, body, lang, encrypted }.
+   * An encrypted note is never read, not even its title: it is only counted (`skippedEncrypted`, a number).
+   * Only notes in a programming or scripting language become solve scripts (see REPORT_NON_SCRIPT_LANGS).
+   * Result: { title, body, included, skippedEncrypted, leftOut }.
    */
   function buildReport(opts) {
     const o = paramsOf(opts);
     const folder = field(o.folder) || 'Untitled folder';
     const title = `CTF report: ${folder}`;
-    const skippedEncrypted = [];
+    let skippedEncrypted = 0;
     const challenges = [];
     const scripts = [];
     const list = Array.isArray(o.notes) ? o.notes.slice(0, 10000) : [];
     list.forEach((n, index) => {
       if (n === null || typeof n !== 'object') return;
+      if (n.encrypted) { skippedEncrypted++; return; } // never touch the title or the body
       const noteTitle = field(n.title) || 'Untitled';
-      if (n.encrypted) { skippedEncrypted.push(noteTitle); return; } // never touch the body
       const body = typeof n.body === 'string' ? n.body : '';
-      if (body.startsWith('# CTF report: ')) return; // an earlier report in the same folder is not a challenge
+      // An earlier report in the same folder is not a challenge, even when its title was edited.
+      if (body.startsWith('# CTF report: ') || hasReportMarker(body)) return;
       const parsed = parseChallenge(body);
       if (parsed) {
         challenges.push({ index, title: noteTitle, body, info: parsed });
-      } else if (typeof n.lang === 'string' && n.lang !== '' && body !== '') {
+      } else if (isScriptLang(n.lang) && body !== '') {
         scripts.push({ index, title: noteTitle, body, lang: langLabel(n.lang) });
       }
     });
@@ -1428,7 +1553,9 @@
     for (const ch of challenges) {
       const i = ch.info;
       const row = `| ${cell(i.name || ch.title)} | ${cell(i.category)} | ${i.points} | ${cell(i.status || 'unsolved')} | ${i.flag ? 'yes' : 'no'} |`;
-      const section = demoteHeadings(ch.body.trimEnd());
+      const demoted = demoteHeadings(ch.body.trimEnd());
+      // A fence left open must not swallow the next section: close it with the same character and length.
+      const section = demoted.open ? `${demoted.text}\n${demoted.open.ch.repeat(demoted.open.n)}` : demoted.text;
       const cost = row.length + section.length + 10;
       if (full || used + cost > REPORT_SOFT_LIMIT) { full = true; leftOut.push(ch.title); continue; }
       used += cost;
@@ -1447,7 +1574,7 @@
       included++;
     }
 
-    const parts = [`# ${title}`, ''];
+    const parts = [`# ${title}`, REPORT_MARKER, ''];
     const date = dateText(o.now);
     if (date) parts.push(`Date: ${date}`, '');
     parts.push('## Results', '');
@@ -1459,8 +1586,8 @@
     }
     sections.forEach((s) => { parts.push(s, ''); });
     if (scriptBlocks.length) parts.push('## Solve scripts', '', scriptBlocks.join('\n\n'), '');
-    if (skippedEncrypted.length) parts.push('## Not included (encrypted)', '', titleList(skippedEncrypted), '');
     if (leftOut.length) parts.push('## Left out (report too long)', '', titleList(leftOut), '');
+    if (skippedEncrypted) parts.push(`Not included: ${skippedEncrypted} encrypted note(s).`, '');
     let reportBody = parts.join('\n');
     if (reportBody.length > REPORT_HARD_LIMIT) reportBody = reportBody.slice(0, REPORT_HARD_LIMIT); // unreachable in practice
     return { title, body: reportBody, included, skippedEncrypted, leftOut };
@@ -1470,6 +1597,6 @@
     LIMITS, CATEGORIES, DEFAULT_PREFIXES, DUMP_NOTE, CODECS,
     caesarBruteForce, xorBruteForce, readableScore, tryDecodings,
     validatePrefixes, findFlags,
-    challengeTemplate, writeupTemplate, parseChallenge, buildReport,
+    challengeTemplate, writeupTemplate, parseChallenge, buildReport, REPORT_NON_SCRIPT_LANGS,
   };
 });

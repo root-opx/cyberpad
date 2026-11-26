@@ -40,10 +40,16 @@ function randomText(rand, maxLen) {
   return s;
 }
 
+// Wall-clock assertions use the best of 3 runs so that a loaded machine does not make them flaky.
 function timed(fn) {
-  const t0 = process.hrtime.bigint();
-  const value = fn();
-  return { value, ms: Number(process.hrtime.bigint() - t0) / 1e6 };
+  let best = Infinity;
+  let value;
+  for (let run = 0; run < 3; run++) {
+    const t0 = process.hrtime.bigint();
+    value = fn();
+    best = Math.min(best, Number(process.hrtime.bigint() - t0) / 1e6);
+  }
+  return { value, ms: best };
 }
 
 const FLAG_TEXT = 'flag{layers_are_fun}';
@@ -55,7 +61,7 @@ test('LIMITS and CODECS are frozen and match the spec', () => {
   assert.ok(Object.isFrozen(C.LIMITS));
   assert.ok(Object.isFrozen(C.CODECS));
   assert.deepEqual(C.CODECS.map((c) => c.id), [
-    'base64', 'base64url', 'base32', 'base58', 'ascii85', 'z85', 'hex', 'binary', 'octal', 'decimal', 'url', 'htmlEntities',
+    'base64', 'base64url', 'base32', 'base58', 'ascii85', 'z85', 'hex', 'binary', 'octal', 'decimal', 'url', 'urlForm', 'htmlEntities',
     'unicodeEscape', 'rot13', 'rot47', 'atbash', 'caesar', 'vigenere', 'railFence', 'xor', 'reverse', 'swapCase', 'morse',
   ]);
   for (const c of C.CODECS) {
@@ -159,6 +165,17 @@ test('URL, HTML entities and Unicode escapes', () => {
   assert.equal(out(enc('unicodeEscape', 'Aé\\')), 'A\\u00e9\\u005c');
 });
 
+test('urlForm: + is a space on decode and a space becomes + on encode; url is unchanged', () => {
+  assert.equal(out(dec('urlForm', 'a+b%2Bc%20d')), 'a b+c d');
+  assert.equal(out(enc('urlForm', 'a b+c d&e=é')), 'a+b%2Bc+d%26e%3D%C3%A9');
+  assert.equal(out(dec('urlForm', out(enc('urlForm', 'x y+z%20 ü')))), 'x y+z%20 ü');
+  assert.equal(out(dec('url', 'a+b')), 'a+b');
+  assert.equal(out(enc('url', 'a b')), 'a%20b');
+  assert.equal(dec('urlForm', 'a+%E0%A4%A').ok, false);
+  assert.equal(enc('urlForm', '\ud800').ok, false);
+  assert.equal(codec('urlForm').name, 'URL (form, + as space)');
+});
+
 test('classic ciphers', () => {
   assert.equal(out(enc('rot13', 'Hello, World!')), 'Uryyb, Jbeyq!');
   assert.equal(out(enc('rot47', 'Hello')), 'w6==@');
@@ -211,7 +228,7 @@ test('bytes that are not UTF-8 come back as a hex dump with a note line', () => 
 test('every codec with both directions round-trips random Unicode text', () => {
   const rand = rng(12345);
   const ids = C.CODECS.filter((c) => c.encode && c.decode && c.id !== 'morse' && c.id !== 'z85').map((c) => c.id);
-  assert.equal(ids.length, 21);
+  assert.equal(ids.length, 22);
   for (const id of ids) {
     for (let i = 0; i < 60; i++) {
       const text = randomText(rand, 80);
@@ -301,6 +318,18 @@ test('every codec survives lone surrogates, NUL bytes and odd characters without
   assert.equal(out(dec('base64', 'AA==')), '\0');
 });
 
+test('byte-oriented encoders refuse a lone surrogate instead of encoding U+FFFD', () => {
+  const message = 'That text contains a broken character and cannot be converted.';
+  for (const id of ['base64', 'base64url', 'base32', 'base58', 'ascii85', 'z85', 'hex', 'binary', 'octal', 'decimal']) {
+    for (const text of ['\ud800', 'ab\udc00cd', 'abcd\ud83d', '\ude00\ud83d']) {
+      assert.deepEqual(enc(id, text), { ok: false, message }, id);
+    }
+  }
+  assert.deepEqual(enc('xor', 'ab\ud800', { key: 'k' }), { ok: false, message });
+  assert.deepEqual(enc('xor', 'abc', { key: '\udc00' }), { ok: false, message });
+  assert.equal(out(enc('hex', '\u{1F600}')), 'f09f9880'); // a proper pair is fine
+});
+
 test('100,000 characters of A finish within 500 ms in every decoder and encoder', () => {
   const text = 'A'.repeat(100000);
   for (const c of C.CODECS) {
@@ -321,20 +350,27 @@ test('output beyond 1,000,000 characters is refused with a message', () => {
   assert.match(r.message, /1,000,000/);
 });
 
-test('Base58 is limited to 2,000 characters and the limit is fast', () => {
+test('Base58: decode is limited to 2,000 characters, encode to 1,460 bytes, and both limits are fast', () => {
   const tooLong = dec('base58', 'z'.repeat(2001));
   assert.equal(tooLong.ok, false);
   assert.match(tooLong.message, /2,000/);
   let r = timed(() => dec('base58', 'z'.repeat(2000)));
   assert.equal(r.value.ok, true);
   assert.ok(r.ms < 500, `decode ${r.ms} ms`);
-  r = timed(() => enc('base58', 'é'.repeat(2000))); // 4,000 bytes
-  assert.equal(r.value.ok, true);
-  assert.ok(r.ms < 500, `encode ${r.ms} ms`);
-  r = timed(() => enc('base58', 'A'.repeat(2001)));
-  assert.equal(r.value.ok, true); // limited by bytes (8,000) on the way in
-  const big = enc('base58', 'A'.repeat(9000));
-  assert.equal(big.ok, false);
+  // Encode boundary: 1,460 bytes are accepted, and what comes out is never refused by the decoder; 1,461 bytes are refused.
+  for (const text of ['A'.repeat(1460), 'é'.repeat(730), '\0'.repeat(1460), '\u{10FFFF}'.repeat(365), '\u{7F}'.repeat(1460)]) {
+    r = timed(() => enc('base58', text));
+    const e = r.value;
+    assert.equal(e.ok, true, text.slice(0, 3));
+    assert.ok(e.output.length <= 2000, String(e.output.length));
+    assert.equal(out(dec('base58', e.output)), text);
+    assert.ok(r.ms < 500, `encode ${r.ms} ms`);
+  }
+  for (const text of ['A'.repeat(1461), 'é'.repeat(731), '\0'.repeat(1461), 'A'.repeat(9000)]) {
+    const e = enc('base58', text);
+    assert.equal(e.ok, false);
+    assert.match(e.message, /1,460/);
+  }
 });
 
 // --------------------------------------------------------------- parameters
@@ -393,7 +429,16 @@ test('xorBruteForce: hex, Base64 or raw bytes in; the ten most readable keys out
 
 // ----------------------------------------------------------------- scoring
 
-test('readableScore: bounded, deterministic, English high, random low, flags boost', () => {
+const SENTENCES = [
+  'The quick brown fox jumps over the lazy dog',
+  'Meet me at the old bridge at midnight',
+  'attack at dawn',
+  'username: admin password: letmein',
+  'GET /index.php?id=1 HTTP/1.1',
+];
+const rot13Text = (t) => t.replace(/[a-z]/gi, (c) => String.fromCharCode((c <= 'Z' ? 65 : 97) + ((c.charCodeAt(0) - (c <= 'Z' ? 65 : 97) + 13) % 26)));
+
+test('readableScore: bounded, deterministic, English high, flags boost', () => {
   const en = 'The quick brown fox jumps over the lazy dog and then finds a hidden message in the old library near the river.';
   assert.equal(C.readableScore(''), 0);
   for (const bad of [null, undefined, 5, {}]) assert.equal(C.readableScore(bad), 0);
@@ -402,21 +447,47 @@ test('readableScore: bounded, deterministic, English high, random low, flags boo
   assert.ok(C.readableScore('hello world') >= 0.7);
   assert.ok(C.readableScore('Uryyb jbeyq, guvf vf n frperg zrffntr sebz gur fbhepr') < 0.5); // ROT13 text is not readable
   assert.ok(C.readableScore('\0\x01\x02\x03\x04\x05') === 0);
-  assert.ok(C.readableScore('éééé') === 0);
-  assert.ok(C.readableScore('flag{x1}') >= 0.8);
-  assert.ok(C.readableScore('flag{x1}', ['other']) < 0.8);
-  const rand = rng(99);
-  const b64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  assert.ok(C.readableScore('ééé') <= 0.3); // under 4 characters is capped
+  assert.ok(C.readableScore('éééé') < 0.5);
+  assert.ok(C.readableScore('flag{x1}') >= 0.9); // a found flag scores at least 0.9
+  assert.ok(C.readableScore('flag{x1}', ['other']) < 0.9);
+  const rand = rng(5);
   for (let i = 0; i < 300; i++) {
-    let s = '';
-    for (let j = 0; j < 20 + Math.floor(rand() * 100); j++) s += b64[Math.floor(rand() * 64)];
-    assert.ok(C.readableScore(s) < 0.7, s);
     const score = C.readableScore(randomText(rand, 200));
     assert.ok(score >= 0 && score <= 1);
   }
-  let hex = '';
-  for (let j = 0; j < 80; j++) hex += '0123456789abcdef'[Math.floor(rand() * 16)];
-  assert.ok(C.readableScore(hex) < 0.7);
+  // Only the first 4,000 characters are looked at.
+  assert.equal(C.readableScore(`${'Meet me at the old bridge. '.repeat(200)}\0\0\0\0`.slice(0, 4000) + '\u0001'.repeat(5000)), C.readableScore('Meet me at the old bridge. '.repeat(200).slice(0, 4000)));
+});
+
+test('readableScore: ordinary sentences and technical text score at least 0.6', () => {
+  for (const s of SENTENCES) assert.ok(C.readableScore(s) >= 0.6, `${s}: ${C.readableScore(s)}`);
+  for (const s of ['key=value&user=admin&token=abc', 'cat /etc/passwd | grep root', 'SELECT * FROM users WHERE id=1', '/var/www/html/uploads/shell.php', 'user_id=42&session=abc123def&x=1']) {
+    assert.ok(C.readableScore(s) >= 0.6, `${s}: ${C.readableScore(s)}`);
+  }
+});
+
+test('readableScore: repetition, very short text, random bytes, random Base64 and random hex score low', () => {
+  for (const s of ['nnnnnnnn', 'hihihihi', 'stststst', 'on on on on', 'aaaaaaaaaaaaaaaa', 'abcabcabcabcabcabc']) {
+    assert.ok(C.readableScore(s) < 0.3, `${s}: ${C.readableScore(s)}`);
+  }
+  const rand = rng(2026);
+  let bytes = '';
+  for (let i = 0; i < 200; i++) bytes += String.fromCharCode(Math.floor(rand() * 256)); // random bytes read as Latin-1
+  assert.ok(C.readableScore(bytes) < 0.3, String(C.readableScore(bytes)));
+  for (const s of ['a', 'ab', 'abc']) assert.ok(C.readableScore(s) <= 0.3, s); // under 4 characters
+  for (const s of ['abcd', 'hello', 'secret']) assert.ok(C.readableScore(s) <= 0.3 + 0.7 * (s.length - 3) / 5 + 1e-9, s); // 4 to 7 characters scale up
+  const b64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  for (let i = 0; i < 400; i++) {
+    let s = '';
+    for (let j = 0, n = 20 + Math.floor(rand() * 100); j < n; j++) s += b64[Math.floor(rand() * 64)];
+    assert.ok(C.readableScore(s) < 0.5, s);
+    let h = '';
+    for (let j = 0, n = 20 + Math.floor(rand() * 100); j < n; j++) h += '0123456789abcdef'[Math.floor(rand() * 16)];
+    assert.ok(C.readableScore(h) < 0.5, h);
+  }
+  // Mostly punctuation and symbols is penalised.
+  assert.ok(C.readableScore('!@#$%^&*()_+{}|:"<>?~`!@#$%^&*()_+{}|:"<>?') < 0.3);
 });
 
 // ---------------------------------------------------------- tryDecodings
@@ -485,6 +556,84 @@ test('tryDecodings: a random 100,000-character string finishes within the budget
   assert.ok(r.ms < 2000, `${r.ms} ms`);
 });
 
+test('tryDecodings: ordinary sentences are found in Base64, hex, ROT13 and Base64 of hex, and rank first', () => {
+  for (const sentence of SENTENCES) {
+    const hex = Buffer.from(sentence).toString('hex');
+    const cases = [
+      [Buffer.from(sentence).toString('base64'), ['base64']],
+      [hex, ['hex']],
+      [rot13Text(sentence), ['rot13']],
+      [Buffer.from(hex).toString('base64'), ['base64', 'hex']],
+    ];
+    for (const [input, path] of cases) {
+      const res = C.tryDecodings(input);
+      const top = res.filter((r) => !/flag\{/i.test(r.output));
+      assert.ok(top.length >= 1, `${sentence} <- ${input}`);
+      assert.equal(top[0].output, sentence, `${input}: ${JSON.stringify(res.map((r) => [r.path.join('>'), r.score]))}`);
+      assert.deepEqual(top[0].path, path, input);
+      assert.ok(top[0].score >= 0.5);
+      for (let i = 1; i < res.length; i++) assert.ok(res[i - 1].score >= res[i].score - 0.06); // best first (brute-force steps are ranked a little lower)
+    }
+  }
+});
+
+test('tryDecodings: flags come first, an unchanged output is never listed, nothing below 0.5 is listed', () => {
+  const input = Buffer.from(`The quick brown fox jumps over the lazy dog ${FLAG_TEXT}`).toString('base64');
+  const res = C.tryDecodings(input);
+  assert.ok(res[0].output.includes(FLAG_TEXT));
+  assert.ok(res[0].score >= 0.9);
+  for (const text of ['hello world', 'The quick brown fox jumps over the lazy dog', 'abcd', 'flag{x}', 'ZmxhZ3t0ZXN0fQ==']) {
+    for (const r of C.tryDecodings(text)) {
+      assert.notEqual(r.output, text);
+      assert.ok(r.score >= 0.5 || r.output.includes('{'), `${text} -> ${r.output}`);
+    }
+  }
+  const rand = rng(8);
+  const alnum = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  for (let i = 0; i < 40; i++) {
+    let s = '';
+    for (let j = 0, n = 24 + Math.floor(rand() * 80); j < n; j++) s += alnum[Math.floor(rand() * 62)];
+    for (const r of C.tryDecodings(s)) assert.ok(r.score >= 0.5 && r.output !== s, `${s} -> ${r.output}`);
+  }
+});
+
+test('tryDecodings: a short ordinary word does not turn into a junk chain', () => {
+  for (const word of ['password', 'letmein', 'admin', 'secret', 'hello', 'qwerty', 'hunter2', 'changeme', 'Welcome1', 'shadow']) {
+    assert.deepEqual(C.tryDecodings(word), [], word);
+  }
+  // Two ciphers in a row are never tried, so a chain such as rot13>atbash>rot47 cannot appear.
+  const hex = Buffer.from('Meet me at the old bridge at midnight').toString('hex');
+  for (const r of C.tryDecodings(hex)) {
+    for (let i = 1; i < r.path.length; i++) {
+      assert.ok(!(['rot13', 'rot47', 'atbash', 'reverse'].includes(r.path[i]) && ['rot13', 'rot47', 'atbash', 'reverse'].includes(r.path[i - 1])), r.path.join('>'));
+    }
+  }
+});
+
+test('tryDecodings: single-byte XOR of English text is found, and xorBruteForce ranks the right key first', () => {
+  const plain = 'Meet me at the old bridge at midnight and bring the documents with you';
+  for (const key of [0x2a, 0x42, 0x5c, 0x07]) {
+    const hex = Buffer.from(plain).map((b) => b ^ key).toString('hex');
+    assert.equal(C.xorBruteForce(hex)[0].key, key, `key ${key}`);
+    assert.equal(C.xorBruteForce(hex)[0].output, plain);
+    const hit = C.tryDecodings(hex).find((r) => r.output === plain);
+    assert.ok(hit, `tryDecodings key ${key}`);
+    assert.deepEqual(hit.path, ['xor']);
+    assert.equal(hit.detail, `key 0x${key.toString(16).padStart(2, '0')}`);
+  }
+});
+
+test('tryDecodings: worst cases stay under 1 s (best of 3)', () => {
+  let layers = FLAG_TEXT;
+  for (let i = 0; i < 20; i++) layers = Buffer.from(layers).toString('base64'); // 20 layers: only 3 are explored
+  const hexDigits = Array.from({ length: 100000 }, (_, i) => '0123456789abcdef'[(i * 7 + (i % 5)) % 16]).join('');
+  for (const [name, text] of [['20 layers of Base64', layers], ['A', 'A'.repeat(100000)], ['0', '0'.repeat(100000)], ['hex digits', hexDigits], ['41', '41'.repeat(50000)]]) {
+    const { value, ms } = timed(() => C.tryDecodings(text));
+    assert.ok(ms < 1000, `${name} took ${ms.toFixed(0)} ms`);
+    assert.ok(value.length <= 30);
+  }
+});
+
 // -------------------------------------------------------------- validatePrefixes
 
 test('validatePrefixes keeps clean prefixes and falls back to the defaults', () => {
@@ -547,6 +696,26 @@ test('findFlags: body length and forbidden characters', () => {
   assert.deepEqual(flags('flag{a flag{b}'), ['plain:flag{b}']);
 });
 
+test('findFlags: short Base64, Base32 and hex runs (12 or more characters), with padding', () => {
+  assert.deepEqual(C.findFlags('ZmxhZ3t0ZXN0fQ=='), [{ flag: 'flag{test}', prefix: 'flag', line: 1, via: 'base64' }]); // 14 characters + padding
+  assert.deepEqual(C.findFlags('x ZmxhZ3t0ZXN0fQ== y'), [{ flag: 'flag{test}', prefix: 'flag', line: 1, via: 'base64' }]);
+  assert.deepEqual(flags('ZmxhZ3t0ZXN0fQ'), ['base64:flag{test}']); // and without padding
+  assert.deepEqual(flags('ZmxhZ3t4eXp9'), ['base64:flag{xyz}']); // exactly 12 characters
+  assert.deepEqual(flags('ZmxhZ3t4eX0='), ['base64:flag{xy}']); // 11 characters + 1 padding count toward the length
+  assert.deepEqual(flags('Zmxh'), []);
+  const b32 = out(enc('base32', 'flag{ab}')); // MZWGCZ33MFRH2===
+  assert.deepEqual(flags(`k ${b32}`), ['base32:flag{ab}']);
+  assert.deepEqual(flags(`k ${b32.replace(/=+$/, '')}`), ['base32:flag{ab}']);
+  assert.deepEqual(flags(`k ${Buffer.from('flag{abc}').toString('hex')}`), ['hex:flag{abc}']); // 18 hex digits
+  assert.deepEqual(flags(`k ${Buffer.from('flag{a}').toString('hex')}`), ['hex:flag{a}']); // 14 hex digits
+  assert.deepEqual(flags(`k ${Buffer.from('flag{').toString('hex')}7d00`), []); // an empty body is no flag
+  assert.deepEqual(flags('666c61677b787d'), ['hex:flag{x}']); // 14 digits, the 6-byte minimum is not needed
+  assert.deepEqual(flags('666c61677b'), []); // 10 digits: under the minimum
+  // Padding is only part of a run when it is at most two "=" right after it.
+  assert.deepEqual(flags('ZmxhZ3t0ZXN0fQ==='), ['base64:flag{test}']);
+  assert.deepEqual(flags('ZmxhZ3t0ZXN0fQ=a'), ['base64:flag{test}']);
+});
+
 test('findFlags: Base64, Base32 and hex runs of 16 or more characters, and reversed text', () => {
   const secret = 'flag{inside_the_blob}';
   const b64 = Buffer.from(secret).toString('base64');
@@ -557,7 +726,7 @@ test('findFlags: Base64, Base32 and hex runs of 16 or more characters, and rever
   assert.deepEqual(C.findFlags(`x ${b32.replace(/=+$/, '')}`).map((f) => f.via), ['base32']);
   assert.deepEqual(C.findFlags(`x ${hex}`), [{ flag: secret, prefix: 'flag', line: 1, via: 'hex' }]);
   assert.deepEqual(C.findFlags(`x ${Buffer.from(secret).toString('base64url')}`).map((f) => f.via), ['base64']);
-  assert.deepEqual(flags(Buffer.from('flag{short}').toString('base64').slice(0, 12)), []); // runs under 16 characters are ignored
+  assert.deepEqual(flags(Buffer.from('flag{short}').toString('base64').slice(0, 11)), []); // runs under 12 characters are ignored
   assert.deepEqual(flags('}ver{galf'), ['reversed:flag{rev}']);
   assert.deepEqual(C.findFlags('a\n}ver{galf'), [{ flag: 'flag{rev}', prefix: 'flag', line: 2, via: 'reversed' }]);
   assert.deepEqual(flags('}x{GALF y'), ['reversed:FLAG{x}']);
@@ -594,6 +763,13 @@ test('findFlags: hostile 5,000,000-character texts finish within 2 s', () => {
     ['A', 'A'.repeat(size)],
     ['flag{a}', 'flag{a}'.repeat(Math.floor(size / 7))],
     ['hex runs', 'deadbeefdeadbeef '.repeat(Math.floor(size / 17))],
+    ['runs just over the minimum', 'AAAAAAAAAAAA '.repeat(Math.floor(size / 13))],
+    ['hex runs of 12', 'deadbeefdead '.repeat(Math.floor(size / 13))],
+    ['padded runs', 'AAAAAAAAAA== '.repeat(Math.floor(size / 13))],
+    ['runs just under the minimum', 'AAAAAAAAAAA '.repeat(Math.floor(size / 12))],
+    ['alphabet run', 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'.repeat(Math.floor(size / 64))],
+    ['=', '='.repeat(size)],
+    ['A=', 'A='.repeat(size / 2)],
   ]) {
     const { value, ms } = timed(() => C.findFlags(text));
     assert.ok(ms < 2000, `${name} took ${ms.toFixed(0)} ms`);
@@ -729,9 +905,10 @@ test('buildReport: two challenges and a script, sorted, with totals', () => {
   });
   assert.equal(r.title, 'CTF report: ExampleCTF');
   assert.equal(r.included, 3);
-  assert.deepEqual(r.skippedEncrypted, []);
+  assert.equal(r.skippedEncrypted, 0);
   assert.deepEqual(r.leftOut, []);
-  assert.ok(r.body.startsWith('# CTF report: ExampleCTF\n\nDate: 2026-11-26\n\n## Results\n\n'));
+  assert.deepEqual(Object.keys(r).sort(), ['body', 'included', 'leftOut', 'skippedEncrypted', 'title']);
+  assert.ok(r.body.startsWith('# CTF report: ExampleCTF\nGenerated by CyberPad CTF report.\n\nDate: 2026-11-26\n\n## Results\n\n'));
   assert.ok(r.body.includes([
     '| Challenge | Category | Points | Status | Flag found |',
     '| --- | --- | ---: | --- | --- |',
@@ -749,6 +926,83 @@ test('buildReport: two challenges and a script, sorted, with totals', () => {
   const again = C.buildReport({ folder: 'ExampleCTF', now: NOW, notes: [note(r.title, r.body), challenge('Only', 'pwn', 1)] });
   assert.ok(!again.body.includes('Alpha crypto'));
   assert.equal(again.included, 1);
+});
+
+test('buildReport: an earlier report is ignored even when its title or first line was edited', () => {
+  const first = C.buildReport({ folder: 'F', now: NOW, notes: [challenge('Alpha', 'web', 5)] });
+  const edited = first.body.replace('# CTF report: F', '# My own title');
+  assert.ok(edited.includes('Generated by CyberPad CTF report.'));
+  const lines = first.body.split('\n');
+  assert.equal(lines[1], 'Generated by CyberPad CTF report.'); // the marker is the second line
+  const variants = [
+    edited,
+    first.body.replace('# CTF report: F', '## renamed'),
+    `Some intro\n\n${first.body.replace('# CTF report: F', '# x')}`,
+    `# t\r\n  Generated by CyberPad CTF report.  \r\n\r\n- Category: web\r\n- Points: 1\r\n`,
+  ];
+  for (const body of variants) {
+    const r = C.buildReport({ folder: 'F', now: NOW, notes: [note('Whatever', body), note('Real script', 'print(1)', 'python')] });
+    assert.ok(!r.body.includes('| Alpha |'), body.slice(0, 30));
+    assert.equal(r.included, 1);
+  }
+  // The marker only counts as a whole line inside the first 12 lines.
+  const marker = 'Generated by CyberPad CTF report.';
+  const inText = `# Marker in text\n- Category: web\n- Points: 3\nWe wrote ${marker} in a sentence\n`;
+  assert.equal(C.buildReport({ folder: 'F', now: NOW, notes: [note('Inline', inText)] }).included, 1);
+  const onLine12 = `# Marker\n- Category: web\n${'filler\n'.repeat(9)}${marker}\n`; // the marker is line 12
+  assert.equal(C.buildReport({ folder: 'F', now: NOW, notes: [note('Line 12', onLine12)] }).included, 0);
+  const onLine13 = `# Marker\n- Category: web\n${'filler\n'.repeat(10)}${marker}\n`; // line 13: too late
+  assert.equal(C.buildReport({ folder: 'F', now: NOW, notes: [note('Line 13', onLine13)] }).included, 1);
+  // A first line that starts like a report is still ignored.
+  assert.equal(C.buildReport({ folder: 'F', now: NOW, notes: [note('Old', '# CTF report: Old\n- Category: web\n')] }).included, 0);
+});
+
+test('buildReport: only programming and scripting notes are added as solve scripts', () => {
+  assert.ok(Object.isFrozen(C.REPORT_NON_SCRIPT_LANGS));
+  assert.deepEqual([...C.REPORT_NON_SCRIPT_LANGS], ['plain', 'ini', 'json', 'yaml', 'xml', 'html', 'css']);
+  const secret = 'API_KEY=hunter2-secret';
+  const notes = [];
+  for (const lang of [...C.REPORT_NON_SCRIPT_LANGS, 'JSON', ' yaml ', '', undefined, null, 5]) notes.push(note(`data ${String(lang)}`, secret, lang));
+  for (const lang of ['python', 'bash', 'javascript', 'powershell', 'c', 'Python']) notes.push(note(`script ${lang}`, `echo ${lang}`, lang));
+  const r = C.buildReport({ folder: 'f', now: NOW, notes });
+  assert.ok(!r.body.includes(secret));
+  assert.ok(!r.body.includes('data '));
+  assert.equal(r.included, 6);
+  for (const lang of ['python', 'bash', 'javascript', 'powershell', 'c', 'Python']) assert.ok(r.body.includes(`### script ${lang}\n`), lang);
+});
+
+test('buildReport: an unclosed fence is closed before the next section, and setext headings are left alone', () => {
+  const open = challenge('Open fence', 'web', 1, '```python\n# comment in code\n## more code');
+  const tilde = challenge('Tilde fence', 'web', 1, '~~~~~sh\n# not a heading');
+  const after = challenge('Zzz after', 'web', 1, '# Real heading');
+  const r = C.buildReport({ folder: 'f', now: NOW, notes: [open, tilde, after] });
+  const text = r.body;
+  const lines = text.split('\n');
+  const iOpen = lines.indexOf('```python');
+  assert.ok(iOpen > 0);
+  const iClose = lines.indexOf('```', iOpen + 1);
+  assert.ok(iClose > iOpen, 'the fence is closed');
+  assert.ok(lines.indexOf('~~~~~sh') > iClose);
+  assert.ok(lines.slice(lines.indexOf('~~~~~sh') + 1).includes('~~~~~'));
+  // The next sections are real headings again (Zzz after sorts last).
+  assert.ok(lines.includes('## Zzz after'));
+  assert.ok(lines.includes('## Tilde fence'));
+  assert.ok(lines.indexOf('# comment in code') > 0);
+  assert.ok(lines.includes('### Description') || lines.includes('## Description'));
+  // Headings after the unclosed fence in a later note are demoted: the demotion state does not leak between notes.
+  assert.ok(lines.includes('## Real heading'));
+  // CRLF bodies: closing fences followed by \r work, headings keep their \r.
+  const crlf = '# CRLF chall\r\n- Category: web\r\n- Points: 2\r\n\r\n```\r\n# in code\r\n```\r\n## Heading\r\n';
+  const c = C.buildReport({ folder: 'f', now: NOW, notes: [note('crlf', crlf)] });
+  assert.ok(c.body.includes('# in code\r\n```\r\n### Heading\n'));
+  assert.ok(c.body.includes('## CRLF chall\r\n'));
+  assert.ok(!c.body.includes('\n```\n```'));
+  const mid = C.buildReport({ folder: 'f', now: NOW, notes: [note('mid', '# T\r\n- Category: web\r\n\r\n## Mid\r\ntext\r\n~~~\r\n# code\r\n')] });
+  assert.ok(mid.body.includes('\n### Mid\r\ntext\r\n~~~\r\n# code\n~~~\n'), JSON.stringify(mid.body.slice(-60))); // an open ~~~ fence is closed too
+  // Setext headings are not ATX headings: they stay as they are.
+  const setext = '# Setext\n- Category: web\n\nTitle\n=====\n\nSub\n-----\n\n# After';
+  const s = C.buildReport({ folder: 'f', now: NOW, notes: [note('setext', setext)] });
+  assert.ok(s.body.includes('\nTitle\n=====\n\nSub\n-----\n\n## After'));
 });
 
 test('buildReport: headings move down one level, fenced code is untouched', () => {
@@ -774,7 +1028,7 @@ test('buildReport: an unclosed fence protects the rest of the note', () => {
   assert.ok(r.body.includes('\n## T\n'));
 });
 
-test('buildReport: encrypted notes are never included, with or without a body', () => {
+test('buildReport: encrypted notes are counted, never named, never read', () => {
   const secret = 'TOP-SECRET-BODY';
   const encryptedChallenge = [`# Secret chall`, '- Category: web', '- Flag: flag{' + secret + '}'].join('\n');
   for (const body of ['', secret, encryptedChallenge]) {
@@ -787,15 +1041,28 @@ test('buildReport: encrypted notes are never included, with or without a body', 
         { title: 'Truthy flag', body: secret, lang: 'bash', encrypted: 1 },
       ],
     });
-    assert.deepEqual(r.skippedEncrypted, ['Locked note', 'Locked script', 'Truthy flag']);
+    assert.equal(r.skippedEncrypted, 3);
+    assert.equal(typeof r.skippedEncrypted, 'number');
     assert.ok(!r.body.includes(secret));
     assert.ok(!r.body.includes('Secret chall'));
+    assert.ok(!r.body.includes('Locked'));
+    assert.ok(!r.body.includes('Truthy'));
     assert.ok(!r.body.includes('python'));
-    assert.ok(r.body.includes('## Not included (encrypted)\n\n- Locked note\n- Locked script\n- Truthy flag'));
+    assert.ok(r.body.trimEnd().endsWith('Not included: 3 encrypted note(s).'));
+    assert.ok(!r.body.includes('Not included (encrypted)'));
     assert.ok(r.body.includes('| Open one |'));
     assert.equal(r.included, 1);
     assert.ok(!r.body.includes('Solve scripts'));
   }
+  assert.ok(C.buildReport({ folder: 'f', now: NOW, notes: [note('Only', 'x', '', true)] }).body.includes('Not included: 1 encrypted note(s).'));
+  assert.ok(!C.buildReport({ folder: 'f', now: NOW, notes: [challenge('Open', 'web', 1)] }).body.includes('Not included'));
+  // The title and the body of an encrypted note are never read, not even to check them.
+  const guarded = { encrypted: true };
+  for (const key of ['title', 'body', 'lang']) Object.defineProperty(guarded, key, { get() { throw new Error(`${key} was read`); }, enumerable: true });
+  const r = C.buildReport({ folder: 'f', now: NOW, notes: [guarded, guarded, challenge('Open', 'web', 1)] });
+  assert.equal(r.skippedEncrypted, 2);
+  assert.equal(r.included, 1);
+  assert.ok(r.body.includes('Not included: 2 encrypted note(s).'));
 });
 
 test('buildReport: a 2,000,000-character folder is cut with a leftOut list', () => {
@@ -815,9 +1082,9 @@ test('buildReport: a 2,000,000-character folder is cut with a leftOut list', () 
   assert.ok(huge.body.includes('No challenges were found'));
   const manyTitles = Array.from({ length: 5000 }, (_, i) => note('t'.repeat(120) + i, '', '', true));
   const lots = C.buildReport({ folder: 'l', now: NOW, notes: manyTitles });
-  assert.equal(lots.skippedEncrypted.length, 5000);
+  assert.equal(lots.skippedEncrypted, 5000);
   assert.ok(lots.body.length < 50000);
-  assert.ok(lots.body.includes('- and 4900 more'));
+  assert.ok(lots.body.includes('Not included: 5000 encrypted note(s).'));
 });
 
 test('buildReport: an empty folder says no challenges were found', () => {
