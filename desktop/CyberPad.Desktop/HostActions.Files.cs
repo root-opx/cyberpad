@@ -15,6 +15,7 @@ public sealed partial class HostActions
     internal const string NotFoundMessage = "The file could not be found.";
     private const string RevealFailedMessage = "The folder could not be opened.";
     internal const string PlainAsCpNoteMessage = "Only an encrypted note can be saved as a .cpnote file. Choose another file type.";
+    internal const string RelinkKindMessage = "This note's file type cannot change between encrypted and plain. Unlink the file first.";
     internal static readonly TimeSpan CheckTimeout = TimeSpan.FromSeconds(2);
 
     private const int MaxParallelChecks = 8;
@@ -38,7 +39,11 @@ public sealed partial class HostActions
 
     public async Task<FileLinkResult?> SaveAsFileAsync(LinkFormat format, string safeName, string text, string? relinkId)
     {
-        if (relinkId is not null) RequireLink(relinkId); // fail before the user picks a file
+        if (relinkId is not null)
+        {
+            var existing = RequireLink(relinkId); // fail before the user picks a file
+            if (existing.Format.IsEncrypted != format.IsEncrypted) throw new StoreException(RelinkKindMessage);
+        }
 
         var seam = AskSavePath;
         var chosen = seam is not null
@@ -49,7 +54,7 @@ public sealed partial class HostActions
         // The chosen path must be on the list, and .cpnote exactly when the note is encrypted. Any plain type may be
         // picked for a plain note: the file is written and reported as the type actually chosen.
         if (!FilePathPolicy.TryNormalize(chosen, out var fullPath, out var chosenFormat))
-            throw new StoreException(FilePathPolicy.UnsupportedMessage);
+            throw new StoreException(FilePathPolicy.UnsupportedSaveMessage);
         if (format.IsEncrypted && !chosenFormat.IsEncrypted)
             throw new StoreException($"Choose a file ending in {format.Extension}.");
         if (!format.IsEncrypted && chosenFormat.IsEncrypted)

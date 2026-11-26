@@ -6,6 +6,8 @@ public static class FilePathPolicy
 {
     public const string UnsupportedMessage = "CyberPad cannot open that file type.";
 
+    public const string UnsupportedSaveMessage = "CyberPad cannot save that file type. Choose one of the listed types.";
+
     private const int MaxPathChars = 32767;
 
     /// <summary>

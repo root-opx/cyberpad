@@ -29,8 +29,13 @@ public static class FileNameSanitizer
         }
 
         // 3 + 4: trim, fall back when empty.
-        var name = sb.ToString().Trim('.', ' ', '-');
+        var cleaned = sb.ToString();
+        var name = cleaned.Trim('.', ' ', '-');
         if (name.Length == 0) name = Fallback;
+        // A dot-file title (".env", ".gitignore") whose name is the requested extension stays itself, not "env.env".
+        else if (cleaned.StartsWith('.') && ext.Length > 1 && ext[0] == '.'
+                 && string.Equals(name, ext[1..], StringComparison.OrdinalIgnoreCase))
+            name = "." + name;
 
         // 5: ensure the kind's extension.
         if (!name.EndsWith(ext, StringComparison.OrdinalIgnoreCase)) name += ext;

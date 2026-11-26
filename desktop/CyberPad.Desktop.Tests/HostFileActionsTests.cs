@@ -174,9 +174,53 @@ public sealed class HostFileActionsTests : IDisposable
     {
         _host.AskSavePath = (_, _) => Doc(picked);
         var ex = await Assert.ThrowsAsync<StoreException>(() => _host.SaveAsFileAsync(LinkFormat.Md, "x.md", "t", null));
-        Assert.Equal(FilePathPolicy.UnsupportedMessage, ex.Message);
+        Assert.Equal(FilePathPolicy.UnsupportedSaveMessage, ex.Message);
         Assert.Empty(Directory.GetFileSystemEntries(_docs));
         Assert.Equal(0, _links.Count);
+    }
+
+    [Fact]
+    public void SaveAndOpenMessages_AreDistinct()
+    {
+        Assert.Equal("CyberPad cannot save that file type. Choose one of the listed types.", FilePathPolicy.UnsupportedSaveMessage);
+        Assert.NotEqual(FilePathPolicy.UnsupportedMessage, FilePathPolicy.UnsupportedSaveMessage);
+    }
+
+    [Fact]
+    public async Task SaveAs_Relink_PlainLinkToCpNote_IsRefused_NothingWritten()
+    {
+        var first = await SaveAs(Doc("a.txt"), LinkFormat.Txt, "keep");
+        _host.AskSavePath = (_, _) => Doc("b.cpnote");
+        var ex = await Assert.ThrowsAsync<StoreException>(() => _host.SaveAsFileAsync(LinkFormat.CpNote, "b.cpnote", "{}", first.LinkId));
+        Assert.Equal("This note's file type cannot change between encrypted and plain. Unlink the file first.", ex.Message);
+        Assert.False(File.Exists(Doc("b.cpnote")));
+        Assert.Equal("keep", File.ReadAllText(Doc("a.txt")));
+        Assert.True(_links.TryGet(first.LinkId, out var rec));
+        Assert.Equal(Doc("a.txt"), rec.Path);
+        Assert.Equal(LinkFormat.Txt, rec.Format);
+    }
+
+    [Fact]
+    public async Task SaveAs_Relink_EncryptedLinkToPlain_IsRefused_NothingWritten()
+    {
+        var first = await SaveAs(Doc("a.cpnote"), LinkFormat.CpNote, "{}");
+        _host.AskSavePath = (_, _) => Doc("b.txt");
+        var ex = await Assert.ThrowsAsync<StoreException>(() => _host.SaveAsFileAsync(LinkFormat.Txt, "b.txt", "plain", first.LinkId));
+        Assert.Equal(HostActions.RelinkKindMessage, ex.Message);
+        Assert.False(File.Exists(Doc("b.txt")));
+        Assert.True(_links.TryGet(first.LinkId, out var rec));
+        Assert.Equal(Doc("a.cpnote"), rec.Path);
+        Assert.True(rec.Format.IsEncrypted);
+    }
+
+    [Fact]
+    public async Task SaveAs_Relink_EncryptedToEncrypted_StillWorks()
+    {
+        var first = await SaveAs(Doc("a.cpnote"), LinkFormat.CpNote, "{}");
+        var moved = await SaveAs(Doc("b.cpnote"), LinkFormat.CpNote, "{}", relink: first.LinkId);
+        Assert.Equal(first.LinkId, moved.LinkId);
+        Assert.True(_links.TryGet(first.LinkId, out var rec));
+        Assert.Equal(Doc("b.cpnote"), rec.Path);
     }
 
     /// <summary>

@@ -25,6 +25,11 @@ public sealed class FileNameSanitizerTests
     [InlineData("n", ".cpnote", "n.cpnote")]
     [InlineData("con", ".txt", "_con.txt")]
     [InlineData(null, ".txt", "cyberpad-export.txt")]
+    [InlineData(".env", ".env", ".env")]
+    [InlineData(".gitignore", ".gitignore", ".gitignore")]
+    [InlineData(".env", ".txt", "env.txt")]
+    [InlineData("env", ".env", "env.env")]
+    [InlineData("..env", ".env", ".env")]
     public void Sanitize_WithExtension_AppliesSameRules(string? input, string ext, string expected)
     {
         Assert.Equal(expected, FileNameSanitizer.Sanitize(input, ext));
