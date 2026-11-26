@@ -79,7 +79,7 @@ A friend who tried CyberPad asked for four things:
 - The text rules do not change: UTF-8 or UTF-16 with a BOM, no NUL, at most 4 MB on disk and 1,000,000 characters; CRLF is kept on save.
 - `.cpnote` stays the only format for an encrypted note. Encrypting a note linked to any other type removes the link, as today for `.txt` and `.md`.
 
-**Languages.** Script mode gains nine entries: `batch`, `ruby`, `php`, `lua`, `perl`, `xml`, `ini`, `plain` ("Plain text") and nothing else changes for the existing sixteen. `plain` has no block openers and no comment marker; it gives a note that is not Markdown: no tags, no rendering, numbered lines, long lines scroll.
+**Languages.** Script mode gains eight entries: `batch`, `ruby`, `php`, `lua`, `perl`, `xml`, `ini`, `plain` ("Plain text") and nothing else changes for the existing sixteen. `plain` has no block openers and no comment marker; it gives a note that is not Markdown: no tags, no rendering, numbered lines, long lines scroll.
 
 **Opening.** Open file, "Open with", the command line and drag-and-drop accept the listed types. The note's mode is set from the extension. A `.json` file dropped or imported is still tried as a CyberPad backup first; if it does not claim to be one it opens as a JSON note. A file that claims to be a backup but fails validation is still reported as damaged and never imported as text.
 
@@ -171,7 +171,7 @@ Categories: web, pwn, crypto, reversing, forensics, stego, osint, misc, mobile, 
 
 "Readable" is scored by the share of printable ASCII and common English letters, with a bonus when the output matches a flag format.
 
-**Flags.** A flag is `<prefix>{<1 to 200 characters without braces or line breaks>}`. The prefix list is a setting, default `flag`, `ctf`, `HTB`, `picoCTF`, `THM`, `DUCTF`; each prefix is 1 to 20 letters, digits or underscores, at most 30 prefixes, matched without regard to case. The finder also looks inside Base64, Base32 and hex runs of 16 or more characters, and in reversed text. The user never supplies a regular expression.
+**Flags.** A flag is `<prefix>{<1 to 200 characters without braces or line breaks>}`. The prefix list is a setting, default `flag`, `ctf`, `HTB`, `picoCTF`, `THM`, `DUCTF`; each prefix is 1 to 20 letters, digits or underscores, at most 30 prefixes, matched without regard to case. The finder also looks inside Base64, Base32 and hex runs of 12 or more characters, and in reversed text. The user never supplies a regular expression.
 
 **Report from a folder.** Run from a note that is in a folder:
 
