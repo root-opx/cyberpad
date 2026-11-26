@@ -4,12 +4,12 @@ namespace CyberPad.Desktop.Files;
 
 public static class FilePathPolicy
 {
-    public const string UnsupportedMessage = "CyberPad can only open .txt, .md and .cpnote files.";
+    public const string UnsupportedMessage = "CyberPad cannot open that file type.";
 
     private const int MaxPathChars = 32767;
 
     /// <summary>
-    /// Accepts only fully qualified paths (drive or UNC) with a known extension. Rejects device and
+    /// Accepts only fully qualified paths (drive or UNC) whose extension is in <see cref="FileTypes"/>. Rejects device and
     /// extended-length prefixes, control characters and overlong input; never "cleans up" a bad path.
     /// </summary>
     public static bool TryNormalize(string? raw, out string fullPath, out LinkFormat format)
@@ -38,15 +38,13 @@ public static class FilePathPolicy
         if (full.Length > MaxPathChars || HasDevicePrefix(full)) return false;
         if (HasStrayColon(full)) return false;
 
-        var ext = Path.GetExtension(full);
-        LinkFormat parsed;
-        if (ext.Equals(".txt", StringComparison.OrdinalIgnoreCase)) parsed = LinkFormat.Txt;
-        else if (ext.Equals(".md", StringComparison.OrdinalIgnoreCase)) parsed = LinkFormat.Md;
-        else if (ext.Equals(".cpnote", StringComparison.OrdinalIgnoreCase)) parsed = LinkFormat.CpNote;
-        else return false;
+        // Judged on the resolved name: GetFullPath has already dropped trailing dots and spaces from the last segment,
+        // as Windows does when it opens the file, so "a.py " and "a.py." are the file "a.py". Only an extension on the
+        // fixed list passes ("a.py.exe" is .exe, "Makefile" has none, ".env" is the extension .env).
+        if (!FileTypes.TryGetByExtension(Path.GetExtension(full), out var type)) return false;
 
         fullPath = full;
-        format = parsed;
+        format = type.Format;
         return true;
     }
 

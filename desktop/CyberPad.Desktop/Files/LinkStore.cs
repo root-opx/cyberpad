@@ -215,7 +215,7 @@ public sealed class LinkStore
             {
                 w.WriteStartObject(id);
                 w.WriteString("path", r.Path);
-                w.WriteString("format", LinkFormats.Wire(r.Format));
+                w.WriteString("format", r.Format.Wire);
                 w.WriteString("encoding", EncodingWire(r.Encoding));
                 w.WriteBoolean("bom", r.Bom);
                 w.WriteString("lineEnding", r.LineEnding == LineEnding.CrLf ? "crlf" : "lf");
@@ -283,7 +283,7 @@ public sealed class LinkStore
             || !FilePathPolicy.TryNormalize(rawPath, out var fullPath, out var pathFormat)
             || !string.Equals(fullPath, rawPath, StringComparison.Ordinal)) return false;
 
-        if (!TryString(e, "format", out var formatWire) || !LinkFormats.TryParse(formatWire, out var format)
+        if (!TryString(e, "format", out var formatWire) || !LinkFormat.TryParse(formatWire, out var format)
             || format != pathFormat) return false;
 
         if (!TryString(e, "encoding", out var encWire) || !TryEncoding(encWire, out var enc)) return false;
@@ -297,7 +297,7 @@ public sealed class LinkStore
         else if (leWire == "crlf") le = LineEnding.CrLf;
         else return false;
 
-        if (format == LinkFormat.CpNote && (enc != TextEncodingKind.Utf8 || bom || le != LineEnding.Lf)) return false;
+        if (format.IsEncrypted && (enc != TextEncodingKind.Utf8 || bom || le != LineEnding.Lf)) return false;
 
         if (!e.TryGetProperty("size", out var sizeEl) || sizeEl.ValueKind != JsonValueKind.Number
             || !sizeEl.TryGetInt64(out var size) || size < 0) return false;

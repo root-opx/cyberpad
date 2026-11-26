@@ -35,6 +35,21 @@ public sealed class FileHandoffTests
     }
 
     [Fact]
+    public void Handoff_DeliversAListedScriptType_AndDropsLookAlikes()
+    {
+        var id = NewId();
+        var got = new List<string>();
+        using var server = new FileHandoffServer(id, p => { lock (got) got.Add(p); });
+
+        Assert.True(FileHandoff.TrySend(id, @"C:\n\a.py.exe", TimeSpan.FromSeconds(3)));
+        Assert.True(FileHandoff.TrySend(id, "C:\\n\\a.\u0440y", TimeSpan.FromSeconds(3)));
+        Assert.True(FileHandoff.TrySend(id, @"C:\n\Tool.PY", TimeSpan.FromSeconds(3)));
+        Assert.True(WaitFor(() => { lock (got) return got.Count >= 1; }));
+        Thread.Sleep(100);
+        lock (got) Assert.Equal(new[] { @"C:\n\Tool.PY" }, got);
+    }
+
+    [Fact]
     public void Handoff_RejectsInvalidPath_AndKeepsServing()
     {
         var id = NewId();

@@ -14,6 +14,7 @@ public sealed partial class HostActions
 {
     internal const string NotFoundMessage = "The file could not be found.";
     private const string RevealFailedMessage = "The folder could not be opened.";
+    internal const string PlainAsCpNoteMessage = "Only an encrypted note can be saved as a .cpnote file. Choose another file type.";
     internal static readonly TimeSpan CheckTimeout = TimeSpan.FromSeconds(2);
 
     private const int MaxParallelChecks = 8;
@@ -45,16 +46,20 @@ public sealed partial class HostActions
             : await RunDialogAsync(() => AskForSavePath(format, safeName), "Another dialog is already open.").ConfigureAwait(false);
         if (chosen is null) return null;
 
+        // The chosen path must be on the list, and .cpnote exactly when the note is encrypted. Any plain type may be
+        // picked for a plain note: the file is written and reported as the type actually chosen.
         if (!FilePathPolicy.TryNormalize(chosen, out var fullPath, out var chosenFormat))
             throw new StoreException(FilePathPolicy.UnsupportedMessage);
-        if (chosenFormat != format)
-            throw new StoreException($"Choose a file ending in {LinkFormats.Extension(format)}.");
+        if (format.IsEncrypted && !chosenFormat.IsEncrypted)
+            throw new StoreException($"Choose a file ending in {format.Extension}.");
+        if (!format.IsEncrypted && chosenFormat.IsEncrypted)
+            throw new StoreException(PlainAsCpNoteMessage);
         if (IsInsideDataDir(fullPath, DataDir)) throw new StoreException(DataFolderMessage);
 
         // Refuse before writing: never overwrite a file another note is linked to.
         ThrowIfLinkedToAnother(fullPath, relinkId);
 
-        var record = await TrackFileOperationAsync(() => Task.Run(() => _files.WriteNew(fullPath, format, text))).ConfigureAwait(false);
+        var record = await TrackFileOperationAsync(() => Task.Run(() => _files.WriteNew(fullPath, chosenFormat, text))).ConfigureAwait(false);
 
         string linkId;
         lock (_linkGate)
@@ -73,7 +78,7 @@ public sealed partial class HostActions
             }
         }
         RememberFolder(fullPath);
-        return new FileLinkResult(linkId, Path.GetFileName(fullPath));
+        return new FileLinkResult(linkId, Path.GetFileName(fullPath), chosenFormat);
     }
 
     public async Task<FileOpenResult?> OpenFileAsync()
@@ -366,11 +371,12 @@ public sealed partial class HostActions
         if (_ui.IsDisposed || !_ui.IsHandleCreated) throw new StoreException(WindowClosedMessage);
         using var dialog = new SaveFileDialog
         {
-            Filter = LinkFormats.DialogFilter(format),
+            Filter = FileTypes.SaveDialogFilter(format),
             FileName = safeName,
             OverwritePrompt = true,
             InitialDirectory = InitialFolder(),
-            DefaultExt = LinkFormats.Extension(format).TrimStart('.'),
+            // A name typed without an extension gets the requested one (also listed first in every filter entry).
+            DefaultExt = format.Wire,
             AddExtension = true,
             RestoreDirectory = true,
         };
@@ -382,7 +388,7 @@ public sealed partial class HostActions
         if (_ui.IsDisposed || !_ui.IsHandleCreated) throw new StoreException(WindowClosedMessage);
         using var dialog = new OpenFileDialog
         {
-            Filter = LinkFormats.OpenFilter,
+            Filter = FileTypes.OpenDialogFilter(),
             InitialDirectory = InitialFolder(),
             CheckFileExists = true,
             Multiselect = false,

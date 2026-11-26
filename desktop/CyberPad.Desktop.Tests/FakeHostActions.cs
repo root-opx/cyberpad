@@ -70,7 +70,7 @@ internal sealed class FakeHostActions : IHostActions
 
     // ---- linked files ----
     public (LinkFormat Format, string Name, string Text, string? RelinkId)? SavedAs;
-    public FileLinkResult? SaveAsResult = new("0123456789abcdef0123456789abcdef", "n.md");
+    public FileLinkResult? SaveAsResult = new("0123456789abcdef0123456789abcdef", "n.md", LinkFormat.Md);
     public Exception? FileThrows;
     public FileOpenResult? OpenResult = new("0123456789abcdef0123456789abcdef", "o.md", LinkFormat.Md, "hello", false);
     public (string LinkId, string Text, bool Force)? Written;

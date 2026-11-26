@@ -14,6 +14,18 @@ public sealed class CommandLinePathTests
         Assert.Equal(@"C:\work\a.txt", p);
     }
 
+    [Theory]
+    [InlineData("tool.py", "py")]
+    [InlineData("Tool.PY", "py")]
+    [InlineData(@"cfg\.env", "env")]
+    [InlineData("build.ps1", "ps1")]
+    public void ListedTypes_AreAccepted_WithTheCanonicalWire(string arg, string wire)
+    {
+        Assert.True(CommandLinePath.TryResolve(arg, @"C:\work", out var p, out var f));
+        Assert.Equal(Path.Combine(@"C:\work", arg), p);
+        Assert.Equal(wire, f.Wire);
+    }
+
     [Fact]
     public void Absolute_IsUnchanged()
     {
@@ -28,6 +40,9 @@ public sealed class CommandLinePathTests
     [InlineData(@"\\?\C:\x\a.txt")]
     [InlineData(@"C:\x\a.txt:stream")]
     [InlineData("a.txt:stream")]
+    [InlineData("a.py.exe")]
+    [InlineData("Makefile")]
+    [InlineData("a.lnk")]
     [InlineData("")]
     [InlineData("a\0.txt")]
     public void Unsupported_IsRejected(string arg)
