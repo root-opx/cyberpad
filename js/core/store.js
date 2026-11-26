@@ -165,7 +165,8 @@
 
   /**
    * A link to a file on disk: exactly { linkId, name, format } or null. The format must match the note's
-   * encryption state (encrypted <-> cpnote, plain <-> txt/md). Anything else is dropped, never repaired.
+   * encryption state: cpnote if and only if the note is encrypted; any other extension of FILE_TYPES (txt, md, py,
+   * js, and so on) for a plain note. Anything else is dropped, never repaired.
    */
   function validateFile(f, encrypted) {
     if (!isObj(f)) return null;

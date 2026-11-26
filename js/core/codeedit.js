@@ -312,8 +312,10 @@
     const info = [];
     let allCommented = true;
     let common = null; // the indentation shared by every non-blank line
+    // A shebang (#! on the block's first line, in a # language) is neither a comment nor commentable.
+    const shebang = lang.lineComment === '#' && text.startsWith('#!', first);
     for (const l of lines) {
-      if (isBlankRun(text, l.ls, l.le)) { info.push(null); continue; }
+      if (isBlankRun(text, l.ls, l.le) || (shebang && l.ls === first)) { info.push(null); continue; }
       const w = wsRun(text, l.ls, l.le);
       const len = markerLen(text, l.ls + w, l.le, lang);
       if (len === 0) allCommented = false;
@@ -371,13 +373,18 @@
       ra = a - open.length - 1; rb = b + close.length + 1;
       d1 = open.length + 1; d2 = close.length + 1;
     }
+    // Two spans are not one: another opener or closer inside means the ends belong to different comments.
+    const hasMarker = (from, to) => { const t = text.slice(from, to); return t.includes(open) || t.includes(close); };
     if (ra !== -1) {
+      if (ra === a ? hasMarker(a + open.length, b - close.length) : hasMarker(a, b)) return noop(start, end);
       const edits = [{ at: ra, del: d1, ins: 0 }, { at: rb - d2, del: d2, ins: 0 }];
       return {
         start: ra, end: rb, insert: text.slice(ra + d1, rb - d2),
         selStart: mapPos(start, edits), selEnd: mapPos(end, edits),
       };
     }
+    // Wrapping what already holds an opener or closer would nest or end early (in XML and HTML any -- is unsafe).
+    if (hasMarker(a, b) || (lang.blockComment === HTML_BLOCK && text.slice(a, b).includes('--'))) return noop(start, end);
     const o = `${open} `;
     const c = ` ${close}`;
     const edits = [{ at: a, del: 0, ins: o.length }, { at: b, del: 0, ins: c.length }];
@@ -417,7 +424,9 @@
     if (direction !== -1 && direction !== 1) return null;
     const { first, last } = touched(text, start, end);
     const lastLe = lineEnd(text, last);
-    // The empty "line" after a final newline is not a line: it can neither move nor be moved over.
+    // Model: the text is a list of lines separated by LF. A final newline leaves an empty last line that can be
+    // swapped with the line before it (so up-then-down and down-then-up always restore the text), but is never
+    // itself moved: a caret on it, or a move below it, is a no-op.
     if (first > 0 && first === text.length && text[first - 1] === '\n') return noop(start, end);
     const block = linesOf(text, first, last);
     let nb;
@@ -425,7 +434,7 @@
       if (first === 0) return noop(start, end);
       nb = { ls: lineStart(text, first - 1), le: first - 1 };
     } else {
-      if (lastLe >= text.length || lastLe + 1 === text.length) return noop(start, end);
+      if (lastLe >= text.length) return noop(start, end);
       nb = { ls: lastLe + 1, le: lineEnd(text, lastLe + 1) };
     }
     // Each line is content plus its own end ('\r' or nothing). Contents move, line ends stay in place, so a
@@ -436,6 +445,9 @@
     };
     const B = block.map(rec);
     const N = rec(nb);
+    // A block that ends in an empty line cannot move onto the last line: that empty line would become the final
+    // empty line after a newline, which cannot be selected, so the move could not be undone. A no-op.
+    if (direction === 1 && nb.le === text.length && B[B.length - 1].c === '') return noop(start, end);
     const old = direction === -1 ? [N, ...B] : [...B, N];
     const contents = direction === -1 ? [...B, N] : [N, ...B];
     const regionStart = old[0].ls;

@@ -268,7 +268,7 @@ wrapRows('*', [
   ['«  foo »', '«  *foo* »'],
   ['«a\nb»', '«*a*\n*b*»'],
   ['«*a*\n*b*»', '«a\nb»'],
-  ['«*»', '«***»'],
+  ['«*»', '«*»'], // only marker characters: no wrap (see the marker-only tests below)
 ]);
 wrapRows('~~', [['¦', '~~¦~~'], ['«foo»', '«~~foo~~»'], ['«~~foo~~»', '«foo»'], ['~~«foo»~~', '«foo»'], ['« foo »', '« ~~foo~~ »'], ['«a\nb»', '«~~a~~\n~~b~~»']]);
 wrapRows('==', [['¦', '==¦=='], ['«foo»', '«==foo==»'], ['«==foo==»', '«foo»'], ['==«foo»==', '«foo»'], ['« foo »', '« ==foo== »'], ['«a\nb»', '«==a==\n==b==»']]);
@@ -312,7 +312,7 @@ test('toggleWrap: round trips restore text and selection exactly, for every mark
 
 test('toggleWrap: wrapping and unwrapping the same text twice in a row always gets back to the text', () => {
   for (const m of ['**', '*', '~~', '==', '`']) {
-    for (const body of ['foo', 'foo bar', 'é😀', 'a**b', 'a*b', '1 == 1', 'x`y']) {
+    for (const body of ['foo', 'foo bar', 'é😀']) { // bodies holding the marker itself: see the separate-spans tests
       const text = `p ${body} q`;
       const start = 2;
       const end = 2 + body.length;
@@ -377,7 +377,7 @@ prefRows('> ', [
   ['> ¦', '¦'],
   ['«\n\n»', '«\n\n»'],
   ['«a\r\nb»', '> «a\r\n> b»'],
-  ['  ¦a', '>   ¦a'],
+  ['  ¦a', '  > ¦a'], // the prefix goes after the indentation
   ['«  > a»', '«  a»'],
 ]);
 prefRows('- ', [
@@ -460,4 +460,376 @@ test('the selection helpers handle a 200,000-line text near its end within 50 ms
     assert.ok(r);
     assert.ok(ms < 50, `${ms} ms`);
   }
+});
+
+// ---- review fixes: block syntax, direction, marker-only, spans, code, fences, links, indentation ----
+
+// 1. Wrapping goes after the block prefix; fences, rules, table separators and blank lines are left alone.
+for (const m of ['**', '*', '~~', '==']) {
+  const w = (t) => wrap(t, m);
+  test(`toggleWrap ${m}: a list, quote, heading, task or numbered line is wrapped after its prefix`, () => {
+    assert.equal(w('«- one\n- two»'), `«- ${m}one${m}\n- ${m}two${m}»`);
+    assert.equal(w('«# Title»'), `«# ${m}Title${m}»`);
+    assert.equal(w('«> a»'), `«> ${m}a${m}»`);
+    assert.equal(w('«> > a\n> b»'), `«> > ${m}a${m}\n> ${m}b${m}»`);
+    assert.equal(w('«1. a\n22) b»'), `«1. ${m}a${m}\n22) ${m}b${m}»`);
+    assert.equal(w('«- [ ] a\n- [x] b\n- [X] c»'), `«- [ ] ${m}a${m}\n- [x] ${m}b${m}\n- [X] ${m}c${m}»`);
+    assert.equal(w('«  - a\n    + b»'), `«  - ${m}a${m}\n    + ${m}b${m}»`);
+    assert.equal(w('«> - [ ] a»'), `«> - [ ] ${m}a${m}»`);
+    assert.equal(w('«###### h»'), `«###### ${m}h${m}»`);
+    assert.equal(w('«####### h»'), `«${m}####### h${m}»`); // seven # is not a heading marker
+    assert.equal(w('«1234567890. x»'), `«${m}1234567890. x${m}»`); // ten digits are not an ordered marker
+  });
+  test(`toggleWrap ${m}: fence lines, fenced lines, rules, table separators and blank lines stay as they are`, () => {
+    assert.equal(w('«```\ncode\n```»'), '«```\ncode\n```»');
+    assert.equal(w('«~~~\ncode\n~~~»'), '«~~~\ncode\n~~~»');
+    assert.equal(w('«a\n```js\nb\n```\nc»'), `«${m}a${m}\n\`\`\`js\nb\n\`\`\`\n${m}c${m}»`);
+    assert.equal(w('«---\na\n***\n___\n- - -»'), `«---\n${m}a${m}\n***\n___\n- - -»`);
+    assert.equal(w('«| --- | :-: |\na»'), `«| --- | :-: |\n${m}a${m}»`);
+    assert.equal(w('«a\n\n  \nb»'), `«${m}a${m}\n\n  \n${m}b${m}»`);
+  });
+  test(`toggleWrap ${m}: a selection that starts inside a fenced block leaves the fenced lines alone`, () => {
+    assert.equal(w('```\n«a\nb»\n```'), '```\n«a\nb»\n```');
+    assert.equal(w('```\nx\n```\n«a\n```\nb\n```\nc»'), `\`\`\`\nx\n\`\`\`\n«${m}a${m}\n\`\`\`\nb\n\`\`\`\n${m}c${m}»`);
+    assert.equal(w('~~~\n«a»\n~~~'), '~~~\n«a»\n~~~'); // one line starting at its first character
+    assert.equal(w('```\nsome «word» here\n```'), `\`\`\`\nsome «${m}word${m}» here\n\`\`\``); // inside a line: as asked
+  });
+  test(`toggleWrap ${m}: one line selected from its first character skips the block prefix; inside a line it does not`, () => {
+    assert.equal(w('«- item»'), `«- ${m}item${m}»`);
+    assert.equal(w('- «item»'), `- «${m}item${m}»`);
+    assert.equal(w(`«- ${m}item${m}»`), '«- item»');
+    assert.equal(w('«-»'), `«${m}-${m}»`);
+    assert.equal(w('«- »'), '«- »');
+    assert.equal(w('«#»'), `«${m}#${m}»`);
+  });
+  test(`toggleWrap ${m}: wrap then unwrap restores prefixed text exactly`, () => {
+    const samples = [
+      '«- one\n- two»', '«# Title\n\ntext»', '«> a\n> > b»', '«1. a\n2. b»', '«- [ ] a\n  - [x] b»', '«a\n```\nb\n```\n---\nc»', '«- a\r\n- b»', '«| a |\n| - |\nz»',
+    ];
+    for (const marked of samples) {
+      const { text, start, end } = mparse(marked);
+      const r1 = T.toggleWrap(text, start, end, m);
+      const t1 = mapply(text, r1);
+      assert.notEqual(t1, text, marked);
+      const r2 = T.toggleWrap(t1, r1.selStart, r1.selEnd, m);
+      assert.equal(mapply(t1, r2), text, `${m} ${marked}`);
+      assert.deepEqual([r2.selStart, r2.selEnd], [start, end], `${m} ${marked}`);
+    }
+  });
+}
+test('toggleWrap: the examples from the review', () => {
+  assert.equal(wrap('«- one\n- two»', '**'), '«- **one**\n- **two**»');
+  assert.equal(wrap('«# Title»', '=='), '«# ==Title==»');
+  assert.equal(wrap('«> a»', '*'), '«> *a*»');
+  assert.equal(wrap('«```\nx\n```»', '**'), '«```\nx\n```»');
+});
+
+// 2. The direction is decided once per call.
+test('toggleWrap: a mixed selection is wrapped, and the next toggle unwraps every line (the typed markers go too)', () => {
+  const t0 = '**a**\nb';
+  const r1 = T.toggleWrap(t0, 0, t0.length, '**');
+  const t1 = mapply(t0, r1);
+  assert.equal(t1, '**a**\n**b**'); // only the unwrapped line changed
+  const r2 = T.toggleWrap(t1, r1.selStart, r1.selEnd, '**');
+  // Now the selection is uniform (every line wrapped), so it is unwrapped as a whole: the line that was wrapped
+  // before the first toggle loses its markers too, but only because it is part of a uniform selection now.
+  assert.equal(mapply(t1, r2), 'a\nb');
+});
+test('toggleWrap: a block where every line is wrapped is unwrapped; one plain line makes it a wrap of that line only', () => {
+  assert.equal(wrap('«- **a**\n- **b**»', '**'), '«- a\n- b»');
+  assert.equal(wrap('«- **a**\n- b\n- **c**»', '**'), '«- **a**\n- **b**\n- **c**»');
+});
+
+// 3. A selection of only marker characters is plain text.
+test('toggleWrap: a selection of only marker characters is left alone, for every marker', () => {
+  for (const [m, sel] of [['**', '**'], ['**', '****'], ['**', '*'], ['*', '*'], ['*', '**'], ['*', '****'], ['~~', '~~'], ['~~', '~'], ['==', '=='], ['==', '====']]) {
+    for (const [pre, post] of [['', ''], ['a ', ' b'], ['  ', '']]) {
+      const marked = `${pre}«${sel}»${post}`;
+      assert.equal(wrap(marked, m), marked, `${m} ${marked}`);
+    }
+  }
+  assert.equal(wrap('«**a»', '**'), '«****a**»'); // other characters next to markers are still wrapped
+});
+
+// 4. Two separate spans are not one.
+test('toggleWrap: ends that belong to different spans give a no-op result, inside and outside the selection', () => {
+  const same = (marked, m) => assert.equal(wrap(marked, m), marked, `${m} ${marked}`);
+  same('«*b* c *d*»', '*');
+  same('«**b** c **d**»', '**');
+  same('«~~b~~ c ~~d~~»', '~~');
+  same('«==b== c ==d==»', '==');
+  same('*«b* c *d»*', '*');
+  same('**«b** c **d»**', '**');
+  same('«***b*** c ***d***»', '*');
+  same('«- *b* c *d*»', '*');
+  // one span with another kind of marker inside is still one span
+  assert.equal(wrap('«*a **b** c*»', '*'), '«a **b** c»');
+  assert.equal(wrap('«**a *b* c**»', '**'), '«a *b* c»');
+  assert.equal(wrap('«***x***»', '**'), '«*x*»');
+  // wrapping text that merely holds the marker is still possible; undoing it is a no-op (documented)
+  const t = 'p a**b q';
+  const r1 = T.toggleWrap(t, 2, 6, '**');
+  assert.equal(mapply(t, r1), 'p **a**b** q');
+  const r2 = T.toggleWrap('p **a**b** q', r1.selStart, r1.selEnd, '**');
+  assert.equal(mapply('p **a**b** q', r2), 'p **a**b** q');
+});
+
+// 5. Inline code on text with backticks.
+test('toggleWrap `: a longer run of backticks, padded when the text starts or ends with one', () => {
+  assert.equal(wrap('«a`b»', '`'), '«``a`b``»');
+  assert.equal(wrap('«`a»', '`'), '«`` `a ``»');
+  assert.equal(wrap('«a`»', '`'), '«`` a` ``»');
+  assert.equal(wrap('«a``b»', '`'), '«```a``b```»');
+  assert.equal(wrap('«a`b``c»', '`'), '«```a`b``c```»');
+  assert.equal(wrap('«``»', '`'), '«``` `` ```»');
+  assert.equal(wrap('«x»', '`'), '«`x`»');
+});
+test('toggleWrap `: unwrapping recognises the long form and removes the padding it added', () => {
+  assert.equal(wrap('«``a`b``»', '`'), '«a`b»');
+  assert.equal(wrap('«`` `a ``»', '`'), '«`a»');
+  assert.equal(wrap('«`` a` ``»', '`'), '«a`»');
+  assert.equal(wrap('``«a`b»``', '`'), '«a`b»');
+  assert.equal(wrap('«`a` and `b`»', '`'), '«`a` and `b`»'); // two code spans are not one
+  for (const body of ['a`b', '`a', 'a`', 'a``b', '``', 'a b`c d', 'é`😀', '`a`b']) {
+    const text = `p ${body} q`;
+    const r1 = T.toggleWrap(text, 2, 2 + body.length, '`');
+    const t1 = mapply(text, r1);
+    const r2 = T.toggleWrap(t1, r1.selStart, r1.selEnd, '`');
+    assert.equal(mapply(t1, r2), text, body);
+    assert.deepEqual([r2.selStart, r2.selEnd], [2, 2 + body.length], body);
+  }
+});
+
+// 6. Code between two fenced blocks must not merge them.
+test('toggleWrap `: lines directly between two fenced blocks get their own fence', () => {
+  const text = '```\nout\n```\nLine one\nLine two\n```\nout2\n```';
+  const start = text.indexOf('Line one');
+  const end = text.indexOf('\n```\nout2');
+  const r = T.toggleWrap(text, start, end, '`');
+  assert.equal(mapply(text, r), '```\nout\n```\n```\nLine one\nLine two\n```\n```\nout2\n```');
+  // that new fence pair is the only one that comes off again
+  const t1 = mapply(text, r);
+  const r2 = T.toggleWrap(t1, r.selStart, r.selEnd, '`');
+  assert.equal(mapply(t1, r2), text);
+});
+test('toggleWrap `: a fence pair around the selection is still removed, and a whole two-block selection is not unwrapped', () => {
+  assert.equal(wrap('```\n«a\nb»\n```', '`'), '«a\nb»');
+  assert.equal(wrap('x\n```\n«a\nb»\n```\ny', '`'), 'x\n«a\nb»\ny');
+  assert.equal(wrap('«```\na\n```\nb\n```\nc\n```»', '`'), '«````\n```\na\n```\nb\n```\nc\n```\n````»');
+  assert.equal(wrap('```\nx\n```\n```\n«a\nb»\n```', '`'), '```\nx\n```\n«a\nb»');
+});
+test('toggleWrap `: the fence count stops at 2,000,000 characters before the selection', () => {
+  const filler = 'filler line\n'.repeat(190000); // about 2.2 million characters
+  assert.ok(filler.length > 2000000);
+  const text = `\`\`\`\n${filler}x\n\`\`\`\nA\nB\n\`\`\``;
+  const start = text.indexOf('A\nB');
+  // Beyond the limit nothing is counted: the fence above is assumed to open (an even count), so the pair is removed.
+  const r = T.toggleWrap(text, start, start + 3, '`');
+  assert.equal(r.insert, 'A\nB');
+  // The same lines well inside the limit are counted: the fence above closes the first block, so A and B get a new one.
+  const small = '```\nx\n```\nA\nB\n```';
+  const r2 = T.toggleWrap(small, small.indexOf('A'), small.indexOf('A') + 3, '`');
+  assert.ok(r2.insert.startsWith('```\nA\nB\n```'), JSON.stringify(r2.insert));
+});
+
+// 7. makeLink and a trailing backslash.
+test('makeLink: a label ending in a backslash does not escape the closing bracket', () => {
+  assert.equal(link('«a\\»'), '[a\\\\](«url»)');
+  assert.equal(link('«a\\\\»'), '[a\\\\](«url»)'); // two already pair up
+  assert.equal(link('«a\\\\\\»'), '[a\\\\\\\\](«url»)');
+  assert.equal(link('«\\»'), '[\\\\](«url»)');
+  assert.equal(link('«https://x.y/z\\»'), '[https://x.y/z\\\\](«url»)'); // not a usable URL: it becomes the label
+  assert.equal(link('«a\\b»'), '[a\\b](«url»)');
+});
+
+// 8. toggleLinePrefix on indented lines.
+test('toggleLinePrefix: the prefix goes after the indentation and comes off from there', () => {
+  assert.equal(pref('«  item»', '- '), '«  - item»');
+  assert.equal(pref('«  - item»', '- '), '«  item»');
+  assert.equal(pref('«\titem\n  x»', '> '), '«\t> item\n  > x»');
+  assert.equal(pref('«    > a\n  > b»', '> '), '«    a\n  b»');
+  assert.equal(pref('  ¦', '- '), '  - ¦');
+  assert.equal(pref('«  a\n\n    b»', '- '), '«  - a\n\n    - b»');
+  for (const p of ['> ', '- ']) {
+    for (const marked of ['«  a»', '«  a\n    b»', '  ¦a', '¦  a', ' ¦ a', '«\ta\n\tb»', '«  a\r\n  b»', 'x\n  «a»\ny']) {
+      const { text, start, end } = mparse(marked);
+      const r1 = T.toggleLinePrefix(text, start, end, p);
+      const t1 = mapply(text, r1);
+      const r2 = T.toggleLinePrefix(t1, r1.selStart, r1.selEnd, p);
+      assert.equal(mapply(t1, r2), text, `${p} ${marked}`);
+      assert.deepEqual([r2.selStart, r2.selEnd], [start, end], `${p} ${marked}`);
+    }
+  }
+});
+
+// ---- fuzz and property tests ----
+
+function rng(seed) {
+  let s = seed >>> 0;
+  return () => {
+    s = (s + 0x6D2B79F5) >>> 0;
+    let t = s;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const pick = (r, list) => list[Math.floor(r() * list.length)];
+
+const WORDS = ['foo', 'bar', 'a', 'x y', 'é😀', '**', '*', '~~', '==', '`', '``', 'a**b', '*i*', '**b**', '~~s~~', '==h==', '`c`', '\\', ' ', '  ', '\t'];
+const PREFIXES = ['', '', '', '- ', '* ', '+ ', '1. ', '12) ', '# ', '### ', '> ', '> > ', '- [ ] ', '- [x] ', '  - ', '    ', '> - ', '> # '];
+const SPECIAL = ['```', '~~~', '---', '***', '___', '| --- | --- |', '| a | b |', '', '', '   ', '````', '```js'];
+function randomMarkdown(r, fenceOk = true) {
+  const n = 1 + Math.floor(r() * 7);
+  const eol = r() < 0.2 ? '\r\n' : '\n';
+  const specials = fenceOk ? SPECIAL : SPECIAL.filter((x) => !x.includes('`'));
+  const lines = [];
+  for (let i = 0; i < n; i += 1) {
+    if (r() < 0.25) { lines.push(pick(r, specials)); continue; }
+    let line = pick(r, PREFIXES);
+    const k = Math.floor(r() * 4);
+    for (let j = 0; j < k; j += 1) line += (j && r() < 0.7 ? ' ' : '') + pick(r, WORDS);
+    lines.push(line);
+  }
+  return lines.join(eol) + (r() < 0.2 ? eol : '');
+}
+const pairSplit = (t, p) => p > 0 && p < t.length && t.charCodeAt(p - 1) >= 0xD800 && t.charCodeAt(p - 1) <= 0xDBFF && t.charCodeAt(p) >= 0xDC00 && t.charCodeAt(p) <= 0xDFFF;
+
+test('fuzz toggleWrap: never throws, stays in bounds, only changes marker characters, restores plain text', () => {
+  const r = rng(12345);
+  let changed = 0;
+  let restored = 0;
+  for (const m of ['**', '*', '~~', '==', '`']) {
+    const strip = m === '`' ? /[` \n]/g : new RegExp(`[${m[0] === '*' ? '\\*' : m[0]}]`, 'g');
+    for (let i = 0; i < 4000; i += 1) {
+      const text = randomMarkdown(r);
+      let s = Math.floor(r() * (text.length + 1));
+      let e = Math.floor(r() * (text.length + 1));
+      if (s > e) [s, e] = [e, s];
+      const res = T.toggleWrap(text, s, e, m);
+      const label = `${m} ${JSON.stringify(text)} ${s} ${e}`;
+      if (pairSplit(text, s) || pairSplit(text, e)) { assert.equal(res, null, label); continue; }
+      assert.ok(res, label);
+      assert.ok(res.start >= 0 && res.start <= res.end && res.end <= text.length, label);
+      const t1 = mapply(text, res);
+      assert.ok(res.selStart >= 0 && res.selStart <= res.selEnd && res.selEnd <= t1.length, label);
+      assert.equal(t1.replace(strip, ''), text.replace(strip, ''), `only marker characters change: ${label}`);
+      if (t1 === text) continue;
+      changed += 1;
+      // a selection with no marker character in it is plain: wrapping it and toggling again gives the text back
+      const sel = text.slice(s, e);
+      // (for ` also: no fence of the other kind around, whose block would make the new fence plain content)
+      const plain = m === '`' ? !text.includes('`') && !text.includes('~~~') : !sel.includes(m[0]);
+      if (!plain || s === e) continue; // an empty selection only inserts a pair
+      const r2 = T.toggleWrap(t1, res.selStart, res.selEnd, m);
+      assert.ok(r2, label);
+      assert.equal(mapply(t1, r2), text, `round trip: ${label}`);
+      restored += 1;
+    }
+  }
+  assert.ok(changed > 1000 && restored > 500, `${changed} ${restored}`);
+});
+
+test('fuzz toggleLinePrefix: never throws, stays in bounds, only changes the prefix, twice restores', () => {
+  const r = rng(777);
+  let changed = 0;
+  for (const p of ['> ', '- ']) {
+    for (let i = 0; i < 4000; i += 1) {
+      const text = randomMarkdown(r);
+      let s = Math.floor(r() * (text.length + 1));
+      let e = Math.floor(r() * (text.length + 1));
+      if (s > e) [s, e] = [e, s];
+      const res = T.toggleLinePrefix(text, s, e, p);
+      const label = `${p} ${JSON.stringify(text)} ${s} ${e}`;
+      if (pairSplit(text, s) || pairSplit(text, e)) { assert.equal(res, null, label); continue; }
+      assert.ok(res, label);
+      const t1 = mapply(text, res);
+      assert.ok(res.start >= 0 && res.start <= res.end && res.end <= text.length, label);
+      assert.ok(res.selStart >= 0 && res.selStart <= res.selEnd && res.selEnd <= t1.length, label);
+      const strip = /[>\- ]/g;
+      assert.equal(t1.replace(strip, ''), text.replace(strip, ''), label);
+      if (t1 === text) continue;
+      changed += 1;
+      // Exceptions: a prefix followed by more indentation comes off and goes back after that indentation; a prefix
+      // that is there twice loses one per toggle; a line of only the prefix becomes blank.
+      if (new RegExp(`(^|\\n)[ \\t]*${p}([ \\t]|${p}|\\r?\\n|$)`).test(text)) continue;
+      // A selection that ended just after a removed prefix now ends at column 0, and that line is no longer touched.
+      if (res.selEnd > res.selStart && t1[res.selEnd - 1] === '\n' && text[e - 1] !== '\n') continue;
+      const r2 = T.toggleLinePrefix(t1, res.selStart, res.selEnd, p);
+      assert.equal(mapply(t1, r2), text, `round trip: ${label}`);
+    }
+  }
+  assert.ok(changed > 3000, String(changed));
+});
+
+test('fuzz makeLink: never throws, stays in bounds, keeps the label, never ends it with an escaping backslash', () => {
+  const r = rng(99);
+  let links = 0;
+  for (let i = 0; i < 6000; i += 1) {
+    const text = randomMarkdown(r, false);
+    let s = Math.floor(r() * (text.length + 1));
+    let e = Math.floor(r() * (text.length + 1));
+    if (s > e) [s, e] = [e, s];
+    const res = T.makeLink(text, s, e);
+    const label = `${JSON.stringify(text)} ${s} ${e}`;
+    if (pairSplit(text, s) || pairSplit(text, e)) { assert.equal(res, null, label); continue; }
+    assert.ok(res, label);
+    const t1 = mapply(text, res);
+    assert.ok(res.selStart >= 0 && res.selStart <= res.selEnd && res.selEnd <= t1.length, label);
+    if (res.insert === '') continue;
+    links += 1;
+    const close = res.insert.lastIndexOf('](');
+    assert.ok(res.insert.startsWith('[') && res.insert.endsWith(')') && close > 0, `${JSON.stringify(res.insert)} ${label}`);
+    const lbl = res.insert.slice(1, close);
+    let slashes = 0;
+    while (slashes < lbl.length && lbl[lbl.length - 1 - slashes] === '\\') slashes += 1;
+    assert.equal(slashes % 2, 0, `${JSON.stringify(res.insert)} ${label}`);
+    const picked = t1.slice(res.selStart, res.selEnd);
+    assert.ok(['url', 'text'].includes(picked), label);
+    const trimmed = text.slice(s, e).trim();
+    if (trimmed && !/^https?:\/\//i.test(trimmed)) assert.ok(res.insert.startsWith(`[${trimmed}`), label);
+  }
+  assert.ok(links > 1000, String(links));
+});
+
+// ---- performance guards (best of three) ----
+
+const bestOf = (n, fn) => {
+  let best = Infinity;
+  for (let i = 0; i < n; i += 1) {
+    const t0 = process.hrtime.bigint();
+    fn();
+    best = Math.min(best, Number(process.hrtime.bigint() - t0) / 1e6);
+  }
+  return best;
+};
+test('performance: toggleWrap on a 1,000,000-character single-line selection is under 100 ms', () => {
+  const text = 'lorem ipsum '.repeat(83334); // one line, about a million characters
+  for (const m of ['**', '`']) {
+    const ms = bestOf(3, () => assert.ok(T.toggleWrap(text, 0, text.length, m)));
+    assert.ok(ms < 100, `${m} ${ms} ms`);
+  }
+});
+test('performance: toggleWrap on a 100,000-line selection is under 500 ms', () => {
+  const text = Array.from({ length: 100000 }, (_, i) => `- item ${i} with **some** words`).join('\n');
+  const ms = bestOf(3, () => assert.ok(T.toggleWrap(text, 0, text.length, '*')));
+  assert.ok(ms < 500, `${ms} ms`);
+  const plain = Array.from({ length: 100000 }, (_, i) => `> # line ${i}`).join('\n');
+  const ms2 = bestOf(3, () => assert.ok(T.toggleWrap(plain, 0, plain.length, '==')));
+  assert.ok(ms2 < 500, `${ms2} ms`);
+});
+test('performance: the fence pre-scan over 2,000,000 characters before the selection is under 200 ms', () => {
+  const unit = '```\ncode line\n```\nsome ordinary text here\n';
+  for (const copies of [50000, 45000]) { // 2,100,000 characters (over the limit) and 1,890,000 (under it)
+    const head = unit.repeat(copies);
+    const text = `${head}alpha\nbeta\ngamma`;
+    for (const m of ['**', '`']) {
+      const ms = bestOf(3, () => assert.ok(T.toggleWrap(text, head.length, text.length, m)));
+      assert.ok(ms < 200, `${m} ${head.length} ${ms} ms`);
+    }
+  }
+  const blank = '\n'.repeat(1900000);
+  const t2 = `${blank}alpha\nbeta`;
+  const ms = bestOf(3, () => assert.ok(T.toggleWrap(t2, blank.length, t2.length, '**')));
+  assert.ok(ms < 200, `${ms} ms`);
 });
